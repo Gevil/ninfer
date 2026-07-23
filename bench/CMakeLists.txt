@@ -61,6 +61,8 @@ ninfer_add_op_bench(ninfer_prepare_masked_block_bench
 ninfer_add_op_bench(ninfer_bidirectional_gqa_attention_bench
   SOURCES ops/bidirectional_gqa_attention_bench.cu)
 ninfer_add_op_bench(ninfer_swa_bench SOURCES ops/swa_bench.cu)
+ninfer_add_op_bench(ninfer_kv_cache_append_prefix_bench
+  SOURCES ops/kv_cache_append_prefix_bench.cu)
 ninfer_add_op_bench(ninfer_sampling_select_bench SOURCES ops/sampling_select_bench.cu)
 ninfer_add_op_bench(ninfer_sparse_moe_bench SOURCES ops/sparse_moe_bench.cu)
 ninfer_add_op_bench(ninfer_linear_pair_bench SOURCES ops/linear_pair_bench.cu)
