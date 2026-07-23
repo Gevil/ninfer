@@ -72,6 +72,7 @@ add_library(ninfer_ops STATIC
   ops/launcher/embed_gather.cu
   ops/launcher/gdn_gating.cu
   ops/launcher/gelu.cu
+  ops/launcher/bidirectional_gqa_attention.cu
   ops/launcher/l2norm.cu
   ops/launcher/layer_norm.cu
   ops/launcher/mtp_pack.cu
@@ -255,6 +256,7 @@ add_library(ninfer_ops STATIC
   ops/wrapper/gdn_gating_proj.cpp
   ops/wrapper/gdn_input_proj.cpp
   ops/wrapper/gelu.cpp
+  ops/wrapper/bidirectional_gqa_attention.cpp
   ops/wrapper/attn_input_proj.cpp
   ops/wrapper/l2norm.cpp
   ops/wrapper/layer_norm.cpp

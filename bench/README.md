@@ -378,6 +378,26 @@ cmake --build build --parallel --target ninfer_gdn_input_proj_conv_snapshot_benc
 `--execution eager|both` is available only to attribute launch behavior; it calls the same public
 Op with the same operands and workspace.
 
+## Bidirectional GQA Op benchmark
+
+`ninfer_bidirectional_gqa_attention_bench` measures the read-only, non-causal Q32/KV8/D128
+attention contract for `T=1..16`. Every timed invocation is a CUDA Graph replay. `--cold-cache`
+flushes 256 MiB before each sample outside the timed interval; `--route direct|split` and the tile
+and split overrides expose candidate controls, while `--route production` uses measured dispatch.
+
+```bash
+cmake --build build --parallel --target ninfer_bidirectional_gqa_attention_bench
+./build/bench/ninfer_bidirectional_gqa_attention_bench \
+  --tokens 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 \
+  --context 0,2048,8192,32768,131072,196608,262144 \
+  --route production --cold-cache --warmup 10 --repeat 61
+./build/bench/ninfer_bidirectional_gqa_attention_bench \
+  --tokens 16 --context 262144 --route production --cold-cache --profile-once
+```
+
+The reported useful roofline counts one read of context K/V, query Q/K/V, and one output write,
+plus the full QK and PV FLOPs. It intentionally excludes implementation scratch traffic.
+
 ## Softmax Attention Op benchmarks
 
 The four Softmax Attention executables share one harness rule: fixture setup, public workspace

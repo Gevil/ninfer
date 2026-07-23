@@ -298,6 +298,9 @@ set_tests_properties(
 ninfer_add_op_test(ninfer_prepare_masked_block_test
   SOURCES ops/test_prepare_masked_block.cpp
   LIBRARIES ninfer_ops)
+ninfer_add_op_test(ninfer_bidirectional_gqa_attention_test
+  SOURCES ops/test_bidirectional_gqa_attention.cpp
+  LIBRARIES ninfer_ops)
 ninfer_add_op_test(ninfer_sparse_moe_test
   SOURCES ops/test_sparse_moe.cpp
   LIBRARIES ninfer_ops)
