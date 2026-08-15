@@ -705,6 +705,10 @@ decode steps, with the cache on or off. Short answers are stable in practice; tr
 continuations under concurrent load as equivalent rather than identical, and compare them against a
 solo run of the same prompt when bitwise reproduction matters (`tools/smoke/determinism_fingerprint.py`).
 
+An appended mid-conversation system message is an ordinary prompt suffix, so an unchanged prior
+history remains eligible for `append_frontier`. If the client modifies, removes, or moves a
+historical system message, the token prefix genuinely differs and a miss/reset is correct.
+
 Speculative decoding is an engine option and does not change protocol output shapes, stop behavior,
 or usage accounting. If a stop truncates a multi-token MTP or DFlash round, the Engine commits the
 exact accepted target prefix so a following compatible turn can still reuse it. Output-limit and
