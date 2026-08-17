@@ -101,6 +101,12 @@ ninfer_add_test(ninfer_qwen3_6_frontend_test
 target_include_directories(ninfer_qwen3_6_frontend_test PRIVATE
   ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export
   ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/impl)
+ninfer_add_test(ninfer_qwen3_6_jinja_template_test
+  SOURCES targets/qwen3_6/test_jinja_chat_template.cpp
+  LIBRARIES ninfer_engine)
+target_include_directories(ninfer_qwen3_6_jinja_template_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export
+  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/impl)
 ninfer_add_test(ninfer_qwen3_6_runtime_mechanisms_test
   SOURCES targets/qwen3_6/test_runtime_mechanisms.cpp
   LIBRARIES ninfer_engine ninfer_core)
@@ -157,6 +163,11 @@ ninfer_add_test(ninfer_tool_call_parser_test
 ninfer_add_test(ninfer_serve_options_test
   SOURCES test_serve_options.cpp
   LIBRARIES ninfer_serve)
+ninfer_add_test(ninfer_cli_options_test
+  SOURCES test_cli_options.cpp
+          ${PROJECT_SOURCE_DIR}/apps/cli/options.cpp
+  LIBRARIES ninfer_core)
+target_include_directories(ninfer_cli_options_test PRIVATE ${PROJECT_SOURCE_DIR}/apps/cli)
 ninfer_add_test(ninfer_request_log_test
   SOURCES test_request_log.cpp
   LIBRARIES ninfer_serve)

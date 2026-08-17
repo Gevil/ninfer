@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -96,16 +97,23 @@ enum class ChatTemplateSemantics : std::uint8_t {
 class CompiledChatTemplate {
 public:
     [[nodiscard]] static CompiledChatTemplate resolve(std::string_view source);
+    [[nodiscard]] static CompiledChatTemplate compile_jinja(std::string source,
+                                                             std::string source_name);
 
     [[nodiscard]] PromptCapabilities capabilities() const noexcept;
     [[nodiscard]] RenderedChat render(const std::vector<ChatMessage>& messages,
                                       ChatRenderOptions options = {}) const;
 
 private:
+    class JinjaTemplate;
+
     explicit CompiledChatTemplate(ChatTemplateSemantics semantics) noexcept
         : semantics_(semantics) {}
+    explicit CompiledChatTemplate(std::shared_ptr<const JinjaTemplate> jinja_template) noexcept
+        : jinja_template_(std::move(jinja_template)) {}
 
-    ChatTemplateSemantics semantics_;
+    ChatTemplateSemantics semantics_ = ChatTemplateSemantics::ThinkingToggle;
+    std::shared_ptr<const JinjaTemplate> jinja_template_;
 };
 
 } // namespace ninfer::targets::qwen3_6::frontend_internal
