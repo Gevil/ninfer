@@ -348,6 +348,7 @@ if(NINFER_BUILD_SERVE)
     serve/request_log.cpp
     serve/http_server.cpp
     serve/openai_responses_http.cpp
+    serve/webui_update.cpp
     serve/serve_options.cpp)
   ninfer_internal_includes(ninfer_serve)
   target_include_directories(ninfer_serve PRIVATE
@@ -355,4 +356,7 @@ if(NINFER_BUILD_SERVE)
   target_link_libraries(ninfer_serve
     PUBLIC ninfer_engine Threads::Threads
     PRIVATE ninfer_media_acquire CUDA::cudart)
+  if(WIN32)
+    target_link_libraries(ninfer_serve PRIVATE winhttp)
+  endif()
 endif()

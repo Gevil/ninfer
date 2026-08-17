@@ -48,6 +48,10 @@ public:
 
 private:
     void register_routes();
+    void mount_webui(const std::string& webui_dir);
+    void register_webui_mime();
+    [[nodiscard]] bool webui_spa_path(const std::string& path) const;
+    [[nodiscard]] bool is_api_path(const std::string& path) const;
     void handle_chat_completions(const httplib::Request& req, httplib::Response& res);
     void handle_messages(const httplib::Request& req, httplib::Response& res);
     void handle_count_tokens(const httplib::Request& req, httplib::Response& res);
@@ -76,6 +80,8 @@ private:
     AnthropicThinkingSigner anthropic_thinking_signer_;
     std::string public_model_id_;
     OpenAIResponsesStore openai_responses_store_;
+    bool webui_serving_ = false;         // true once a static webui dir is mounted
+    std::string webui_index_html_;       // cached index.html for the SPA fallback
     JsonlRequestLog request_jsonl_;
     httplib::Server server_;
     std::atomic<std::uint64_t> request_seq_{0};
