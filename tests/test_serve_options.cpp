@@ -59,6 +59,8 @@ int main() {
                       "model id override is unexpectedly configured by default");
     failures += check(!defaults.default_thinking_budget,
                       "thinking budget is unexpectedly limited by default");
+    failures += check(defaults.chat_template_path.empty(),
+                      "template override is unexpectedly configured by default");
     failures += check(
         !defaults.sampling_overrides.temperature && !defaults.sampling_overrides.top_p &&
             !defaults.sampling_overrides.top_k && !defaults.sampling_overrides.presence_penalty &&
@@ -98,6 +100,18 @@ int main() {
         (void)parse({"ninfer-serve", "model.ninfer", "--model-id", ""});
     } catch (const std::invalid_argument&) { empty_model_id_rejected = true; }
     failures += check(empty_model_id_rejected, "empty --model-id was accepted");
+
+    const ServeOptions template_override =
+        parse({"ninfer-serve", "model.ninfer", "--chat-template-file", "templates/sharp.jinja"});
+    failures += check(template_override.chat_template_path == "templates/sharp.jinja",
+                      "server template override path was not preserved");
+
+    bool empty_template_path_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--chat-template-file", ""});
+    } catch (const std::invalid_argument&) { empty_template_path_rejected = true; }
+    failures += check(empty_template_path_rejected,
+                      "server accepted an empty template override path");
 
     const ServeOptions dflash = parse({"ninfer-serve", "model.ninfer", "--spec", "dflash",
                                        "--draft-tokens", "15", "--lm-head-draft"});
@@ -285,6 +299,9 @@ int main() {
     failures += check(serve_usage_text("ninfer-serve").find("--default-thinking-budget") !=
                           std::string::npos,
                       "serve help omits --default-thinking-budget");
+    failures += check(serve_usage_text("ninfer-serve").find("--chat-template-file") !=
+                          std::string::npos,
+                      "serve help omits --chat-template-file");
     failures += check(serve_usage_text("ninfer-serve").find("--vision") != std::string::npos,
                       "serve help omits --vision");
     failures +=

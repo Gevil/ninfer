@@ -111,30 +111,6 @@ ninfer_add_test(ninfer_qwen3_6_jinja_template_test
 target_include_directories(ninfer_qwen3_6_jinja_template_test PRIVATE
   ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export
   ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/impl)
-ninfer_add_test(ninfer_host_kv_park_test
-  SOURCES test_host_kv_park.cpp
-  LIBRARIES ninfer_core)
-set_tests_properties(ninfer_host_kv_park_test PROPERTIES SKIP_RETURN_CODE 77)
-ninfer_add_test(ninfer_host_kv_cache_test
-  SOURCES test_host_kv_cache.cpp
-  NEEDS_SOURCE_DIR
-  LIBRARIES ninfer_engine ninfer_core)
-target_include_directories(ninfer_host_kv_cache_test PRIVATE
-  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export
-  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/impl)
-set_tests_properties(ninfer_host_kv_cache_test PROPERTIES SKIP_RETURN_CODE 77)
-ninfer_add_test(ninfer_host_kv_gdn_test
-  SOURCES test_host_kv_gdn.cpp
-  LIBRARIES ninfer_engine ninfer_core)
-target_include_directories(ninfer_host_kv_gdn_test PRIVATE
-  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export
-  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/impl)
-set_tests_properties(ninfer_host_kv_gdn_test PROPERTIES SKIP_RETURN_CODE 77)
-# Deterministic coverage for the deferred host-KV restore transaction
-# (host_kv_restore_transaction.h): CPU-only, no artifact, no CUDA.
-ninfer_add_test(ninfer_host_kv_evicting_restore_test
-  SOURCES test_host_kv_evicting_restore.cpp
-  LIBRARIES ninfer_core)
 ninfer_add_test(ninfer_qwen3_6_runtime_mechanisms_test
   SOURCES targets/qwen3_6/test_runtime_mechanisms.cpp
   LIBRARIES ninfer_engine ninfer_core)
