@@ -362,18 +362,10 @@ public:
     }
     if (array_) {
       if (!other.array_) return false;
-      if (array_->size() != other.array_->size()) return false;
-      for (size_t i = 0; i < array_->size(); ++i) {
-        if (!(*array_)[i].to_bool() || !(*other.array_)[i].to_bool() || (*array_)[i] != (*other.array_)[i]) return false;
-      }
-      return true;
+      return *array_ == *other.array_;
     } else if (object_) {
       if (!other.object_) return false;
-      if (object_->size() != other.object_->size()) return false;
-      for (const auto& item : *object_) {
-        if (!item.second.to_bool() || !other.object_->count(item.first) || item.second != other.object_->at(item.first)) return false;
-      }
-      return true;
+      return *object_ == *other.object_;
     } else {
       return primitive_ == other.primitive_;
     }
