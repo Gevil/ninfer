@@ -284,6 +284,14 @@ int main() {
     failures +=
         check(!resolve_prompt_semantics(request, configured, prompt_capabilities).preserve_thinking,
               "request preserve-thinking override did not win");
+    prompt_capabilities.reasoning_effort.low            = true;
+    prompt_capabilities.reasoning_effort.medium         = true;
+    prompt_capabilities.reasoning_effort.xhigh          = true;
+    prompt_capabilities.reasoning_effort.default_effort = ninfer::ReasoningEffort::Medium;
+    request.reasoning_effort = RequestedReasoningEffort::Medium;
+    failures += check(resolve_prompt_semantics(request, configured, prompt_capabilities)
+                          .reasoning_effort == ninfer::ReasoningEffort::Medium,
+                      "medium reasoning effort was rejected despite template support");
 
     failures +=
         check(serve_usage_text("ninfer-serve").find("--no-prefix-reuse") != std::string::npos,

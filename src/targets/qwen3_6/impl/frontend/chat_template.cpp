@@ -381,6 +381,18 @@ std::string render_role(ChatRole role) {
     throw std::invalid_argument("unsupported chat role value");
 }
 
+std::string_view render_reasoning_effort(ReasoningEffort effort) {
+    switch (effort) {
+    case ReasoningEffort::Low:
+        return "low";
+    case ReasoningEffort::Medium:
+        return "medium";
+    case ReasoningEffort::XHigh:
+        return "xhigh";
+    }
+    throw std::invalid_argument("invalid reasoning effort");
+}
+
 OrderedJson render_template_content(const ChatMessage& message) {
     if (!message.has_media()) { return message.rendered_content(); }
 
@@ -451,6 +463,9 @@ minja::Value jinja_context(const std::vector<ChatMessage>& messages,
                        {"enable_thinking", options.enable_thinking},
                        {"add_vision_id", options.add_vision_id},
                        {"chat_template_kwargs", OrderedJson::object()}};
+    if (options.reasoning_effort) {
+        values["reasoning_effort"] = render_reasoning_effort(*options.reasoning_effort);
+    }
     if (options.preserve_thinking) {
         values["preserve_thinking"] = *options.preserve_thinking;
         values["chat_template_kwargs"]["preserve_thinking"] = *options.preserve_thinking;
@@ -462,7 +477,9 @@ minja::Value jinja_context(const std::vector<ChatMessage>& messages,
 
 class CompiledChatTemplate::JinjaTemplate {
 public:
-    JinjaTemplate(std::string source, std::string source_name) : source_name_(std::move(source_name)) {
+    JinjaTemplate(std::string source, std::string source_name)
+        : source_name_(std::move(source_name)),
+          supports_reasoning_effort_(source.find("reasoning_effort") != std::string::npos) {
         try {
             template_ = minja::Parser::parse(source, minja::Options{.trim_blocks           = true,
                                                                       .lstrip_blocks         = true,
@@ -475,9 +492,9 @@ public:
 
     [[nodiscard]] RenderedChat render(const std::vector<ChatMessage>& messages,
                                       const ChatRenderOptions& options) const {
-        if (options.reasoning_effort) {
+        if (options.reasoning_effort && !supports_reasoning_effort_) {
             throw std::invalid_argument(
-                "custom Jinja chat templates do not declare reasoning effort support");
+            "custom Jinja chat template does not reference reasoning_effort");
         }
         try {
             return RenderedChat{.text = template_->render(
@@ -489,8 +506,21 @@ public:
         }
     }
 
+    [[nodiscard]] PromptCapabilities capabilities() const noexcept {
+        PromptCapabilities result;
+        result.enable_thinking = true;
+        if (supports_reasoning_effort_) {
+            result.reasoning_effort.low            = true;
+            result.reasoning_effort.medium         = true;
+            result.reasoning_effort.xhigh          = true;
+            result.reasoning_effort.default_effort = ReasoningEffort::Medium;
+        }
+        return result;
+    }
+
 private:
     std::string source_name_;
+    bool supports_reasoning_effort_ = false;
     std::shared_ptr<minja::TemplateNode> template_;
 };
 
@@ -562,9 +592,9 @@ CompiledChatTemplate CompiledChatTemplate::compile_jinja(std::string source,
 }
 
 PromptCapabilities CompiledChatTemplate::capabilities() const noexcept {
+    if (jinja_template_) { return jinja_template_->capabilities(); }
     PromptCapabilities result;
     result.enable_thinking = true;
-    if (jinja_template_) { return result; }
     if (semantics_ == ChatTemplateSemantics::ReasoningEffort) {
         result.reasoning_effort.low            = true;
         result.reasoning_effort.medium         = true;
