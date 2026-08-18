@@ -51,7 +51,7 @@ int main() {
         {{- 'args=' ~ (message.tool_calls[0].function.arguments | tojson) ~ ';' -}}
     {%- endif -%}
 {%- endfor -%}
-{{- 'matched=' ~ state.matched ~ ';tools=' ~ (tools | length) ~ ';preserve=' ~ chat_template_kwargs.preserve_thinking ~ ';chain=' ~ chained -}}
+{{- 'matched=' ~ state.matched ~ ';tools=' ~ (tools | length) ~ ';preserve=' ~ chat_template_kwargs.preserve_thinking ~ ';chain=' ~ chained ~ ';effort=' ~ reasoning_effort -}}
 )JINJA";
 
     int failures = 0;
@@ -60,9 +60,11 @@ int main() {
     const ninfer::PromptCapabilities capabilities = chat_template.capabilities();
     failures += check(capabilities.enable_thinking,
                       "custom Jinja template did not expose thinking control");
-    failures += check(!capabilities.reasoning_effort.low && !capabilities.reasoning_effort.medium &&
-                          !capabilities.reasoning_effort.xhigh,
-                      "custom Jinja template unexpectedly exposed reasoning-effort presets");
+    failures += check(capabilities.reasoning_effort.low && capabilities.reasoning_effort.medium &&
+                          capabilities.reasoning_effort.xhigh &&
+                          capabilities.reasoning_effort.default_effort ==
+                              ninfer::ReasoningEffort::Medium,
+                      "custom Jinja template did not expose reasoning-effort presets");
 
     fi::ChatMessage user;
     user.role = ninfer::ChatRole::User;
@@ -75,13 +77,14 @@ int main() {
         fi::ToolCall{.id = "call-1", .name = "lookup", .arguments_json = R"({"query":"qwen"})"});
 
     fi::ChatRenderOptions options;
+    options.reasoning_effort = ninfer::ReasoningEffort::Medium;
     options.preserve_thinking = true;
     options.tool_jsons.push_back(R"({"type":"function","function":{"name":"lookup"}})");
     const fi::RenderedChat rendered = chat_template.render({std::move(user), std::move(assistant)},
                                                             std::move(options));
     const std::string expected =
         "user:hello <image>world/2;assistant:done/1;args={\"query\": \"qwen\"};"
-        "matched=True;tools=1;preserve=True;chain=reason";
+        "matched=True;tools=1;preserve=True;chain=reason;effort=medium";
     failures += check(rendered.text == expected,
                       ("custom Jinja template context rendered unexpected prompt text: " +
                        rendered.text)
@@ -95,14 +98,17 @@ int main() {
     } catch (const std::invalid_argument&) { malformed_rejected = true; }
     failures += check(malformed_rejected, "malformed Jinja template was accepted");
 
+    const fi::CompiledChatTemplate no_effort_template = fi::CompiledChatTemplate::compile_jinja(
+        "{% for message in messages %}{{ message.content }}{% endfor %}", "no-effort-template");
     bool effort_rejected = false;
     try {
         fi::ChatRenderOptions effort_options;
         effort_options.reasoning_effort = ninfer::ReasoningEffort::Low;
-        (void)chat_template.render({text_message(ninfer::ChatRole::User, "hello")},
-                                   std::move(effort_options));
+        (void)no_effort_template.render({text_message(ninfer::ChatRole::User, "hello")},
+                                        std::move(effort_options));
     } catch (const std::invalid_argument&) { effort_rejected = true; }
-    failures += check(effort_rejected, "custom Jinja template accepted reasoning effort");
+    failures += check(effort_rejected,
+                      "Jinja template without reasoning_effort accepted reasoning effort");
 
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
