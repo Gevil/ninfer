@@ -9,7 +9,6 @@ Anthropic-compatible HTTP endpoints over one resident NInfer Engine.
 ./build/apps/ninfer-serve models/qwen3_6_27b.ninfer \
   --host 127.0.0.1 \
   --port 8080 \
-  --chat-template-file /path/to/chat_template.jinja \
   --max-context 16384 \
   --kv-capacity 32768 \
   --max-concurrency 2 \
@@ -40,20 +39,7 @@ server must accept image or video input. Speculative residency is likewise froze
 cannot be combined with `--vision`. A later request cannot enable a capability omitted at startup.
 
 `--chat-template-file PATH` replaces the artifact's embedded prompt renderer for this server
-process. The file is read and compiled once before the Engine accepts requests, and applies equally
-to Chat Completions, Responses, and Messages. It is not a request field. An unreadable, empty,
-malformed, or unsupported template prevents startup; NInfer does not silently use the artifact
-template instead. The [Qwen-Sharp chat template](https://huggingface.co/peculiar-ragdoll/Qwen-Sharp-Chat-Templates)
-can be supplied directly as this self-contained file.
-
-Custom files use the bundled Minja LLM chat-template renderer, including Qwen-Sharp's macros,
-mutable namespaces, whitespace control, loops, JSON conversion, and chained string methods.
-Includes, imports, inheritance, and arbitrary Python execution are unsupported. Each render
-receives structured `messages`, `tools`, `add_generation_prompt`, `enable_thinking`,
-`add_vision_id`, `preserve_thinking`, and `chat_template_kwargs.preserve_thinking` values. Custom
-templates do not declare reasoning-effort presets, so requests that set `reasoning_effort` are
-rejected; `enable_thinking` remains available to the template. They also omit the registered
-template's response-replay checkpoint, so multi-turn prefix reuse can be less efficient.
+process.
 
 ## Endpoints
 

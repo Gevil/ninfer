@@ -41,24 +41,6 @@ artifact. Pass `--chat-template-file PATH` to replace that prompt renderer for t
   --prompt "Return one sentence."
 ```
 
-The file is read and compiled before prompt preparation. An unreadable, empty, malformed, or
-unsupported template stops startup; NInfer never silently falls back to the artifact template.
-The [Qwen-Sharp chat template](https://huggingface.co/peculiar-ragdoll/Qwen-Sharp-Chat-Templates)
-is a supported self-contained file override.
-
-Custom templates use the bundled Minja LLM chat-template renderer. It supports the Qwen template
-features used by Qwen-Sharp, including macros, mutable namespaces, whitespace control, loops,
-filters, JSON conversion, and chained string operations. It does not support file includes,
-imports, inheritance, or arbitrary Python execution, so the supplied source must be self-contained.
-NInfer provides the standard `messages`, `tools`, `add_generation_prompt`, `enable_thinking`,
-`add_vision_id`, `preserve_thinking`, and `chat_template_kwargs.preserve_thinking` values. Text
-content is a string; multimodal content is an ordered array of `text`, `image`, and `video` parts.
-
-`--no-thinking` remains available to a custom template through `enable_thinking`, but arbitrary
-Jinja does not declare reasoning-effort presets, so `--reasoning-effort` is rejected. Custom
-templates also do not provide the registered templates' response-replay checkpoint; prompts remain
-correct, but multi-turn prefix reuse may be less efficient.
-
 ## Startup memory profile
 
 GPU residency is frozen when the Engine starts:
