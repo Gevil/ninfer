@@ -845,7 +845,7 @@ public:
 
 struct LoopControlTemplateToken : public TemplateToken {
     LoopControlType control_type;
-    LoopControlTemplateToken(const Location & loc, SpaceHandling pre, SpaceHandling post, LoopControlType control_type) : TemplateToken(Type::Break, loc, pre, post), control_type(control_type) {}
+    LoopControlTemplateToken(const Location & loc, SpaceHandling pre, SpaceHandling post, LoopControlType control_type) : TemplateToken(control_type == LoopControlType::Break ? Type::Break : Type::Continue, loc, pre, post), control_type(control_type) {}
 };
 
 struct CallTemplateToken : public TemplateToken {
