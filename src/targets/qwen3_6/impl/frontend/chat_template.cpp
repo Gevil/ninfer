@@ -866,13 +866,16 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
             rewrite_checkpoint = RewriteCheckpointByteSpec{
                 .kind = RewriteCheckpointKind::TurnClosure, .offset = rendered.size()};
         }
-        rendered.append_template("<|im_start|>assistant\n");
+        rendered.append_template("assistant\n");
         add_rewrite_execution_boundary();
-        if (keep_thinking) {
-            rendered.append_template("<think>\n");
+        // Official Qwen3.8 Jinja still wraps whenever keep_thinking. The C++ clone
+        // omits an empty reasoning wrapper so history does not inject the
+        // no-thinking cue `think\n\nthink_end\n\n`.
+        if (keep_thinking && !(effort_template && reasoning.text.empty())) {
+            rendered.append_template("think\n");
             add_rewrite_execution_boundary();
             rendered.append(reasoning);
-            rendered.append_template("\n</think>\n\n");
+            rendered.append_template("\nthink_end\n\n");
             add_rewrite_execution_boundary();
         }
         rendered.append(body);
