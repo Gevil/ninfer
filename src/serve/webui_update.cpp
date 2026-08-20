@@ -18,9 +18,6 @@
 
 #include "serve/console_log.h"
 
-#include <windows.h>
-#include <winhttp.h>
-
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
@@ -29,6 +26,11 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+
+#include <windows.h>
+#include <winhttp.h>
 
 #pragma comment(lib, "winhttp.lib")
 
@@ -383,3 +385,29 @@ std::string ensure_webui_available(const std::string& webui_dir) {
 }
 
 } // namespace ninfer::serve
+
+#else // !_WIN32
+
+// The auto-downloader is WinHTTP-based and Windows-only. On other platforms the
+// server still runs; passing --webui fails at startup with an explicit error
+// instead of silently serving an empty directory.
+
+namespace ninfer::serve {
+
+std::string resolve_webui_dir(const ServeOptions& options) {
+    if (!options.webui_dir.empty()) { return options.webui_dir; }
+    std::error_code ec;
+    std::filesystem::path artifact(options.artifact_path);
+    std::filesystem::path dir = artifact.parent_path();
+    if (dir.empty()) { dir = std::filesystem::path("."); }
+    return (dir / "webui").lexically_normal().string();
+}
+
+std::string ensure_webui_available(const std::string&) {
+    throw std::runtime_error("--webui auto-download is only supported on Windows; "
+                             "use --webui-dir with a prebuilt webui copy");
+}
+
+} // namespace ninfer::serve
+
+#endif // _WIN32
