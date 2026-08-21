@@ -99,7 +99,6 @@ struct EngineOptions {
     std::uint64_t host_kv_cache_bytes = 0;
     // Pinned-host content cache for computed context (0 disables the feature entirely).
     std::size_t kv_host_cache_mib          = 0;
-: content-addressed host KV cache with prefix and trajectory restore)
     LoadProgress load_progress;
 };
 
@@ -445,6 +444,20 @@ struct MemorySummary {
     std::size_t cuda_graph_allowance_bytes        = 0;
     std::size_t cuda_graph_observed_bytes         = 0;
     std::size_t kv_payload_bytes                  = 0;
+};
+
+// Content-addressed host KV cache counters; all zeros when the cache is disabled.
+struct KvHostCacheStats {
+    bool enabled                   = false;
+    std::uint64_t budget_bytes     = 0;
+    std::uint64_t stored_bytes     = 0;
+    std::uint64_t stored_segments  = 0;
+    std::uint64_t stored_pages     = 0;
+    std::uint64_t hit_requests     = 0;
+    std::uint64_t hit_tokens       = 0;
+    std::uint64_t restored_bytes   = 0;
+    std::uint64_t writeback_bytes  = 0;
+    std::uint64_t evicted_segments = 0;
 };
 
 // Monotonic execution counters plus one boundary-consistent scheduler snapshot. Consumers derive

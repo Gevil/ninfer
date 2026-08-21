@@ -53,7 +53,6 @@ struct ServeOptions {
     // discarded when a lane is needed. 0 disables the cache and keeps the
     // discard-on-eviction behaviour.
     std::uint64_t host_kv_cache_mib = 0;
-: content-addressed host KV cache with prefix and trajectory restore)
     bool use_cuda_graph     = true;
     bool allow_prefix_reuse = true;
     bool enable_thinking =
