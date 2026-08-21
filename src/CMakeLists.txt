@@ -27,9 +27,12 @@ add_library(ninfer_core STATIC
   core/host_worker_pool.cpp
   core/gdn_replay_records.cpp
   core/cyclic_kv_cache.cpp
+  core/kv_host_cache.cu
   core/paged_kv_cache.cpp
   core/host_kv_budget.cpp
   core/host_kv_park.cpp
+  core/paged_kv_hostpack.cu
+: content-addressed host KV cache with prefix and trajectory restore)
   core/linear_attention_state.cpp
   core/layout.cpp
   core/tensor.cpp

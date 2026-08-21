@@ -97,6 +97,9 @@ struct EngineOptions {
     // than discarding them. Each parked sequence takes only the bytes it needs;
     // zero keeps the discard-on-eviction behaviour.
     std::uint64_t host_kv_cache_bytes = 0;
+    // Pinned-host content cache for computed context (0 disables the feature entirely).
+    std::size_t kv_host_cache_mib          = 0;
+: content-addressed host KV cache with prefix and trajectory restore)
     LoadProgress load_progress;
 };
 
@@ -392,10 +395,12 @@ struct SpeculativeStats {
 };
 
 enum class PrefixReusePath : std::uint8_t {
+
     FullReset,
     AppendAtFrontier,
     RestoreTurnCheckpoint,
     RestoreResponseCheckpoint,
+    ContentRestore,
 };
 
 struct GenerationResult {

@@ -46,6 +46,14 @@ struct ServeOptions {
     KvCacheStorage kv_cache                = KvCacheStorage::BFloat16;
     SpeculativeOptions speculative;
     bool enable_vision      = false;
+    ninfer::VisionResidency vision_residency = ninfer::VisionResidency::Resident;
+    std::uint32_t vision_max_merged_tokens   = 32768;
+    std::size_t kv_host_cache_mib            = 0;
+    // Pinned host RAM budget (MiB) for parking evicted sequences instead of being
+    // discarded when a lane is needed. 0 disables the cache and keeps the
+    // discard-on-eviction behaviour.
+    std::uint64_t host_kv_cache_mib = 0;
+: content-addressed host KV cache with prefix and trajectory restore)
     bool use_cuda_graph     = true;
     bool allow_prefix_reuse = true;
     bool enable_thinking =
