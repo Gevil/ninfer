@@ -104,7 +104,7 @@ std::string serve_usage_text(const char* argv0) {
            "       --vision enables media and loads the fixed Vision GPU allocations\n"
            "       --kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
-           " MiB of sizing headroom\n"
+           " MiB of sizing headroom (bounded by max-context * max-concurrency)\n"
            "       --no-prefix-reuse disables compatible-prefix caching (enabled by default)\n"
            "       context cache defaults: device-state=max-concurrency, private=2x concurrency, "
            "shared=max(max-concurrency,4), anchors=2; Host state=8 slots, Host KV=8192 MiB\n"
