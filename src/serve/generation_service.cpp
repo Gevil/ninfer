@@ -456,20 +456,28 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
 }
 
 void GenerationService::warmup() {
-    GenerationRequest request;
-    ChatTurn turn;
-    turn.role = ChatRole::User;
-    ContentPart content;
-    content.kind     = ContentKind::Text;
-    content.text     = "hi";
-    content.type_raw = "text";
-    turn.content.push_back(std::move(content));
-    request.messages.push_back(std::move(turn));
-    request.max_tokens = 4;
-    PreparedRequest prepared =
-        prepare_impl(request, GenerationConsumerMode::Aggregate, {}, {}, {},
-                     CacheParticipation::Disabled, DeadlinePolicy::UnboundedStartup);
-    run(prepared, nullptr);
+    try {
+        GenerationRequest request;
+        ChatTurn turn;
+        turn.role = ChatRole::User;
+        ContentPart content;
+        content.kind     = ContentKind::Text;
+        content.text     = "hi";
+        content.type_raw = "text";
+        turn.content.push_back(std::move(content));
+        request.messages.push_back(std::move(turn));
+        request.max_tokens = 4;
+        // Warmup is internal startup priming and must not inherit the client-facing
+        // request deadline (--pending-timeout-ms bounds incoming-request preparation
+        // and queue waiting, not warmup).
+        PreparedRequest prepared =
+            prepare_impl(request, GenerationConsumerMode::Aggregate, {}, {}, {},
+                         CacheParticipation::Disabled, DeadlinePolicy::UnboundedStartup);
+        run(prepared, nullptr);
+    } catch (const std::exception& exception) {
+        write_console_log(ConsoleLogLevel::Warning,
+                          std::string("warmup failed (continuing): ") + exception.what());
+    }
 }
 
 } // namespace ninfer::serve
