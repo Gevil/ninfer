@@ -75,7 +75,9 @@ __global__ void sparse_moe_d1_kernel(const __nv_bfloat16* __restrict__ x,
                                      const __nv_bfloat16* __restrict__ router,
                                      float* __restrict__ scores, int* __restrict__ ids,
                                      float* __restrict__ alpha,
-                                     float* __restrict__ shared_scale) {
+                                     float* __restrict__ shared_scale,
+                                     const char* __restrict__ shared_down_payload,
+                                     unsigned long long shared_down_bytes) {
     __shared__ float partial[kD1Warps];
     __shared__ float selected_logits[kTopK];
     __shared__ bool is_last_block;
@@ -90,6 +92,17 @@ __global__ void sparse_moe_d1_kernel(const __nv_bfloat16* __restrict__ x,
         float value = lane < kD1Warps ? partial[lane] : 0.0f;
         value       = warp_reduce_sum<kD1Warps>(value);
         if (lane == 0) { scores[row] = value; }
+    }
+    if (shared_down_payload != nullptr) {
+        // Warm L2 for the shared-expert down payload while the bus idles behind the
+        // router: D4's shared warp streams these bytes last and otherwise sets the
+        // block's critical path. One 128B line per thread covers the payload in a
+        // single sweep. A pure cache hint.
+        const unsigned long long offset =
+            (static_cast<unsigned long long>(blockIdx.x) * blockDim.x + threadIdx.x) * 128ull;
+        if (offset < shared_down_bytes) {
+            asm volatile("prefetch.global.L2 [%0];" ::"l"(shared_down_payload + offset));
+        }
     }
     // The top-8 selection used to be its own single-warp grid. Its cost was the price of the node
     // rather than the work, so the block that arrives last runs the identical routine instead. The
@@ -391,7 +404,8 @@ __global__ void sparse_moe_d4_nine_warp_kernel(
     const float* __restrict__ shared_scale, const float* __restrict__ act,
     const std::uint8_t* __restrict__ routed_codes, const std::uint8_t* __restrict__ routed_high,
     const std::uint8_t* __restrict__ routed_scales, const std::uint8_t* __restrict__ shared_codes,
-    const std::uint8_t* __restrict__ shared_scales, __nv_bfloat16* __restrict__ destination) {
+    const std::uint8_t* __restrict__ shared_scales, __nv_bfloat16* __restrict__ destination,
+    const char* __restrict__ prefetch_data, unsigned long long prefetch_bytes) {
     __shared__ float paths[kTopK + 1][Rows];
     pdl::wait_for_dependencies();
     const int warp     = static_cast<int>(threadIdx.x) >> 5;
@@ -424,6 +438,17 @@ __global__ void sparse_moe_d4_nine_warp_kernel(
 #pragma unroll
         for (int path = 0; path < kTopK + 1; ++path) { value += paths[path][lane]; }
         destination[row_base + lane] = __float2bfloat16_rn(value);
+    }
+    if (prefetch_data != nullptr) {
+        // Fire-and-forget L2 warmup of the next consumer's weight payload. D4 CTAs
+        // retire in waves across the tail of the MoE window while the bus is
+        // largely idle; one 128B line per thread covers the whole span in a single
+        // sweep. A pure cache hint: no value and no addition order is touched.
+        const unsigned long long offset =
+            (static_cast<unsigned long long>(blockIdx.x) * blockDim.x + threadIdx.x) * 128ull;
+        if (offset < prefetch_bytes) {
+            asm volatile("prefetch.global.L2 [%0];" ::"l"(prefetch_data + offset));
+        }
     }
 }
 
@@ -493,14 +518,16 @@ __global__ void sparse_moe_d4_token_kernel(
     }
 }
 
-void launch_d1(const Tensor& x, const Weight& router_shared_gate,
+void launch_d1(const Tensor& x, const SparseMoeWeights& weights,
                const SparseMoeDecodeWorkspace& workspace, cudaStream_t stream) {
     sparse_moe_d1_kernel<<<kRouterRows, kD1Warps * 32, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data),
-        static_cast<const __nv_bfloat16*>(router_shared_gate.qdata),
+        static_cast<const __nv_bfloat16*>(weights.router_shared_gate.qdata),
         static_cast<float*>(workspace.scratch.data), static_cast<int*>(workspace.ids.data),
         static_cast<float*>(workspace.alpha.data),
-        static_cast<float*>(workspace.shared_scale.data));
+        static_cast<float*>(workspace.shared_scale.data),
+        static_cast<const char*>(weights.shared_down.qdata),
+        static_cast<unsigned long long>(weights.shared_down.payload_bytes));
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -536,7 +563,8 @@ void launch_d2_d3(const Tensor& x, const SparseMoeWeights& weights,
 
 template <class Codec>
 void launch_d4_dependent_codec(const SparseMoeWeights& weights, Tensor& destination,
-                               const SparseMoeDecodeWorkspace& workspace, cudaStream_t stream) {
+                               const SparseMoeDecodeWorkspace& workspace, cudaStream_t stream,
+                               const void* prefetch_data, std::size_t prefetch_bytes) {
     const auto* ids           = static_cast<const int*>(workspace.ids.data);
     const auto* alpha         = static_cast<const float*>(workspace.alpha.data);
     const auto* shared_scale  = static_cast<const float*>(workspace.shared_scale.data);
@@ -550,20 +578,26 @@ void launch_d4_dependent_codec(const SparseMoeWeights& weights, Tensor& destinat
     CUDA_CHECK(pdl::launch_dependent({dim3(kHidden), dim3(9 * 32), 0, stream},
                                      sparse_moe_d4_nine_warp_kernel<Codec, 1>, ids, alpha,
                                      shared_scale, act, routed_codes, routed_high, routed_scales,
-                                     shared_codes, shared_scales, output));
+                                     shared_codes, shared_scales, output,
+                                     static_cast<const char*>(prefetch_data),
+                                     static_cast<unsigned long long>(prefetch_bytes)));
 }
 
 void launch_d4_dependent(const SparseMoeWeights& weights, Tensor& destination,
-                         const SparseMoeDecodeWorkspace& workspace, cudaStream_t stream) {
+                         const SparseMoeDecodeWorkspace& workspace, cudaStream_t stream,
+                         const void* prefetch_data, std::size_t prefetch_bytes) {
     switch (weights.routed_down.qtype) {
     case QType::Q5G64_F16S:
-        launch_d4_dependent_codec<Q5Codec>(weights, destination, workspace, stream);
+        launch_d4_dependent_codec<Q5Codec>(weights, destination, workspace, stream, prefetch_data,
+                                           prefetch_bytes);
         return;
     case QType::Q6G64_F16S:
-        launch_d4_dependent_codec<Q6Codec>(weights, destination, workspace, stream);
+        launch_d4_dependent_codec<Q6Codec>(weights, destination, workspace, stream, prefetch_data,
+                                           prefetch_bytes);
         return;
     case QType::W8G32_F16S:
-        launch_d4_dependent_codec<W8Codec>(weights, destination, workspace, stream);
+        launch_d4_dependent_codec<W8Codec>(weights, destination, workspace, stream, prefetch_data,
+                                           prefetch_bytes);
         return;
     default:
         throw std::invalid_argument("sparse_moe: unsupported D4 codec");
@@ -726,10 +760,11 @@ void sparse_moe_decode_launch_d4_small_t(const SparseMoeWeights& weights, Tensor
 }
 
 void sparse_moe_decode_launch(const Tensor& x, const SparseMoeWeights& weights, Tensor& destination,
-                              const SparseMoeDecodeWorkspace& workspace, cudaStream_t stream) {
-    launch_d1(x, weights.router_shared_gate, workspace, stream);
+                              const SparseMoeDecodeWorkspace& workspace, cudaStream_t stream,
+                              const void* prefetch_data, std::size_t prefetch_bytes) {
+    launch_d1(x, weights, workspace, stream);
     launch_d2_d3(x, weights, workspace, stream);
-    launch_d4_dependent(weights, destination, workspace, stream);
+    launch_d4_dependent(weights, destination, workspace, stream, prefetch_data, prefetch_bytes);
 }
 
 } // namespace ninfer::ops::detail
