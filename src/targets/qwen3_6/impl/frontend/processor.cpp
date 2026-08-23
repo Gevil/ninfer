@@ -573,6 +573,33 @@ RenderedChat expand_placeholders(RenderedChat rendered, const std::vector<Vision
                                                   .rendered_end = expanded.size()});
         source_cursor = source_end;
     }
+    // Stray pad tokens after the last bound item (e.g. a literal image-pad
+    // marker that leaked into re-injected reasoning/thinking text) are prose,
+    // not real media. Drop them instead of failing the request; only text at/
+    // after the last bound placeholder (source_cursor) is ever removed. Strip
+    // in source coordinates and shift every source-offset field past the cut.
+    for (const std::string_view pad : {kImagePad, kVideoPad}) {
+        std::size_t pos;
+        while ((pos = source.find(pad, source_cursor)) != std::string::npos) {
+            source.erase(pos, pad.size());
+            if (rendered.rewrite_checkpoint && rendered.rewrite_checkpoint->offset >= pos) {
+                rendered.rewrite_checkpoint->offset -= pad.size();
+            }
+            for (std::size_t& boundary : rendered.rewrite_execution_boundaries) {
+                if (boundary >= pos) { boundary -= pad.size(); }
+            }
+            for (std::optional<std::size_t>& boundary : rendered.message_boundaries) {
+                if (boundary && *boundary >= pos) { *boundary -= pad.size(); }
+            }
+            for (std::optional<std::size_t>& boundary : rendered.cache_boundaries) {
+                if (boundary && *boundary >= pos) { *boundary -= pad.size(); }
+            }
+            for (ByteSpan& span : rendered.literal_spans) {
+                if (span.begin >= pos) { span.begin -= pad.size(); }
+                if (span.end >= pos) { span.end -= pad.size(); }
+            }
+        }
+    }
     expanded.append(source, source_cursor, source.size() - source_cursor);
 
     const auto map_boundary = [&](std::size_t boundary, std::string_view kind) {
@@ -581,6 +608,7 @@ RenderedChat expand_placeholders(RenderedChat rendered, const std::vector<Vision
     if (rendered.rewrite_checkpoint) {
         rendered.rewrite_checkpoint->offset =
             map_boundary(rendered.rewrite_checkpoint->offset, "rewrite checkpoint");
+    }
     }
     for (std::size_t& boundary : rendered.rewrite_execution_boundaries) {
         boundary = map_boundary(boundary, "rewrite execution boundary");
