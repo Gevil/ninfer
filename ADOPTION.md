@@ -65,13 +65,36 @@ decode-rate probe) recorded in `~/.local/share/ninfer/logs/tier1-restart-verify-
 Public review: [Gevil/ninfer PR #1](https://github.com/Gevil/ninfer/pull/1)
 (`tier1` → `qwen3.8-nvfp4full`, open).
 
-### Tier 2 — the xhigh track (planned)
+### Tier 2 — the xhigh track (EXECUTED 2026-08-23, `tier2` branch @ 9a9d0964)
 
-- forward `chat_template_kwargs.reasoning_effort` into the Jinja template (the
-  `reasoning_effort` channel currently 400s on the OpenAI serve path),
-- upgrade the Sharp chat template to **v22.3.1** (by file swap — no C++ port needed),
-- warmup fail-fast + clearer `--kv-capacity auto` bounds, log the exception that
-  terminates the server.
+Built on the tier1 tip (`4eae6d15`); each item lands as its own commit (merge
+commits for the PRs, so a future rebase drops them cleanly):
+
+| Item | What it brings | Commit |
+|---|---|---|
+| **NEW-A** | `chat_template_kwargs.reasoning_effort` forwarded into `GenerationRequest` — the Sharp template's per-request effort steering (same string validation as the top-level field; top-level wins on agreement, explicit disagreement = 400 `conflicting_template_option`; enable_thinking conflict rule applies to the kwargs channel) | `0e498b5b` + unit tests |
+| **NEW-B** | chat template swapped to Sharp **v22.3.1** (peculiar-ragdoll `Qwen-Sharp-Chat-Templates` @ `98a76e8`, 28174 B, sha256 `8753210e…`) — tool-error escalation tiers, no false retry loops, system-message merge, `tojson` tool-arg serialization, prefix-cache-stable empty-think, fast-mode fixes, effort aliases (high/xhigh/max). File swap on the bind-mounted path — no rebuild | template swap, `.bak` kept |
+| **#79** | `fix(serve): decouple warmup from client-facing request deadline` (local adaptation: tier1's webui-dir block re-inserted at the top of the new runtime try-block) | `f91b7c85` |
+| **#54** | `fix(serve): log the exception that terminates the process` (`std::set_terminate` handler; local adaptation: install kept alongside the options declaration) | `9a9d0964` |
+
+**#50 evaluated → skipped (skip-list entry):** the chat-completions kwargs
+`enable_thinking` is already functionally present in this tree (top-level-wins
+semantics, established by the jinja work and live-tested); pr-50's only delta is a
+4-line Responses-API hunk that carries no value for this lane's clients (OMP
+openai dialect, webui — both steer via chat-completions kwargs). Re-audit only if
+the Responses endpoint gets a template-kwargs client.
+
+**Verification (2026-08-23):** full 279-target production build clean (CUDA 13.1.2,
+buildstage `ceb8be98981b`); ctest 2/2 (`ninfer_openai_schema_test` incl. the new kwargs
+contract tests, `ninfer_serve_options_test`). Lane image `ninfer-nvfp4:latest` @
+b4791be57a90 built from this tip; restart battery all-PASS: `/v1/models` 225280
+contract, thinking smoke, **xhigh steering smoke** (kwargs `reasoning_effort=xhigh` →
+729-char trace; 40-token prompt delta vs the no-effort run = the v22.3.1 steering line),
+NEW-A 400 contract ×3 (unknown value / conflicting spellings / enable_thinking=false,
+correct codes + channel attribution), decode 136.9 tok/s wall + `cached_tokens`
+regression. Log: `~/.local/share/ninfer/logs/tier2-restart-verify-2026-08-23.log`.
+Public review: [Gevil/ninfer PR #2](https://github.com/Gevil/ninfer/pull/2)
+(`tier2` → `qwen3.8-nvfp4full`, open).
 
 ### Tier 3 — cherry-picks from community forks (planned)
 
