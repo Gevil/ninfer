@@ -1,10 +1,12 @@
-# NInfer
+# NInfer-windows
 
 > Selected checkpoints. Maximum single-GPU inference performance.
 
-NInfer is a from-scratch C++/CUDA inference engine for explicitly registered Qwen checkpoints on a
-single NVIDIA GeForce RTX 5090. It runs text, image, and video prompts through a local CLI or
-OpenAI-/Anthropic-compatible HTTP APIs.
+NInfer-windows is a Windows 11 port of [Neroued/ninfer](https://github.com/Neroued/ninfer), a from-scratch C++/CUDA inference 
+engine for explicitly registered Qwen checkpoints on a single NVIDIA GeForce RTX 5090.
+It runs text, image, and video prompts through a local CLI, OpenAI-/Anthropic-compatible HTTP APIs, 
+or the included llama.cpp webui. It builds and runs natively on Windows 11 x64. Fork changes should 
+also build/run on 64-bit Linux but nothing has been tested there.
 
 NInfer deliberately supports a closed set of model artifacts instead of acting as a general model
 runtime:
@@ -16,6 +18,7 @@ runtime:
 | [Qwen3.8-27B](https://huggingface.co/neroued/Qwen3.8-27B-NInfer) | `groupwise-int` | `qwen3_8_27b.ninfer` | 18,210,531,328 bytes (16.96 GiB) | `eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e` |
 | [Qwen3.8-27B NVFP4](https://huggingface.co/neroued/Qwen3.8-27B-nvfp4-NInfer) | `nvfp4` | `qwen3_8_27b_nvfp4.ninfer` | 21,492,695,040 bytes (20.02 GiB) | `bb3360522a06e136e0367f5703414d26272b7285c8a6ab6194135c17dbd81b32` |
 | [Qwen3.6-35B-A3B](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer) | `groupwise-int` | `qwen3_6_35b_a3b.ninfer` | 22,783,246,080 bytes (21.22 GiB) | `1fb9ea0b5b8561e49d9604115ec89e5d9f2b6f6434e32c37c57fffd480a325d2` |
+| [Qwen3.8-27B fuller NVFP4](https://huggingface.co/cometkim/Qwen3.8-27B-nvfp4full-NInfer) | `nvfp4full` | `qwen3_8_27b_nvfp4full.ninfer` | 18,324,059,648 bytes (17.07 GiB) | `2f59cc27d67cb7acba0ba8a0e0881ac89c1db2b267a60119a696fefa12faf4e7` |
 
 Qwen3.6-27B and Qwen3.8-27B each expose two registered weight profiles. The version-2 artifact
 identity selects the profile without a separate runtime flag; Qwen3.8 uses target key
@@ -25,6 +28,44 @@ source's mixed allocation: NVFP4 MLP weights in Text layers 0–55 and row-scale
 embedding, attention input/output projections, GDN Q/K/V/Z and output projections, output head, and
 remaining MLP weights. All four 27B artifacts retain the same Text, Vision, MTP, prefix-reuse, CLI,
 and serving routes.
+
+## Upstream
+
+NInfer is [Neroued](https://github.com/Neroued)'s project
+([Neroued/ninfer](https://github.com/Neroued/ninfer)). This repository is a fork of that
+project that adds native Windows support. The engine, model artifacts, API surface, and
+published benchmarks are all upstream's work, and the upstream repository remains the
+reference implementation (this fork tracks upstream `master` with the additions below).
+
+What this fork adds on top of upstream:
+
+- **Native Windows 11 x64 build and run** — CMake with Visual Studio 2022 (MSVC), with
+  [vcpkg](https://github.com/microsoft/vcpkg) resolving FFmpeg, libcurl, and zlib via the
+  `vcpkg.json` manifest; the CUDA runtime is statically linked, so the CUDA Toolkit is only
+  needed at build time. The Windows compatibility layer is ported from
+  [Don-Chad/ninfer-3090](https://github.com/Don-Chad/ninfer-3090), without its RTX 3090
+  (`sm_86`) retargeting, kernel reschedules, or release packaging.
+- **Windows porting of the runtime** — memory-mapped artifact reading with unbuffered
+  overlapped I/O (the Windows counterpart of POSIX `O_DIRECT`/`pread`, with the same 4096-byte
+  alignment contract), portable console logging and load progress, and portable media
+  acquisition for image and video input.
+- **MSVC/TMA kernel compatibility** — fixes that let the upstream Blackwell kernels compile
+  under MSVC: device-pointer NVFP4 TMA descriptors, the pair-row SwiGLU TMA epilogue, and
+  MSVC move-construction details in the target runtime.
+- **Stock llama.cpp WebUI** — the HTTP server additionally accepts the stock llama.cpp WebUI's
+  API dialect (compatible with the upstream `tools/ui` client), and `ninfer-serve` can serve
+  the unmodified WebUI in-process: `--webui` downloads the latest build from the
+  [ggml-org/llama-ui](https://huggingface.co/ggml-org/llama-ui) bucket on first start, or
+  `--webui-dir DIR` serves an existing local copy.
+- **Context window reporting** — `ninfer-serve` advertises the served context ceiling in the
+  OpenAI dialect: the objects returned by `/v1/models` and `/v1/models/{id}` carry
+  `meta.n_ctx` = the `--max-context` value in force, so clients that auto-detect the context
+  window (the stock WebUI, OpenAI-compatible frontends) need no manual configuration.
+- **Portable Windows release** — a self-contained zip containing the executables and all
+  runtime DLLs; see [Prebuilt Windows release](#prebuilt-windows-release).
+
+Everything else — the Linux build path, the RTX 5090 (`sm_120a`) target, the CUDA 13.1
+requirement, and the NVFP4/W4A4 Blackwell execution paths — is unchanged from upstream.
 
 ## Performance
 
@@ -121,24 +162,55 @@ notes.
 
 NInfer currently requires:
 
-- 64-bit Linux;
+- 64-bit Linux or Windows 11 x64;
 - NVIDIA GeForce RTX 5090 (`sm_120a`);
 - NVIDIA driver support for CUDA 13.1 and the CUDA Toolkit 13.1 or newer;
-- CMake 3.28 or newer and a C++20-capable host compiler;
-- `pkg-config`;
+- CMake 3.28 or newer and a C++20-capable host compiler (GCC or Clang on Linux, MSVC from
+  Visual Studio 2022 on Windows);
 - FFmpeg development libraries: `libavformat >= 60`, `libavcodec >= 60`,
   `libavutil >= 58`, and `libswscale >= 7`;
 - `libcurl >= 7.85`;
+- `pkg-config` on Linux, or [vcpkg](https://github.com/microsoft/vcpkg) on Windows (the
+  repository pins the dependency baseline in `vcpkg.json`);
 - Ninja, when using the commands below.
 
-The build rejects CUDA architectures other than `120a`. There is no install target or packaged
-binary distribution; NInfer is run from its source build tree.
+The build rejects CUDA architectures other than `120a`. On Linux, NInfer is run from its
+source build tree; on Windows, the [prebuilt portable release](#prebuilt-windows-release)
+provides the same binaries without a toolchain.
+
+## Prebuilt Windows release
+
+Windows users who would rather not build can use the portable release instead of the build
+steps below. The zip is self-contained — executables, all runtime DLLs (FFmpeg,
+libcurl, zlib, and the VC++ runtime; the CUDA runtime is statically linked), launcher scripts,
+a `models\` folder, a `README.txt`, and `SHA256SUMS`:
+
+1. Download the latest `ninfer-windows-<version>-win64-cuda131.zip` from
+   [GitHub Releases](https://github.com/natpate/ninfer-windows/releases). Verify files against
+   `SHA256SUMS`, e.g. `Get-FileHash ninfer-serve.exe -Algorithm SHA256`.
+2. Extract it anywhere — the launcher scripts use relative paths and work from any location.
+3. Download a model into `models\` as in [Download a model](#download-a-model).
+4. Run the matching launcher, e.g. `.\qwen3_8_27b.bat`. This starts `ninfer-serve` on
+   `http://127.0.0.1:8080` (API at `/v1`) and serves the WebUI at the root URL; `--webui`
+   downloads the WebUI on first start, so the first run needs an internet connection (later
+   runs reuse the local copy).
+5. Or run `.\ninfer-serve.exe models\<model>.ninfer [flags]` directly — the options are
+   identical to a source build (see [Run the HTTP server](#run-the-http-server)).
+
+The launchers default to a 150,000-token context (`--max-context` / `--default-max-tokens`) to
+leave VRAM headroom for the Windows desktop. On the 32 GB RTX 5090, the smaller models
+(`qwen3_6_27b`, `qwen3_6_27b_nvfp4`, and `qwen3_8_27b`) can be safely raised to 200,000 when
+VRAM is completely free at startup; the two larger models (`qwen3_8_27b_nvfp4` and
+`qwen3_6_35b_a3b`) do not fit at 200,000 and should stay at 150,000. Hardware requirements are
+unchanged: Windows 11 x64, RTX 5090, and an NVIDIA driver supporting CUDA 13.1.
 
 ## Build
 
+### Linux
+
 ```bash
-git clone https://github.com/Neroued/ninfer.git
-cd ninfer
+git clone https://github.com/natpate/ninfer-windows.git
+cd ninfer-windows
 
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
@@ -152,6 +224,31 @@ build/apps/ninfer-serve
 ```
 
 Tests, benchmarks, and maintainer tools are excluded from the default build.
+
+### Windows
+
+Use Visual Studio 2022 (with MSVC) and vcpkg; the manifest in the repository root pins
+`curl`, `ffmpeg`, and `pkgconf`:
+
+```powershell
+git clone https://github.com/natpate/ninfer-windows.git
+cd ninfer-windows
+
+cmake -S . -B build-windows -G "Visual Studio 17 2022" -A x64 `
+  -DCMAKE_TOOLCHAIN_FILE=C:/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake `
+  -DVCPKG_TARGET_TRIPLET=x64-windows
+cmake --build build-windows --config Release --parallel
+```
+
+The default configuration builds:
+
+```text
+build-windows/apps/Release/ninfer.exe
+build-windows/apps/Release/ninfer-serve.exe
+```
+
+See [the Windows guide](docs/windows.md) for complete setup instructions, vcpkg installation, and
+notes on the resulting DLL layout.
 
 ## Docker
 
@@ -341,6 +438,7 @@ from one to fifteen.
 - [CLI](docs/cli.md)
 - [HTTP serving](docs/serving.md)
 - [Performance](docs/performance.md)
+- [Windows](docs/windows.md)
 - [CLI examples](examples/cli/)
 
 ## License
