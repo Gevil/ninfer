@@ -18,6 +18,8 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -205,8 +207,26 @@ void validate_tokenizer_config(const FrontendResources& resources) {
     }
 }
 
-fi::CompiledChatTemplate compile_chat_template(const FrontendResources& resources) {
+std::string read_chat_template_file(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        throw std::invalid_argument("failed to open Jinja chat template '" + path.string() + "'");
+    }
+    const std::string source((std::istreambuf_iterator<char>(stream)),
+                             std::istreambuf_iterator<char>());
+    if (stream.bad()) {
+        throw std::invalid_argument("failed to read Jinja chat template '" + path.string() + "'");
+    }
+    return source;
+}
+
+fi::CompiledChatTemplate compile_chat_template(const FrontendResources& resources,
+                                               const FrontendOptions& options) {
     validate_tokenizer_config(resources);
+    if (!options.chat_template_path.empty()) {
+        return fi::CompiledChatTemplate::compile_jinja(
+            read_chat_template_file(options.chat_template_path), options.chat_template_path.string());
+    }
     return fi::CompiledChatTemplate::resolve(resources.chat_template_jinja);
 }
 
@@ -595,7 +615,7 @@ DecoderState terminal_state(DecoderState state) {
 class Frontend::Impl {
 public:
     Impl(const FrontendResources& resources, bool registered_checkpoint, FrontendOptions options)
-        : chat_template(compile_chat_template(resources)),
+        : chat_template(compile_chat_template(resources, options)),
           tokenizer(std::make_shared<const fi::Tokenizer>(
               fi::TokenizerResources{.tokenizer_json         = resources.tokenizer_json,
                                      .tokenizer_config_json  = resources.tokenizer_config_json,

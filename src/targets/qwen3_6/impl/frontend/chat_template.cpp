@@ -2,10 +2,12 @@
 
 #include "targets/qwen3_6/impl/frontend/digest.h"
 
+#include <minja/minja.hpp>
 #include <nlohmann/json.hpp>
 
 #include <array>
 #include <cctype>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -253,7 +255,164 @@ std::string_view resolve_reasoning_instructions(ChatTemplateSemantics semantics,
     throw std::invalid_argument("invalid reasoning effort");
 }
 
+std::string render_role(ChatRole role) {
+    switch (role) {
+    case ChatRole::System:
+        return "system";
+    case ChatRole::Developer:
+        return "developer";
+    case ChatRole::User:
+        return "user";
+    case ChatRole::Assistant:
+        return "assistant";
+    case ChatRole::Tool:
+        return "tool";
+    }
+    throw std::invalid_argument("unsupported chat role value");
+}
+
+std::string_view render_reasoning_effort(ReasoningEffort effort) {
+    switch (effort) {
+    case ReasoningEffort::Low:
+        return "low";
+    case ReasoningEffort::Medium:
+        return "medium";
+    case ReasoningEffort::XHigh:
+        return "xhigh";
+    }
+    throw std::invalid_argument("invalid reasoning effort");
+}
+
+OrderedJson render_template_content(const ChatMessage& message) {
+    if (!message.has_media()) { return message.rendered_content(); }
+
+    OrderedJson content = OrderedJson::array();
+    for (const ChatPart& part : message.parts) {
+        switch (part.kind) {
+        case ChatPartKind::Text:
+            content.push_back(OrderedJson{{"type", "text"}, {"text", part.text}});
+            break;
+        case ChatPartKind::Image:
+            content.push_back(OrderedJson{{"type", "image"}});
+            break;
+        case ChatPartKind::Video:
+            content.push_back(OrderedJson{{"type", "video"}});
+            break;
+        }
+    }
+    return content;
+}
+
+OrderedJson render_template_tool_calls(const ChatMessage& message) {
+    OrderedJson calls = OrderedJson::array();
+    for (const ToolCall& call : message.tool_calls) {
+        OrderedJson arguments = OrderedJson::object();
+        if (!call.arguments_json.empty()) {
+            try {
+                arguments = OrderedJson::parse(call.arguments_json);
+            } catch (const std::exception& error) {
+                throw std::invalid_argument("invalid tool call arguments: " +
+                                            std::string(error.what()));
+            }
+            if (!arguments.is_object()) {
+                throw std::invalid_argument("tool call arguments must be a JSON object");
+            }
+        }
+        calls.push_back(OrderedJson{{"id", call.id},
+                                    {"type", "function"},
+                                    {"function",
+                                     OrderedJson{{"name", call.name},
+                                                 {"arguments", std::move(arguments)}}}});
+    }
+    return calls;
+}
+
+minja::Value jinja_context(const std::vector<ChatMessage>& messages,
+                           const ChatRenderOptions& options) {
+    OrderedJson jinja_messages = OrderedJson::array();
+    for (const ChatMessage& message : messages) {
+        jinja_messages.push_back(OrderedJson{{"role", render_role(message.role)},
+                                              {"content", render_template_content(message)},
+                                              {"reasoning_content", message.reasoning_content},
+                                              {"tool_calls", render_template_tool_calls(message)},
+                                              {"tool_call_id", message.tool_call_id}});
+    }
+
+    OrderedJson tools = OrderedJson::array();
+    for (const std::string& tool : options.tool_jsons) {
+        try {
+            tools.push_back(OrderedJson::parse(tool));
+        } catch (const std::exception& error) {
+            throw std::invalid_argument("invalid tool JSON: " + std::string(error.what()));
+        }
+    }
+
+    OrderedJson values{{"messages", std::move(jinja_messages)},
+                       {"tools", std::move(tools)},
+                       {"add_generation_prompt", options.add_generation_prompt},
+                       {"enable_thinking", options.enable_thinking},
+                       {"add_vision_id", options.add_vision_id},
+                       {"chat_template_kwargs", OrderedJson::object()}};
+    if (options.reasoning_effort) {
+        values["reasoning_effort"] = render_reasoning_effort(*options.reasoning_effort);
+    }
+    if (options.preserve_thinking) {
+        values["preserve_thinking"] = *options.preserve_thinking;
+        values["chat_template_kwargs"]["preserve_thinking"] = *options.preserve_thinking;
+    }
+    return minja::Value(values);
+}
+
 } // namespace
+
+class CompiledChatTemplate::JinjaTemplate {
+public:
+    JinjaTemplate(std::string source, std::string source_name)
+        : source_name_(std::move(source_name)),
+          supports_reasoning_effort_(source.find("reasoning_effort") != std::string::npos) {
+        try {
+            template_ = minja::Parser::parse(source, minja::Options{.trim_blocks           = true,
+                                                                      .lstrip_blocks         = true,
+                                                                      .keep_trailing_newline = false});
+        } catch (const std::exception& error) {
+            throw std::invalid_argument("failed to compile Jinja chat template '" + source_name_ +
+                                        "': " + error.what());
+        }
+    }
+
+    [[nodiscard]] RenderedChat render(const std::vector<ChatMessage>& messages,
+                                      const ChatRenderOptions& options) const {
+        if (options.reasoning_effort && !supports_reasoning_effort_) {
+            throw std::invalid_argument(
+            "custom Jinja chat template does not reference reasoning_effort");
+        }
+        try {
+            return RenderedChat{.text = template_->render(
+                                    minja::Context::make(jinja_context(messages, options))),
+                                .rewrite_checkpoint = std::nullopt};
+        } catch (const std::exception& error) {
+            throw std::invalid_argument("failed to render Jinja chat template '" + source_name_ +
+                                        "': " + error.what());
+        }
+    }
+
+    [[nodiscard]] PromptCapabilities capabilities() const noexcept {
+        PromptCapabilities result;
+        result.enable_thinking = true;
+        if (supports_reasoning_effort_) {
+            result.reasoning_effort.low            = true;
+            result.reasoning_effort.medium         = true;
+            result.reasoning_effort.xhigh          = true;
+            result.reasoning_effort.default_effort = ReasoningEffort::Medium;
+        }
+        return result;
+    }
+
+private:
+    std::string source_name_;
+    bool supports_reasoning_effort_ = false;
+    std::shared_ptr<minja::TemplateNode> template_;
+};
 
 bool ChatMessage::has_media() const noexcept {
     for (const ChatPart& part : parts) {
@@ -301,7 +460,17 @@ CompiledChatTemplate CompiledChatTemplate::resolve(std::string_view source) {
                                 sha256_hex(digest) + ")");
 }
 
+CompiledChatTemplate CompiledChatTemplate::compile_jinja(std::string source,
+                                                         std::string source_name) {
+    if (source.empty()) {
+        throw std::invalid_argument("Jinja chat template '" + source_name + "' is empty");
+    }
+    return CompiledChatTemplate(
+        std::make_shared<const JinjaTemplate>(std::move(source), std::move(source_name)));
+}
+
 PromptCapabilities CompiledChatTemplate::capabilities() const noexcept {
+    if (jinja_template_) { return jinja_template_->capabilities(); }
     PromptCapabilities result;
     result.enable_thinking = true;
     if (semantics_ == ChatTemplateSemantics::ReasoningEffort) {
@@ -316,6 +485,7 @@ PromptCapabilities CompiledChatTemplate::capabilities() const noexcept {
 RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messages,
                                           ChatRenderOptions options) const {
     if (messages.empty()) { throw std::invalid_argument("chat messages must not be empty"); }
+    if (jinja_template_) { return jinja_template_->render(messages, options); }
 
     const bool effort_template = semantics_ == ChatTemplateSemantics::ReasoningEffort;
     const std::string_view reasoning_instructions =

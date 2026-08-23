@@ -64,7 +64,8 @@ KvCapacityPolicy parse_kv_capacity(const char* text) {
 std::string serve_usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
            " <model.ninfer> [--host H] [--port N] [--api-key KEY] "
-           "[--model-id ID] [--max-context N] [--kv-capacity N|auto] [--max-concurrency N] "
+            "[--model-id ID] [--chat-template-file PATH] [--max-context N] [--kv-capacity N|auto] "
+            "[--max-concurrency N] "
            "[--max-pending-requests N] [--pending-timeout-ms N] "
            "[--prefill-chunk N] [--log-stats-interval-ms N] [--device N] "
            "[--max-request-mib N] [--media-cache-mib N] [--media-live-mib N] "
@@ -138,6 +139,11 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.model_id_override = require_value("--model-id");
             if (options.model_id_override->empty()) {
                 throw std::invalid_argument("--model-id must not be empty");
+            }
+        } else if (arg == "--chat-template-file") {
+            options.chat_template_path = require_value("--chat-template-file");
+            if (options.chat_template_path.empty()) {
+                throw std::invalid_argument("--chat-template-file must not be empty");
             }
         } else if (arg == "--max-context") {
             options.max_context = static_cast<std::uint32_t>(

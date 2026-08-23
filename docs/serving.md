@@ -38,6 +38,9 @@ server must accept image or video input. Speculative residency is likewise froze
 `--lm-head-draft` additionally loads the optimized proposal head. DFlash is 35B-A3B text-only and
 cannot be combined with `--vision`. A later request cannot enable a capability omitted at startup.
 
+`--chat-template-file PATH` replaces the artifact's embedded prompt renderer for this server
+process.
+
 ## Endpoints
 
 | Method and path | Behavior |
