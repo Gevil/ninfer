@@ -1354,6 +1354,7 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
     auto prepared              = std::make_unique<PreparedPromptData>();
     PreparedPromptData& result = *prepared;
     result.tool_call_output    = tool_call_output;
+    bool starts_in_reasoning   = false;
     std::vector<std::optional<std::uint32_t>> message_boundaries;
     std::vector<std::optional<std::uint32_t>> cache_boundaries;
     if (has_media) {
@@ -1394,9 +1395,13 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
             std::move(processed.rewrite_execution_frontiers);
         message_boundaries = std::move(processed.message_boundaries);
         cache_boundaries   = std::move(processed.cache_boundaries);
+        starts_in_reasoning                =
+            options.add_generation_prompt && processed.opens_reasoning;
     } else {
         const fi::RenderedChat rendered =
             impl_->chat_template.render(messages, render_options(options, cache_hints.markers));
+        starts_in_reasoning =
+            options.add_generation_prompt && fi::prompt_ends_in_open_reasoning(rendered.text);
         const auto tokenize_started = Clock::now();
         fi::EncodedChat encoded     = fi::encode_rendered_chat(
             *impl_->tokenizer, rendered, static_cast<std::size_t>(impl_->max_context) + 1U);
@@ -1419,9 +1424,8 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
     result.context_cache     = prepare_context_cache(
         std::move(cache_hints), message_count, message_boundaries, cache_boundaries,
         automatic_boundary, impl_->max_cache_markers_per_request);
-    result.starts_in_reasoning =
-        options.continuation == PromptContinuationMode::NewAssistantTurn && options.enable_thinking;
-    result.prepare.seconds = std::chrono::duration<double>(Clock::now() - start).count();
+    result.starts_in_reasoning = starts_in_reasoning;
+    result.prepare.seconds     = std::chrono::duration<double>(Clock::now() - start).count();
     return PreparedPrompt(std::move(prepared));
 }
 

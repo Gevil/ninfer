@@ -1060,6 +1060,7 @@ ProcessedInput Processor::process(std::vector<ChatMessage> messages,
 
     check_preparation_control(control);
     rendered                    = expand_placeholders(std::move(rendered), items);
+    output.opens_reasoning      = prompt_ends_in_open_reasoning(rendered.text);
     const auto tokenize_started = Clock::now();
     EncodedChat encoded         = encode_rendered_chat(tokenizer_, rendered, encode_limit);
     stats.tokenize_seconds +=
