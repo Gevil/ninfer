@@ -620,4 +620,25 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
     return RenderedChat{.text = std::move(rendered), .rewrite_checkpoint = rewrite_checkpoint};
 }
 
+bool prompt_ends_in_open_reasoning(const std::string& rendered_text) {
+    // Reasoning markers depend on the active chat template. Qwen-Sharp opens
+    // the channel with a plain less-than + think + greater-than token and
+    // closes it with a less-than + slash + think + greater-than token
+    // (five-letter think); the official Qwen3 template uses a newline-after-
+    // less-than open and an eight-letter thinking close. Match every variant
+    // so the gate does not depend on which chat template is active.
+    const auto last_of = [&rendered_text](const char* a, const char* b) {
+        const std::size_t pos_a = rendered_text.rfind(std::string(a));
+        const std::size_t pos_b = rendered_text.rfind(std::string(b));
+        if (pos_a == std::string::npos) { return pos_b; }
+        if (pos_b == std::string::npos) { return pos_a; }
+        return (pos_a > pos_b) ? pos_a : pos_b;
+    };
+    const std::size_t last_open  = last_of("<think>", "<\nthink>");
+    const std::size_t last_close = last_of("</think>", "</thinking>");
+    if (last_open == std::string::npos) { return false; }
+    if (last_close == std::string::npos) { return true; }
+    return last_close < last_open;
+}
+
 } // namespace ninfer::targets::qwen3_6::frontend_internal

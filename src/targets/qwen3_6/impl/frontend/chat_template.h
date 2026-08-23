@@ -89,6 +89,12 @@ struct RenderedChat {
     std::optional<RewriteCheckpointByteSpec> rewrite_checkpoint;
 };
 
+// True when the rendered prompt leaves the reasoning channel open: the final
+// thinking-open marker has no subsequent thinking-close marker. Used to seed
+// `starts_in_reasoning` from the actually-rendered prompt rather than from
+// render options alone.
+[[nodiscard]] bool prompt_ends_in_open_reasoning(const std::string& rendered_text);
+
 enum class ChatTemplateSemantics : std::uint8_t {
     ThinkingToggle,
     ReasoningEffort,
