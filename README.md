@@ -1,5 +1,12 @@
 # NInfer-windows
 
+> **Personal fork — [adoption record](ADOPTION.md).** This is a personal fork of
+[Neroued/ninfer](https://github.com/Neroued/ninfer) that merges multiple open PRs from
+different community forks and cherry-picks improvements and features for a single-GPU
+NVFP4 lane (Qwen3.8-27B-nvfp4full on an RTX 5090). Every adopted PR lands as a
+separately tagged merge commit — see [ADOPTION.md](ADOPTION.md) for what is in, where it
+came from, and how it is verified.
+
 > Selected checkpoints. Maximum single-GPU inference performance.
 
 NInfer-windows is a Windows 11 port of [Neroued/ninfer](https://github.com/Neroued/ninfer), a from-scratch C++/CUDA inference 
