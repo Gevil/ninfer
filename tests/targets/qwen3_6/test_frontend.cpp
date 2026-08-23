@@ -580,6 +580,56 @@ int test_context_capacity_guard() {
     return failures;
 }
 
+int test_empty_reasoning_tool_followup_token_prefix() {
+    const fi::Tokenizer& tokenizer = official_tokenizer();
+    fi::ChatRenderOptions preserve;
+    preserve.preserve_thinking = true;
+    const fi::RenderedChat open =
+        render_chat({chat_message(ninfer::ChatRole::User, "hi")}, preserve);
+
+    fi::ChatMessage tool_assistant = chat_message(ninfer::ChatRole::Assistant, "");
+    tool_assistant.tool_calls.push_back(
+        {.id = "", .name = "f", .arguments_json = R"({"flag":true})"});
+    const fi::RenderedChat closed = render_chat(
+        {chat_message(ninfer::ChatRole::User, "hi"), tool_assistant,
+         chat_message(ninfer::ChatRole::Tool, "ok")},
+        preserve);
+
+    int failures = check(open.rewrite_checkpoint &&
+                             open.rewrite_checkpoint->kind ==
+                                 ninfer::targets::qwen3_6::RewriteCheckpointKind::ResponseReplay &&
+                             open.text.ends_with("<think>\n") &&
+                             open.rewrite_checkpoint->offset == open.text.size() - 1,
+                         "thinking response checkpoint is not immediately after <think>");
+    if (!open.rewrite_checkpoint) { return failures; }
+
+    const fi::EncodedChat open_encoded   = fi::encode_rendered_chat(tokenizer, open);
+    const fi::EncodedChat closed_encoded = fi::encode_rendered_chat(tokenizer, closed);
+    failures += check(open_encoded.rewrite_checkpoint &&
+                          open_encoded.rewrite_checkpoint->kind ==
+                              ninfer::targets::qwen3_6::RewriteCheckpointKind::ResponseReplay &&
+                          open_encoded.rewrite_checkpoint->frontier + 1 ==
+                              open_encoded.input_ids.size(),
+                      "thinking response checkpoint is not an exact token prefix of its prompt");
+    if (open_encoded.rewrite_checkpoint) {
+        const std::size_t frontier = open_encoded.rewrite_checkpoint->frontier;
+        failures += check(frontier > 0 && frontier < closed_encoded.input_ids.size() &&
+                              std::equal(open_encoded.input_ids.begin(),
+                                         open_encoded.input_ids.begin() +
+                                             static_cast<std::ptrdiff_t>(frontier),
+                                         closed_encoded.input_ids.begin()),
+                          "empty-reasoning tool follow-up is not a token prefix of the <think> "
+                          "checkpoint");
+        failures +=
+            check(open_encoded.input_ids.size() <= closed_encoded.input_ids.size() &&
+                      !std::equal(open_encoded.input_ids.begin(), open_encoded.input_ids.end(),
+                                  closed_encoded.input_ids.begin()),
+                  "full <think>\\n prologue unexpectedly remained a token prefix of the empty "
+                  "think close");
+    }
+    return failures;
+}
+
 int test_official_chat_template() {
     int failures = 0;
     failures += check(render_chat_text({chat_message(ninfer::ChatRole::User, "hello")}) ==
@@ -944,9 +994,9 @@ int test_rewrite_checkpoint_trace() {
     failures += check(preserved_header != std::string::npos && preserved.rewrite_checkpoint &&
                           preserved.rewrite_checkpoint->kind ==
                               ninfer::targets::qwen3_6::RewriteCheckpointKind::ResponseReplay &&
-                          preserved.rewrite_checkpoint->offset == preserved_header &&
-                          preserved.text.ends_with("<think>\n"),
-                      "preserve_thinking did not checkpoint before the generation prologue");
+                          preserved.text.ends_with("<think>\n") &&
+                          preserved.rewrite_checkpoint->offset == preserved.text.size() - 1,
+                      "preserve_thinking did not publish a BPE-stable thinking generation prologue");
 
     preserve.enable_thinking             = false;
     const fi::RenderedChat nonthinking   = render_chat(tool_loop, preserve);
@@ -1097,11 +1147,9 @@ int test_text_and_image_prepare(const Frontend& frontend) {
     failures += check(preserved_data.identity.rewrite_checkpoint &&
                           preserved_data.identity.rewrite_checkpoint->kind ==
                               ninfer::targets::qwen3_6::RewriteCheckpointKind::ResponseReplay &&
-                          preserved_data.identity.rewrite_checkpoint->frontier == 5 &&
-                          preserved_data.identity.rewrite_checkpoint->frontier <
+                          preserved_data.identity.rewrite_checkpoint->frontier + 1 ==
                               preserved_data.token_ids.size(),
-                      "preserve-thinking prompt did not publish a pre-generation response "
-                      "checkpoint");
+                      "preserve-thinking prompt did not publish a BPE-stable response checkpoint");
 
     ninfer::ChatMessage nonthinking_message;
     nonthinking_message.role = ninfer::ChatRole::User;
@@ -2170,6 +2218,7 @@ int main() {
     failures += test_repeated_special_tokens_scan_linearly();
     failures += test_bounded_tokenizer_prefix();
     failures += test_context_capacity_guard();
+    failures += test_empty_reasoning_tool_followup_token_prefix();
     failures += test_official_chat_template();
     failures += test_ordered_instruction_turns();
     failures += test_assistant_continuation();

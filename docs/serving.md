@@ -853,13 +853,15 @@ reused token count as `cache=`.
 The completion log reports one of six reuse paths: `root`, `private_endpoint`,
 `private_turn_closure`, `private_response_replay`, `private_long_anchor`, or
 `shared_stable_prefix`. Reuse validation covers KV, recurrent state, hidden state, selected-backend
-state, and the exact prompt frontier. With stable `preserve_thinking=true`, the auxiliary checkpoint
-rolls to the message frontier immediately before the current response's deterministic generation
-prologue. A normalized response, compact-summary instruction, or replacement user suffix therefore
-replays the small generation prologue and only the changed suffix while retaining the complete
-stable conversation prefix. Stable `false` places the turn-closure checkpoint before the first
-assistant opener in the open turn, so closing that turn can recompute its opener and omit its
-reasoning without discarding the preceding conversation.
+state, and the exact prompt frontier. With stable `preserve_thinking=true`, the auxiliary
+response-replay checkpoint rolls to the `think` opener excluding its trailing newline (the newline
+is not a BPE-stable prefix of a later closed empty think block, `think\n\nthink_end`, which is how
+a tool-call turn is reconstructed when the client omits `reasoning_content`), or to the complete
+empty thinking block for non-thinking generation. A normalized response, compact-summary
+instruction, or replacement user suffix therefore replays that response and only the changed
+suffix while retaining the complete stable conversation prefix. Stable `false` places the
+turn-closure checkpoint after the first assistant opener in the open turn, so closing that turn can
+recompute its reasoning without discarding the preceding conversation.
 
 `preserve_thinking` selects the capture frontier for newly created checkpoints. Existing exact
 checkpoints remain reusable across a mode change. If the desired boundary is behind the selected

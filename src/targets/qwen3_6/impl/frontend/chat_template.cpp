@@ -820,28 +820,29 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
     }
 
     if (!continue_final_assistant && options.add_generation_prompt) {
-        // The generation suffix is replaceable as a unit. An immediate successor may replay the
-        // response, close the turn, or branch by appending a different user message directly to
-        // the input history. The rolling private checkpoint must therefore precede the assistant
-        // opener; placing it after the deterministic prologue makes the complete history
-        // unrecoverable for the branch case merely to save a handful of prompt tokens.
-        const std::size_t generation_begin = rendered.size();
-        if (preserve_thinking) {
+        rendered.append_template("assistant\n");
+        if (!preserve_thinking && !rewrite_checkpoint) {
             rewrite_checkpoint = RewriteCheckpointByteSpec{
-                .kind = RewriteCheckpointKind::ResponseReplay, .offset = generation_begin};
-        } else if (!rewrite_checkpoint) {
-            rewrite_checkpoint = RewriteCheckpointByteSpec{
-                .kind = RewriteCheckpointKind::TurnClosure, .offset = generation_begin};
+                .kind = RewriteCheckpointKind::TurnClosure, .offset = rendered.size()};
         }
-        rendered.append_template("<|im_start|>assistant\n");
         add_rewrite_execution_boundary();
         if (options.enable_thinking) {
-            rendered.append_template("<think>\n");
+            rendered.append_template("think");
+            if (preserve_thinking) {
+                // After `think`, not after the trailing newline. `think\n` is not a BPE-stable
+                // prefix of a closed empty think block (`think\n\nthink_end`): `\n` is token 198
+                // and `\n\n` is token 271, so a later reconstructed tool-call turn would miss.
+                rewrite_checkpoint = RewriteCheckpointByteSpec{
+                    .kind = RewriteCheckpointKind::ResponseReplay, .offset = rendered.size()};
+            }
+            rendered.append_template("\n");
             add_rewrite_execution_boundary();
         } else {
-            rendered.append_template("<think>\n");
-            add_rewrite_execution_boundary();
-            rendered.append_template("\n</think>\n\n");
+            rendered.append_template("think\n\nthink_end\n\n");
+            if (preserve_thinking) {
+                rewrite_checkpoint = RewriteCheckpointByteSpec{
+                    .kind = RewriteCheckpointKind::ResponseReplay, .offset = rendered.size()};
+            }
             add_rewrite_execution_boundary();
         }
     }
