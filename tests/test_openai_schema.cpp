@@ -3,6 +3,7 @@
 // serialization shapes, and finish_reason mapping. This is the schema boundary
 // consumed by external OpenAI clients.
 
+#include "serve/anthropic_schema.h"
 #include "serve/openai_schema.h"
 #include "serve/request.h"
 #include "serve/serve_options.h"
@@ -247,11 +248,8 @@ int test_reasoning_effort() {
 
     Json conflict               = low;
     conflict["enable_thinking"] = false;
-    const GenerationRequest conflicting_request =
-        parse_chat_completion_request(conflict, default_limits());
     failures += check(api_code([&] {
-                          (void)resolve_prompt_semantics(conflicting_request, default_server(),
-                                                         effort_capabilities());
+                          (void)parse_chat_completion_request(conflict, default_limits());
                       }) == "conflicting_template_option",
                       "conflicting enable_thinking and reasoning_effort were accepted");
 
@@ -897,6 +895,43 @@ int test_finish_reason_wire() {
     return failures;
 }
 
+int test_usage_cached_tokens_details() {
+    int failures = 0;
+    // prompt_tokens_details.cached_tokens makes prefix-cache reuse observable to
+    // clients; it is a subset of prompt_tokens, clamped into [0, prompt_tokens].
+    const CompletionUsage hit{1024, 128, 896};
+    const auto body =
+        Json::parse(make_chat_completion_response("cmpl-1", "m", 1, "ans", "", "stop", hit));
+    const auto& usage = body.at("usage");
+    failures += check(usage.at("prompt_tokens") == 1024 && usage.at("completion_tokens") == 128 &&
+                          usage.at("total_tokens") == 1152,
+                      "usage token counts were wrong");
+    failures += check(usage.at("prompt_tokens_details").at("cached_tokens") == 896,
+                      "usage.prompt_tokens_details.cached_tokens did not report the cached prefix");
+    // cached_tokens must never exceed prompt_tokens or go negative.
+    const auto over = Json::parse(make_chat_completion_response("cmpl-2", "m", 1, "ans", "", "stop",
+                                                                CompletionUsage{512, 10, 2048}));
+    failures += check(
+        over.at("usage").at("prompt_tokens_details").at("cached_tokens") == 512,
+        "cached_tokens above prompt_tokens was not clamped to prompt_tokens");
+    const auto under = Json::parse(
+        make_chat_completion_response("cmpl-3", "m", 1, "ans", "", "stop", CompletionUsage{512, 10, -1}));
+    failures += check(under.at("usage").at("prompt_tokens_details").at("cached_tokens") == 0,
+                      "negative cached_tokens was not clamped to zero");
+    // The streaming usage chunk carries the same details.
+    const auto chunk = make_chat_chunk_usage("cmpl-4", "m", 1, hit);
+    const auto chunk_json = Json::parse(chunk.substr(chunk.find_first_of('{')));
+    failures +=
+        check(chunk_json.at("usage").at("prompt_tokens_details").at("cached_tokens") == 896,
+              "streaming usage chunk dropped prompt_tokens_details.cached_tokens");
+    // The Anthropic schema deliberately omits the field: input_tokens there excludes
+    // cache reads, so emitting it would also change what input_tokens means.
+    const auto anthropic = make_messages_response("msg-1", "m", "ans", "", {}, "end_turn", hit);
+    failures += check(!Json::parse(anthropic).at("usage").contains("prompt_tokens_details"),
+                      "Anthropic usage unexpectedly gained prompt_tokens_details");
+    return failures;
+}
+
 } // namespace
 
 int test_llama_webui_dialect() {
@@ -1011,7 +1046,7 @@ int test_props_stub() {
     options.max_context                = 16384;
     options.default_max_tokens         = 4096;
     options.enable_vision              = true;
-    options.speculative.backend        = SpeculativeBackend::Mtp;
+    options.speculative.backend        = ninfer::SpeculativeBackend::Mtp;
     options.sampling_overrides.temperature = 1.0F;
     options.sampling_overrides.top_k       = 20;
 
@@ -1020,7 +1055,8 @@ int test_props_stub() {
     failures += check(props.at("modalities").at("vision") == true, "props vision follows --vision");
     failures += check(props.at("modalities").at("audio") == false, "props audio off");
     const Json params = props.at("default_generation_settings").at("params");
-    failures += check(params.at("n_ctx") == 16384, "props n_ctx from --max-context");
+    failures += check(props.at("default_generation_settings").at("n_ctx") == 16384,
+                      "props n_ctx from --max-context");
     failures += check(params.at("n_predict") == 4096, "props n_predict from default max tokens");
     failures += check(params.at("temperature") == 1.0, "props temperature override reported");
     failures += check(params.at("top_k") == 20, "props top_k override reported");
@@ -1059,6 +1095,7 @@ int main() {
     failures += test_llama_webui_dialect();
     failures += test_props_stub();
     failures += test_finish_reason_wire();
+    failures += test_usage_cached_tokens_details();
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
 }
