@@ -566,6 +566,8 @@ Mid-conversation System messages retain their input position. A final text-only 
 is an Assistant prefill: generation continues its existing text instead of opening another turn.
 Assistant prefill cannot contain media, Thinking, or tool calls and cannot start with Thinking
 enabled.
+Literal Qwen Vision control-token spellings in text, reasoning, tool definitions, or
+arguments remain text and never create media placeholders.
 
 `max_tokens` is optional for local clients and otherwise uses `--default-max-tokens`; a positive
 value is the complete output budget. `max_tokens:0` is rejected because NInfer does not expose a
