@@ -97,7 +97,8 @@ __global__ void sparse_moe_d1_kernel(const __nv_bfloat16* __restrict__ x,
         // Warm L2 for the shared-expert down payload while the bus idles behind the
         // router: D4's shared warp streams these bytes last and otherwise sets the
         // block's critical path. One 128B line per thread covers the payload in a
-        // single sweep. A pure cache hint.
+        // single sweep. A pure cache hint, issued before the ticket so it never
+        // delays the selection below.
         const unsigned long long offset =
             (static_cast<unsigned long long>(blockIdx.x) * blockDim.x + threadIdx.x) * 128ull;
         if (offset < shared_down_bytes) {
