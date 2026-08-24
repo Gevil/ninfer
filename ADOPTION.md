@@ -134,23 +134,71 @@ NVFP4-KV `--sage` family REJECTED, vLLM work out of scope — decision
 (NVFP4/sage/hyperquant/compressed-KV) is adopted, and vLLM is completely
 ignored.**
 
-**Wave B2 (candidate list, pending per-commit evaluation):**
-- `dylan/perf/rtx5090-qwen38`: `cfb96526` GDN 27B small-T gating-proj
-  cooperative-kernel fuse; `604bdc5f` thinking-preserving prefix-reuse
-  optimization; 5090 land-gate T=4 decode harnesses + tail-prefill metric
-  (`332b7a97`/`eeb6c9b3`/`596940d5`/`0f05e643`, foldable into the battery).
-- `dylan/ram-cache` (+ upstreamed `origin/pr-64`): system-RAM KV parking for
-  finished chats (`14329810`/`e6391ff5`/`fe89debe`) — precision-neutral
-  (INT8 KV to pinned RAM, LRU-lane eviction, usage logging); multi-turn
-  agent win.
-- `dylan/chat-template` `9ed62e70`: skip empty think wrappers on past
-  assistant turns (qwen3.8 template fix).
-- `origin/pr-65` `99d39090`: preserve string-typed tool params.
-- `md/perf/decode-suite` new micros `90d4c423` (moe router fold into last D1
-  block), `8330672c` (q/k rmsnorm single decode kernel); `md/research/baseopt`
-  m13/m14 (MTP draft-head fused q/k rmsnorm; MTP epilogue sigmoid gate) and
-  `md/research/adaptive-gamma` v2.1 (opt-in adaptive MTP policy, +1.9% mean
-  vs tuned mtp4) — model-fit check first (md research partly ran on 35B).
+**Tier 4 (PROPOSED 2026-08-24 — "upstream convergence + agent-workload" tier:
+new `tier4` branch stacked on `tier3-waveb`, per user's "open a new tier"
+direction).** Upstream `Neroued/ninfer` audit (2026-08-24: 26 open issues,
+32 open PRs, Discussions disabled) compared against the shipped tree (Wave A
++ B1 + 22c46df7 vision fix; lane runs code @ 89354ca7):
+
+- **Already covered in-tree (no action):** #24 (context in `/v1/models` —
+  battery contract), #43 (Jinja `--chat-template-file` — Sharp template path),
+  #54 (exception naming — B1 `55036778`), #55 (`cached_tokens` — tier2), #57
+  (tool message content parts — tier1 `fdcf6839`), #61 (image-token budget —
+  tier1 `325986ea`), #65 base (tool-param typing — tier1), #79 base (warmup
+  decoupling — tier2 `f91b7c85`), top-level `reasoning_effort` (#60: parsed in
+  the chat path, `openai_schema.cpp:517/567` + tier2 kwargs path — OMP's
+  `xhigh` is handled; a behavioral confirmation belongs in the battery).
+- **REJECTED per the precision-floor decision:** #35 compressed-KV E8 lattice
+  (pr-35 family) and `cometkim/feat/hyperquant` (54 commits).
+- **WAVE C1 — serving correctness for agent sessions (small, high value):**
+  - #86 (mr-september, 2026-08-24): drop stray think-close markers leaking
+    into tool-capable output (reproduced live on Qwen3.8-27B NVFP4 — the
+    exact "model error" class our OMP sessions hit);
+  - `99d39090` (pr-65 follow-up): preserve string-typed tool params instead
+    of eager-deserializing (fixes issue #66 — string params containing
+    JSON-shaped text ship coerced types);
+  - #88 (geoffwatts, 2026-08-24): U+2060 word-joiner neutralizes literal
+    Qwen vision-token spellings inside text — complements our 22c46df7 strip
+    fix (covers the "chat media order does not match rendered placeholders"
+    class; NOT in tree);
+  - #79 follow-up: fail-fast warmup exit — verify the tier2 adoption already
+    covers it, pick the diff if not;
+  - `9ed62e70` (dylan/chat-template): skip empty think wrappers on past
+    assistant turns (qwen3.8 template fix).
+- **WAVE C2 — decode perf (measured; bit-exact where applicable):**
+  - #67 (MichaelDementii): remove three redundant decode graph nodes,
+    +2.3% decode (nsys: `sigmoid_mul` 10/step, q/k `rmsnorm_warp` 20,
+    `sparse_moe_d2` routing 40 — measured on 35B; model-fit check on 27B);
+  - #85 (devan-carlin): adaptive CUDA-graph allowance (linear interpolation
+    vs our step function `d85278b1`) — the graph table jumps 2 MiB@128k →
+    223 MiB@256k, so at our 225280 context the step function undershoots;
+  - `cfb96526` GDN 27B gating-proj cooperative fuse + `604bdc5f`
+    thinking-preserving prefix reuse (dylan/perf/rtx5090-qwen38) —
+    grid-safety check per issue #39 (GB203 laptop overflow; our GB202
+    desktop has ~2× the SMs, should fit — verify the cooperative grid
+    sizing);
+  - `md` micros `90d4c423`/`8330672c`, `baseopt` m13/m14, `adaptive-gamma`
+    v2.1 (+1.9% mean, opt-in) — model-fit check (35B origin);
+  - #69 (MichaelDementii): warm the next consumer's L2 from the MoE tail,
+    +3.7% decode — needs a cross-layer contract; evaluate last.
+- **WAVE C3 — agent-workload KV lifetime (precision-neutral, opt-in):**
+  - #64 (gzenz; = dylan/ram-cache + origin/pr-64): host-backed KV cache —
+    park evicted lanes to pinned RAM;
+  - #73 (iamwavecut): content-addressed host KV (`--kv-host-cache-mib N`,
+    N=0 inert) — 118k prefix restore 422 ms vs 53.4 s cold (126×), branch
+    switch over a shared prefix ~100 ms (subagent workloads); the #75 design
+    doc converges #64 as fast path + #73 as shared page substrate.
+- **Battery additions (per wave):** 5090 land-gate T=4 decode harness
+  (`332b7a97`/`eeb6c9b3`/`596940d5`/`0f05e643`), think-close marker
+  regression (C1), tool-params schema check (C1), host-KV restore probe
+  (C3).
+- **Flagged non-code decision (user, from #38):** the official Qwen3.8-27B
+  NVFP4 artifact is ~20 GB vs the community artifact's ~14.3 GB → ~20%
+  decode-speed ceiling (weights read per step; maintainer-confirmed in
+  issue #38). The lane runs the official artifact (GPQA 89.39% gate).
+  Switching to the community artifact = ~20% faster decode, quality
+  unverified (maintainer has asked for a reproducible comparison; none
+  exists yet).
 
 ### Tier 3 Wave B1 — dylan decode-path perf (EXECUTED 2026-08-24, `tier3-waveb` branch)
 
