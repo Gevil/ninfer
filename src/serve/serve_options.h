@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,6 +22,7 @@ inline constexpr std::size_t kDefaultResponseStoreBytes   = 256ULL << 20;
 struct ServeOptions {
     bool help_requested = false;
     std::string artifact_path;
+    std::filesystem::path chat_template_path;
     std::string host = "127.0.0.1";
     int port         = 8080;
     std::string api_key;                          // empty => no auth
@@ -37,6 +39,7 @@ struct ServeOptions {
     std::size_t media_cache_bytes          = kDefaultMediaCacheBytes;
     std::size_t media_live_bytes           = kDefaultMediaLiveBytes;
     std::uint32_t media_preprocess_threads = 0;
+    std::uint32_t image_token_budget       = 0;
     std::size_t response_store_max_records = kDefaultResponseStoreRecords;
     std::size_t response_store_max_bytes   = kDefaultResponseStoreBytes;
     int device                             = 0;
@@ -50,6 +53,10 @@ struct ServeOptions {
     bool preserve_thinking = false;
     int default_max_tokens = kDefaultMaxTokens;
     bool enable_cors       = false; // send permissive CORS headers for browser UIs
+    bool webui_auto        = false; // --webui: auto-download the prebuilt llama.cpp
+                                    // webui from the ggml-org/llama-ui HF bucket
+    std::string webui_dir;          // --webui-dir: serve this dir; also the download
+                                    // location for --webui (default: <artifact-dir>/webui)
     // Process-level explicit overrides layered between registered model/mode defaults and request
     // fields. An omitted seed is replaced per request with a fresh random seed.
     SamplingOverrides sampling_overrides;

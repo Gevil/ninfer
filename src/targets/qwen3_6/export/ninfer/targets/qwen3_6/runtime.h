@@ -45,6 +45,11 @@ class SequencePlanner;
 
 // These are the complete family execution types. Exact packages bind them to a private Variant;
 // target selection remains outside this layer and happens once in the closed Engine registry.
+//
+// The plan types declare their moves/move-assignments here and define them per variant in
+// api_impl.h with explicit bodies: any implicit definition needs the complete detail impl types
+// (only the exact target TUs have them), and MSVC 19.44 does not emit out-of-line `= default`
+// explicit specializations of these moves (LNK2019 at the final Windows link).
 template <class Variant>
 class SequencePlan {
 public:

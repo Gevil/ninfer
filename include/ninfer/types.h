@@ -74,6 +74,8 @@ struct LoadProgress {
 
 struct EngineOptions {
     std::filesystem::path artifact_path;
+    // Optional self-contained Jinja chat template loaded once with this Engine.
+    std::filesystem::path chat_template_path;
     int device                         = 0;
     std::uint32_t max_context          = 2048; // Exact logical ceiling of each request.
     KvCapacityPolicy kv_capacity       = KvCapacityPolicy::explicit_capacity(2048);
@@ -87,6 +89,8 @@ struct EngineOptions {
     std::size_t media_live_bytes  = kDefaultMediaLiveBytes;
     // Zero selects a bounded worker count from the detected host concurrency.
     std::uint32_t media_preprocess_threads = 0;
+    // Per-image serving ceiling in Vision tokens. Zero keeps the artifact's own ceiling.
+    std::uint32_t image_token_budget       = 0;
     bool enable_vision                     = false;
     bool use_cuda_graph                    = true;
     LoadProgress load_progress;

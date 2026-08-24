@@ -15,7 +15,11 @@
 #include <system_error>
 #include <utility>
 
+#ifdef _WIN32
+#include <process.h>
+#else
 #include <unistd.h>
+#endif
 
 namespace ninfer::serve {
 namespace {
@@ -31,7 +35,12 @@ std::uint64_t unix_time_ms() {
 std::string new_server_instance_id() {
     const auto now    = std::chrono::system_clock::now().time_since_epoch();
     const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(now).count();
-    return "serve-" + std::to_string(static_cast<long long>(::getpid())) + '-' +
+#ifdef _WIN32
+    const auto process_id = ::_getpid();
+#else
+    const auto process_id = ::getpid();
+#endif
+    return "serve-" + std::to_string(static_cast<long long>(process_id)) + '-' +
            std::to_string(micros);
 }
 
@@ -451,6 +460,7 @@ std::string format_server_start_json(
                               {"media_cache_bytes", options.media_cache_bytes},
                               {"media_live_bytes", options.media_live_bytes},
                               {"media_preprocess_threads", options.media_preprocess_threads},
+                              {"image_token_budget", options.image_token_budget},
                               {"request_log_jsonl", options.request_log_jsonl},
                               {"default_output_tokens", options.default_max_tokens},
                               {"default_thinking", options.enable_thinking},
@@ -538,8 +548,8 @@ std::string format_request_rejected_json(const std::string& server_instance_id,
     return record.dump();
 }
 
-std::string format_request_done_json(const std::string& server_instance_id, std::uint64_t timestamp,
-                                     const RequestLogContext& context,
+std::string format_request_done_json(const std::string& server_instance_id,
+                                     std::uint64_t timestamp, const RequestLogContext& context,
                                      const GenerationOutcome& outcome) {
     Json record       = event_base(server_instance_id, timestamp, "request_done");
     record["request"] = request_json(context);
@@ -570,9 +580,9 @@ std::string format_request_error_json(const std::string& server_instance_id,
     return record.dump();
 }
 
-std::string format_throughput_json(const std::string& server_instance_id, std::uint64_t timestamp,
-                                   const ThroughputReport& report) {
-    Json record = event_base(server_instance_id, timestamp, "throughput");
+std::string format_throughput_json(const std::string& server_instance_id,
+                                   std::uint64_t timestamp, const ThroughputReport& report) {
+    Json record       = event_base(server_instance_id, timestamp, "throughput");
     const double prefill_rate =
         report.interval_seconds > 0.0
             ? static_cast<double>(report.computed_prefill_tokens) / report.interval_seconds

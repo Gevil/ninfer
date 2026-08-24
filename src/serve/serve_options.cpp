@@ -64,17 +64,19 @@ KvCapacityPolicy parse_kv_capacity(const char* text) {
 std::string serve_usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
            " <model.ninfer> [--host H] [--port N] [--api-key KEY] "
-           "[--model-id ID] [--max-context N] [--kv-capacity N|auto] [--max-concurrency N] "
+            "[--model-id ID] [--chat-template-file PATH] [--max-context N] [--kv-capacity N|auto] "
+            "[--max-concurrency N] "
            "[--max-pending-requests N] [--pending-timeout-ms N] "
            "[--prefill-chunk N] [--log-stats-interval-ms N] [--device N] "
            "[--max-request-mib N] [--media-cache-mib N] [--media-live-mib N] "
-           "[--media-preprocess-threads N] "
+           "[--media-preprocess-threads N] [--image-token-budget N] "
            "[--request-log-jsonl FILE] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8] [--spec mtp|dflash --draft-tokens N] "
            "[--default-max-tokens N] "
            "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
            "[--lm-head-draft] [--no-thinking] [--preserve-thinking] [--cors] "
+           "[--webui | --webui-dir DIR] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
            "       serves OpenAI Responses/Chat Completions and Anthropic Messages endpoints\n"
@@ -85,6 +87,8 @@ std::string serve_usage_text(const char* argv0) {
            "       --media-cache-mib defaults to 1024; 0 disables retained media reuse\n"
            "       --media-live-mib defaults to 2048 and bounds all live BF16 patch payloads\n"
            "       --media-preprocess-threads defaults to 0 (auto, at most 16 workers)\n"
+           "       --image-token-budget caps each image in Vision tokens (32x32 pixels each) "
+           "by scaling it to fit; 0 keeps the artifact ceiling\n"
            "       --request-log-jsonl appends full-precision server/request records\n"
            "       --model-id overrides the artifact identity.model_id reported by the server\n"
            "       Responses state is process-local and bounded to 1024 records / 256 MiB by "
@@ -98,6 +102,10 @@ std::string serve_usage_text(const char* argv0) {
            "       --preserve-thinking retains closed-turn assistant reasoning in later prompts\n"
            "       sampler defaults come from the loaded model and resolved thinking mode; "
            "server flags and request fields override individual values.\n"
+           "       --webui auto-downloads the prebuilt llama.cpp webui (ggml-org/llama-ui "
+           "HF bucket) into the webui dir and serves it at / alongside the API\n"
+           "       --webui-dir DIR serves (and for --webui, downloads into) DIR; "
+           "defaults to <model dir>/webui\n"
            "       --greedy forces temperature 0 (exact argmax).\n";
 }
 
@@ -138,6 +146,11 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.model_id_override = require_value("--model-id");
             if (options.model_id_override->empty()) {
                 throw std::invalid_argument("--model-id must not be empty");
+            }
+        } else if (arg == "--chat-template-file") {
+            options.chat_template_path = require_value("--chat-template-file");
+            if (options.chat_template_path.empty()) {
+                throw std::invalid_argument("--chat-template-file must not be empty");
             }
         } else if (arg == "--max-context") {
             options.max_context = static_cast<std::uint32_t>(
@@ -188,6 +201,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
                 throw std::invalid_argument("--media-preprocess-threads must be in [0,64]");
             }
             options.media_preprocess_threads = static_cast<std::uint32_t>(threads);
+        } else if (arg == "--image-token-budget") {
+            options.image_token_budget = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value("--image-token-budget"), "image-token-budget"));
         } else if (arg == "--request-log-jsonl") {
             options.request_log_jsonl = require_value("--request-log-jsonl");
             if (options.request_log_jsonl.empty()) {
@@ -235,6 +251,13 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.preserve_thinking = true;
         } else if (arg == "--cors") {
             options.enable_cors = true;
+        } else if (arg == "--webui") {
+            options.webui_auto = true;
+        } else if (arg == "--webui-dir") {
+            options.webui_dir = require_value("--webui-dir");
+            if (options.webui_dir.empty()) {
+                throw std::invalid_argument("--webui-dir must not be empty");
+            }
         } else if (arg == "--temperature") {
             options.sampling_overrides.temperature =
                 parse_float_in(require_value("--temperature"), "temperature", 0.0f, 2.0f);

@@ -38,6 +38,9 @@ server must accept image or video input. Speculative residency is likewise froze
 `--lm-head-draft` additionally loads the optimized proposal head. DFlash is 35B-A3B text-only and
 cannot be combined with `--vision`. A later request cannot enable a capability omitted at startup.
 
+`--chat-template-file PATH` replaces the artifact's embedded prompt renderer for this server
+process.
+
 ## Endpoints
 
 | Method and path | Behavior |
@@ -53,6 +56,39 @@ cannot be combined with `--vision`. A later request cannot enable a capability o
 | `GET /v1/responses/{id}/input_items` | list that Response's normalized input Items |
 | `POST /v1/messages` | Anthropic-style message generation |
 | `POST /v1/messages/count_tokens` | checkpoint-native expanded input-token count |
+
+### Models
+
+`GET /v1/models` returns a `list` object holding a single `data` entry, and
+`GET /v1/models/{id}` returns that same model object directly. Both describe the
+one registered artifact's public model ID: the artifact `identity.model_id` by
+default, or the explicit `--model-id` override. A `GET /v1/models/{id}` request
+for any other ID returns HTTP 404 with code `model_not_found`.
+
+Each model object is:
+
+```json
+{
+  "id": "qwen3.6-27b",
+  "object": "model",
+  "created": 1786813490,
+  "owned_by": "ninfer",
+  "max_model_len": 16384
+}
+```
+
+- `id` — the public model ID, identical to the `model` value the other OpenAI
+  endpoints require.
+- `object` — always `"model"`.
+- `created` — the server's current unix time in seconds at request time.
+- `owned_by` — always `"ninfer"`.
+- `max_model_len` — the process's configured context window in tokens, exactly the
+  `--max-context` value used to size every sequence. It is a per-server property,
+  not a per-model one: the `list` and single-object forms report the same value,
+  and it does not change with the request. Clients using these endpoints for
+  context discovery should treat `max_model_len` as the hard per-sequence ceiling;
+  `--kv-capacity` is a separate limit that sizes the shared KV pool and is not
+  advertised here.
 
 ## OpenAI Chat Completions
 
@@ -73,6 +109,8 @@ The endpoint supports:
 
 - `system`, `developer`, `user`, `assistant`, and `tool` history;
 - string content and ordered text, `image_url`, and `video_url` parts;
+- tool messages with string content or an array of `text` content parts (the OpenAI
+  contract allows no other part type for tool messages);
 - `max_completion_tokens` and the legacy `max_tokens` spelling;
 - `temperature`, `top_p`, `top_k`, presence/frequency penalties, and a nonnegative `seed`;
 - one stop string or an array of stop strings;
@@ -150,6 +188,25 @@ single-flight build. `--media-cache-mib` bounds LRU-retained payloads, while
 not invalidate a request reference, and live bytes are returned only when the final reference is
 released. A request-level preparation gate derived from the live limit prevents concurrent partial
 builds from deadlocking the memory account.
+
+`preprocessor_config.json` ships the model's *capability* ceiling: `size.longest_edge` there is
+large enough that a full-resolution screen capture is never resized, so a single image can occupy
+thousands of prompt tokens. An agent client resends every screenshot it has read on every turn,
+so that number decides how many turns fit the context at all. `--image-token-budget N` applies a
+serving *policy* ceiling on top of the capability one, counted in Vision tokens, one Vision token
+being a 32x32 pixel square: an image above the budget is scaled to fit rather than rejected, and
+`0` keeps the artifact's own number. It is a per-image ceiling and deliberately does not depend on
+how many images a request carries, because waterfilling a shared budget across items would move
+the prompt prefix as a conversation grows and invalidate prefix reuse on every turn. Videos are
+unaffected.
+
+On the Qwen3.8-27B NVFP4 artifact served with `--vision --max-context 32768`, a one-image chat
+request reports these `usage.prompt_tokens`; the same request without an image reports 53:
+
+| image | default | `--image-token-budget 1280` | `--image-token-budget 256` |
+| --- | ---: | ---: | ---: |
+| 2880x1800 | 5,095 | 1,315 | 295 |
+| 1600x1200 | 1,955 | 1,285 | 289 |
 
 An expanded prompt beyond `--max-context` returns HTTP 400 `context_length_exceeded`, including
 the prepared token count and configured context ceiling. A media preprocessing resource rejection
@@ -467,6 +524,7 @@ curl http://127.0.0.1:8080/v1/models \
 | `--media-cache-mib N` | LRU-retained prepared BF16 media payloads; `0` disables retention | `1024` |
 | `--media-live-mib N` | all live prepared BF16 media payloads | `2048` |
 | `--media-preprocess-threads N` | bounded media preprocessing workers; `0` selects at most 16 from host concurrency | `0` |
+| `--image-token-budget N` | per-image serving ceiling in Vision tokens; `0` keeps the artifact ceiling | `0` |
 | `--request-log-jsonl FILE` | append full-precision server/request records | disabled |
 | `--response-store-max-records N` | maximum locally retained Responses objects | `1024` |
 | `--response-store-max-mib N` | total local Response envelope/Item/context budget | `256` |
@@ -634,8 +692,19 @@ context-capacity finishes map to `length`/ `max_tokens`; ordinary model or strin
 `stop`/ `end_turn`.
 
 Function tools are rendered into the model prompt and generated calls are parsed into protocol
-responses. NInfer does not execute tools and does not enforce client JSON Schema through constrained
-decoding.
+responses. NInfer does not execute tools and does not validate tool arguments against the full
+client JSON Schema through constrained decoding; that remains the client's responsibility. When
+parsing a generated call, NInfer does consult the top-level parameter `"type"` declared in each
+tool's schema to decide whether a parameter value that is valid JSON may be deserialized into the
+corresponding JSON type (number, boolean, array, object, null): only parameters whose declared
+type(s) are all valid non-string JSON Schema types are deserialized. Parameters typed as `"string"`
+(or declared via a type array that includes `"string"`), parameters with an unknown or misspelled
+`"type"`, and parameters absent from the schema preserve the model's raw text so the string
+contract reaches the client intact. Full JSON Schema validation (constraints, required sets,
+formats, nested keywords) is not performed server-side and remains the client's job.
+Duplicate tool names within a single request are rejected with a 400 on all three
+protocol surfaces (OpenAI Chat Completions, OpenAI Responses, Anthropic Messages),
+keeping the per-tool parameter type map unambiguous.
 
 Prompt-token usage includes chat-template and expanded media tokens. Generated-token usage comes
 from accepted output token IDs, including a stop token whose decoded text may be withheld.

@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <span>
 #include <vector>
@@ -17,9 +18,12 @@ inline constexpr std::size_t kTokenDomain = 248077;
 struct FrontendOptions {
     bool vision_enabled                    = true;
     std::uint32_t max_context              = 2'048;
+    std::filesystem::path chat_template_path;
     std::size_t media_cache_bytes          = kDefaultMediaCacheBytes;
     std::size_t media_live_bytes           = kDefaultMediaLiveBytes;
     std::uint32_t media_preprocess_threads = 0;
+    // Per-image ceiling in Vision tokens. Zero keeps preprocessor_config.json's own value.
+    std::uint32_t image_token_budget       = 0;
 };
 
 struct FrontendResources;
