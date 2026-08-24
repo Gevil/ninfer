@@ -239,6 +239,7 @@ ninfer::PromptInput to_prompt_input(const GenerationRequest& request,
     input.options.enable_thinking       = semantics.enable_thinking;
     input.options.reasoning_effort      = semantics.reasoning_effort;
     input.options.preserve_thinking     = semantics.preserve_thinking;
+    input.options.terse                 = request.terse;
     input.options.add_vision_id         = false;
     input.options.tool_jsons            = effective_tool_jsons(request);
     return input;

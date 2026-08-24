@@ -201,6 +201,9 @@ struct GenerationRequest {
     std::optional<RequestedReasoningEffort> reasoning_effort;
     std::string reasoning_effort_param = "reasoning_effort";
     std::optional<bool> preserve_thinking;
+    // Sharp template per-request terseness toggle (kwargs channel only; the
+    // template keeps its own default when absent).
+    std::optional<bool> terse;
     bool preserve_thinking_semantic_change = false;
     SamplingParams sampling;
 

@@ -283,6 +283,8 @@ struct PromptOptions {
     bool enable_thinking       = true;
     std::optional<ReasoningEffort> reasoning_effort;
     bool preserve_thinking = false;
+    // Sharp template per-request terseness toggle (null = template default).
+    std::optional<bool> terse;
     bool add_vision_id     = false;
     std::vector<std::string> tool_jsons;
 };

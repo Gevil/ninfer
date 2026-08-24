@@ -549,7 +549,7 @@ std::optional<bool> parse_openai_preserve_thinking(const Json& body) {
         }
         for (auto it = kwargs.begin(); it != kwargs.end(); ++it) {
             if (it.key() != "preserve_thinking" && it.key() != "enable_thinking" &&
-                it.key() != "reasoning_effort" && !it.value().is_null()) {
+                it.key() != "reasoning_effort" && it.key() != "terse" && !it.value().is_null()) {
                 bad_request("chat_template_kwargs." + it.key() + " is not supported",
                             "chat_template_kwargs", "chat_template_option_not_supported");
             }
@@ -568,6 +568,23 @@ std::optional<bool> parse_openai_preserve_thinking(const Json& body) {
                     "conflicting_template_option");
     }
     return template_value ? template_value : top_level;
+}
+
+std::optional<bool> parse_openai_terse(const Json& body) {
+    // Sharp template per-request terseness toggle (kwargs channel only; the
+    // template defaults to on when absent). The kwargs whitelist above has
+    // already validated the key; nulls stay unset (template default wins).
+    if (body.contains("chat_template_kwargs") && body.at("chat_template_kwargs").is_object()) {
+        const Json& kwargs = body.at("chat_template_kwargs");
+        if (kwargs.contains("terse") && !kwargs.at("terse").is_null()) {
+            if (!kwargs.at("terse").is_boolean()) {
+                bad_request("chat_template_kwargs.terse must be a boolean or null",
+                            "chat_template_kwargs");
+            }
+            return kwargs.at("terse").get<bool>();
+        }
+    }
+    return std::nullopt;
 }
 
 std::optional<bool> parse_chat_enable_thinking(const Json& body) {
@@ -692,6 +709,7 @@ GenerationRequest parse_chat_completion_request(const Json& body, const RequestL
     parse_openai_chat_thinking(body, &out.enable_thinking, &out.reasoning_effort,
                                &out.reasoning_effort_param, "enable_thinking");
     out.preserve_thinking = parse_openai_preserve_thinking(body);
+    out.terse = parse_openai_terse(body);
 
     std::optional<int> max_tokens = get_int(body, "max_completion_tokens");
     if (!max_tokens) { max_tokens = get_int(body, "max_tokens"); }
