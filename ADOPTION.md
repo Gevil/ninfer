@@ -96,11 +96,41 @@ regression. Log: `~/.local/share/ninfer/logs/tier2-restart-verify-2026-08-23.log
 Public review: [Gevil/ninfer PR #2](https://github.com/Gevil/ninfer/pull/2)
 (`tier2` → `qwen3.8-nvfp4full`, open).
 
-### Tier 3 — cherry-picks from community forks (planned)
+### Tier 3 — cherry-picks from community forks (WAVE A EXECUTED 2026-08-24, `tier3` branch @ 22c46df7)
 
-Agent-checkpoint fixes and exact-`cached_tokens` observability from contributor
-branches (`dylanbrodiefafard`, `easonLiangWorldedtech`), evaluated per commit at
-execution time.
+Built on the pre-fix tier2 line; each pick lands as its own commit naming the
+source fork/commit. The stray-vision-pad fix (the 400-storm fix) is backported
+from tier2 (`caec0dee`, patch-identical to tier1 `7e845d45`) because the branch
+was cut before it landed.
+
+| Pick | Source | What it brings | Commit |
+|---|---|---|---|
+| CUDA-graph allowance | dylanbrodiefafard/experimental `d85278b1` | stop over-reserving CUDA graphs at long context | `d48c9e62` |
+| INT8 KV fill | dylanbrodiefafard/experimental `7374b27a` | page-tiled INT8 KV fill for 27B GQA | `b82f1ed3` |
+| decode-side MTP | dylanbrodiefafard/experimental `0787d7cf` | cut AR hidden D2D copies + last-chunk host sync | `03514cfa` |
+| MTP/draft fuse | dylanbrodiefafard/experimental `dd1bd651` | residual_add + rmsnorm fused into one op on the MTP/draft path | `ebe76d22` |
+| nvfp4 short-T decode | dylanbrodiefafard/experimental `bc341b75` | streamed decode weights + unrolled short-T MLP-down | `98bbc47d` |
+| GDN prefill conv | MichaelDementii/chunked-prefill `286627dd` | GDN prefill convolution written straight into q/k/v | `ceddaf28` |
+| decode-suite (2) | MichaelDementii/decode-suite `10fc5bbd` + `f8ad432a` | shared-expert down-weight prefetch behind the moe router; gated post-mixer norm folded into the GDN mixer tail | `40022442` `32c0ded2` |
+| tool-call prefix reuse | dylanbrodiefafard/fix-tool-calls-checkpointing `673d695c` | closed tool turn (empty think block) still hits response prefix reuse — checkpoint snapshotted after the open think block; 3-hunk test conflict resolved keeping both sides' tests | `281cf9ec` |
+| stray vision-pad fix | local tier2 `caec0dee` (≡ tier1 `7e845d45`) | `expand_placeholders` strips stray image/video pad markers (e.g. re-injected via `--preserve-thinking`) instead of 400ing `invalid_media` | `22c46df7` |
+
+**Verification (2026-08-24):** buildstage production build clean from this tip
+(CUDA 13.1.2); ctest 6/6 (`openai_schema`, `serve_options`, `tool_call_parser`,
+`responses_schema`, `anthropic_schema`, `qwen3_6_frontend` — the frontend suite
+needs the official Qwen3.6-27B tokenizer resources bind-mounted at the upstream
+path; environment note, no test changes). Lane image `ninfer-nvfp4:tier3-<sha>` +
+`:latest` built from the public clone; restart battery all-PASS (boot ledger,
+`/v1/models` 225280 contract, thinking + xhigh smokes, kwargs 400 contracts ×3,
+decode probe, `cached_tokens` regression). Log:
+`~/.local/share/ninfer/logs/tier3-restart-verify-2026-08-24.log`.
+Public review: [Gevil/ninfer PR #3](https://github.com/Gevil/ninfer/pull/3)
+(`tier3` → `qwen3.8-nvfp4full`, open).
+
+**Wave B (next, planned):** `eason/develop` — exact `cached_tokens` + cross-GPU
+VRAM cold tier (`117d83e0` + follow-ups `581d56c8`/`a82d8f75`/`44e34e26`,
+bench `9168239b`); `dylan/experimental` — sage/sparge decode + TMA/PPL series.
+Evaluated per commit at execution time.
 
 ## Lane build
 
@@ -109,4 +139,4 @@ then the lane is restarted and verified; build/verification logs live in the hos
 `~/.local/share/ninfer/logs/`. The lane is the verifier of its own history: the model
 serving developer sessions runs on it.
 
-*Record maintained 2026-08-23 — Tier 1 merged + verified (PR #1 open); Tier 2/3 planned. Update this file at each tier boundary.*
+*Record maintained 2026-08-24 — Tier 1 merged + verified (PR #1 open); Tier 2 executed + verified (PR #2 open); Tier 3 Wave A executed + verified (PR #3 open). Update this file at each tier boundary.*
