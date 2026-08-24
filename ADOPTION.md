@@ -326,6 +326,26 @@ Also: "upstream #75" (host-KV convergence, open question above) is a **public 40
 
 **Execution order:** C1 + C2 + C3 + C6 → cherry-picks onto `tier5` (per PR: `merge-tree` triage then a real `git merge --no-commit --no-ff`, never continue a batch after an unresolved conflict) → build + ctest in the CUDA container (host-KV suites on a free GPU) → lane ship (restart battery + probes) → ADOPTION Tier 5 record + push `tier5` + PR #6 (stacked on #5). C4: audit in parallel; if "adopt", it becomes its own wave (not folded into C1–C6). C5: after the user decision, independent restart + battery.
 
+**Wave C execution record (2026-08-24, tier5 lane ship):**
+- C2 (4 MoE-decode picks `a290f5a1`/`76ed67c7`/`3ea9a778`/`0a52d8be`), C6 (`a568115b` response_format json), and the C5 `terse` kwarg wiring (`d19efff1`) all picked onto `tier5`; C1/C3 recorded as superseded (see table above)
+- C5: bind-mounted Sharp template v22.1 (`d1f22a89`) -> **v22.3.2** (`3071f3ea`, 28577 B) with the per-request `terse` kwarg (default on; `terse:false` now usable via `chat_template_kwargs`, engine-side in `d19efff1`)
+
+**Live battery verdicts (lane, 2026-08-24, tier5 image + v22.3.2 template):**
+- /v1/models: http=200 after ~10s
+- VERDICT MODELS: PASS (expect qwen3.8-27b-nvfp4full)
+- VERDICT IMAGE: PASS (lane runs latest tag)
+- VERDICT think-smoke: PASS
+- VERDICT THINK-SMOKE: PASS
+- VERDICT xhigh: PASS
+- VERDICT XHIGH: PASS (trace 733 chars)
+- VERDICT decode: PASS
+- decode: 300 tokens in 2.6s = 114.0 tok/s (baseline 136.9; decode-path changes should hold or improve) cached_tokens field present = 0
+- VERDICT DECODE: PASS
+
+**Host-KV ctest (free GPU, buildstage-tier5):** 100% tests passed, 0 tests failed out of 5
+
+Public review: [Gevil/ninfer PR #6](https://github.com/Gevil/ninfer/pull/6) (`tier5` -> `qwen3.8-nvfp4full`, open, stacked on PR #5).
+
 ## Lane build
 
 The lane image is built **from this branch** (public repo clone → `podman build`),
