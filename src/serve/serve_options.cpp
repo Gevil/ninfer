@@ -76,12 +76,8 @@ std::string serve_usage_text(const char* argv0) {
            "[--default-max-tokens N] "
            "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
            "[--lm-head-draft] [--no-thinking] [--preserve-thinking] "
-<<<<<<< HEAD
-           "[--host-kv-cache N] [--cors] "
-           "[--webui | --webui-dir DIR] "
-=======
            "[--host-kv-cache-mib N] [--cors] "
->>>>>>> 43cd3418 (feat(engine): budget-bounded host KV cache - variable-size pinned entries)
+           "[--webui | --webui-dir DIR] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
            "       serves OpenAI Responses/Chat Completions and Anthropic Messages endpoints\n"
