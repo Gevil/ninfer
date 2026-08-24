@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -88,6 +89,12 @@ struct RenderedChat {
     std::optional<RewriteCheckpointByteSpec> rewrite_checkpoint;
 };
 
+// True when the rendered prompt leaves the reasoning channel open: the final
+// thinking-open marker has no subsequent thinking-close marker. Used to seed
+// `starts_in_reasoning` from the actually-rendered prompt rather than from
+// render options alone.
+[[nodiscard]] bool prompt_ends_in_open_reasoning(const std::string& rendered_text);
+
 enum class ChatTemplateSemantics : std::uint8_t {
     ThinkingToggle,
     ReasoningEffort,
@@ -96,16 +103,23 @@ enum class ChatTemplateSemantics : std::uint8_t {
 class CompiledChatTemplate {
 public:
     [[nodiscard]] static CompiledChatTemplate resolve(std::string_view source);
+    [[nodiscard]] static CompiledChatTemplate compile_jinja(std::string source,
+                                                             std::string source_name);
 
     [[nodiscard]] PromptCapabilities capabilities() const noexcept;
     [[nodiscard]] RenderedChat render(const std::vector<ChatMessage>& messages,
                                       ChatRenderOptions options = {}) const;
 
 private:
+    class JinjaTemplate;
+
     explicit CompiledChatTemplate(ChatTemplateSemantics semantics) noexcept
         : semantics_(semantics) {}
+    explicit CompiledChatTemplate(std::shared_ptr<const JinjaTemplate> jinja_template) noexcept
+        : jinja_template_(std::move(jinja_template)) {}
 
-    ChatTemplateSemantics semantics_;
+    ChatTemplateSemantics semantics_ = ChatTemplateSemantics::ThinkingToggle;
+    std::shared_ptr<const JinjaTemplate> jinja_template_;
 };
 
 } // namespace ninfer::targets::qwen3_6::frontend_internal

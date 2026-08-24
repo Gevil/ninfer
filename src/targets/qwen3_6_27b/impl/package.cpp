@@ -95,6 +95,9 @@ Package::WeightsProfile Package::resolve_weights(const artifact::ArtifactIdentit
     if (identity.model_id == qwen3_8_model_id && identity.weights_id == "nvfp4") {
         return WeightsProfile::Qwen38Nvfp4;
     }
+    if (identity.model_id == qwen3_8_model_id && identity.weights_id == "nvfp4full") {
+        return WeightsProfile::Qwen38Nvfp4Full;
+    }
     throw std::runtime_error("artifact identity '" + identity.model_id + "/" + identity.weights_id +
                              "' is not supported by target '" + std::string(target_key) + "'");
 }
@@ -121,9 +124,11 @@ Package::Frontend Package::make_frontend(const LoadedModel& model, const EngineO
                                   qwen3_6::FrontendOptions{
                                       .vision_enabled = model.impl_->data.runtime.features.vision,
                                       .max_context    = options.max_context,
+                                      .chat_template_path       = options.chat_template_path,
                                       .media_cache_bytes        = options.media_cache_bytes,
                                       .media_live_bytes         = options.media_live_bytes,
                                       .media_preprocess_threads = options.media_preprocess_threads,
+                                      .image_token_budget       = options.image_token_budget,
                                   });
 }
 

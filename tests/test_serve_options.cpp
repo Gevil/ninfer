@@ -41,6 +41,8 @@ int main() {
                           defaults.media_live_bytes == ninfer::kDefaultMediaLiveBytes &&
                           defaults.media_preprocess_threads == 0,
                       "media preparation resource defaults mismatch");
+    failures += check(defaults.image_token_budget == 0,
+                      "an image serving ceiling is unexpectedly applied by default");
     failures += check(defaults.kv_capacity.mode == ninfer::KvCapacityMode::Explicit &&
                           defaults.kv_capacity.explicit_tokens == defaults.max_context,
                       "default KV capacity does not follow max context");
@@ -51,6 +53,8 @@ int main() {
                       "Responses store defaults mismatch");
     failures += check(!defaults.model_id_override.has_value(),
                       "model id override is unexpectedly configured by default");
+    failures += check(defaults.chat_template_path.empty(),
+                      "template override is unexpectedly configured by default");
     failures += check(
         !defaults.sampling_overrides.temperature && !defaults.sampling_overrides.top_p &&
             !defaults.sampling_overrides.top_k && !defaults.sampling_overrides.presence_penalty &&
@@ -71,6 +75,23 @@ int main() {
         (void)parse({"ninfer-serve", "model.ninfer", "--model-id", ""});
     } catch (const std::invalid_argument&) { empty_model_id_rejected = true; }
     failures += check(empty_model_id_rejected, "empty --model-id was accepted");
+
+    const ServeOptions template_override =
+        parse({"ninfer-serve", "model.ninfer", "--chat-template-file", "templates/sharp.jinja"});
+    failures += check(template_override.chat_template_path == "templates/sharp.jinja",
+                      "server template override path was not preserved");
+
+    bool empty_template_path_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--chat-template-file", ""});
+    } catch (const std::invalid_argument&) { empty_template_path_rejected = true; }
+    failures += check(empty_template_path_rejected,
+                      "server accepted an empty template override path");
+
+    const ServeOptions image_budget =
+        parse({"ninfer-serve", "model.ninfer", "--image-token-budget", "1280"});
+    failures += check(image_budget.image_token_budget == 1280,
+                      "--image-token-budget did not carry the per-image Vision-token ceiling");
 
     const ServeOptions dflash = parse({"ninfer-serve", "model.ninfer", "--spec", "dflash",
                                        "--draft-tokens", "15", "--lm-head-draft"});
@@ -182,6 +203,14 @@ int main() {
     failures +=
         check(!resolve_prompt_semantics(request, configured, prompt_capabilities).preserve_thinking,
               "request preserve-thinking override did not win");
+    prompt_capabilities.reasoning_effort.low            = true;
+    prompt_capabilities.reasoning_effort.medium         = true;
+    prompt_capabilities.reasoning_effort.xhigh          = true;
+    prompt_capabilities.reasoning_effort.default_effort = ninfer::ReasoningEffort::Medium;
+    request.reasoning_effort = RequestedReasoningEffort::Medium;
+    failures += check(resolve_prompt_semantics(request, configured, prompt_capabilities)
+                          .reasoning_effort == ninfer::ReasoningEffort::Medium,
+                      "medium reasoning effort was rejected despite template support");
 
     failures +=
         check(serve_usage_text("ninfer-serve").find("--no-prefix-reuse") != std::string::npos,
@@ -189,6 +218,9 @@ int main() {
     failures +=
         check(serve_usage_text("ninfer-serve").find("--preserve-thinking") != std::string::npos,
               "serve help omits --preserve-thinking");
+    failures += check(serve_usage_text("ninfer-serve").find("--chat-template-file") !=
+                          std::string::npos,
+                      "serve help omits --chat-template-file");
     failures += check(serve_usage_text("ninfer-serve").find("--vision") != std::string::npos,
                       "serve help omits --vision");
     failures +=

@@ -18,6 +18,8 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -41,6 +43,10 @@ constexpr double kRescaleFactor        = 1.0 / 255.0;
 constexpr double kVideoFps             = 2.0;
 constexpr int kVideoMinFrames          = 4;
 constexpr int kVideoMaxFrames          = 768;
+
+// validate_pixel_pipeline() pins patch_size to 16 and merge_size to 2, so one Vision token
+// always covers a 32x32 pixel square.
+constexpr std::uint64_t kPixelsPerVisionToken = (16ULL * 2ULL) * (16ULL * 2ULL);
 
 constexpr std::array<std::pair<std::string_view, TokenId>, 4> kVisionSpecialTokens = {{
     {"<|vision_start|>", 248053},
@@ -141,7 +147,8 @@ void validate_pixel_pipeline(const Json& config, std::string_view resource) {
     }
 }
 
-fi::ProcessorOptions processor_options(const FrontendResources& resources) {
+fi::ProcessorOptions processor_options(const FrontendResources& resources,
+                                       std::uint32_t image_token_budget) {
     const Json image =
         parse_resource_json(resources.preprocessor_config_json, "preprocessor_config.json");
     const Json video = parse_resource_json(resources.video_preprocessor_config_json,
@@ -159,6 +166,19 @@ fi::ProcessorOptions processor_options(const FrontendResources& resources) {
     options.image_max_pixels =
         positive_u64(require_integer(image_size, "longest_edge", "preprocessor_config.json.size"),
                      "image longest_edge");
+    if (image_token_budget != 0) {
+        // preprocessor_config.json ships the model's *capability* ceiling: longest_edge there is
+        // large enough that a full-resolution screen capture is never resized, so a single image
+        // occupies thousands of prompt tokens. An agent conversation resends every screenshot it
+        // has read on every turn, so a serving endpoint wants a *policy* ceiling on top, the way
+        // every hosted API applies one: fit-and-scale rather than reject. The budget is per image
+        // and deliberately does not depend on how many images a request carries; waterfilling
+        // across items would move the prompt prefix as a conversation grows and invalidate prefix
+        // reuse on every turn. Nothing else in the pipeline reads image_max_pixels.
+        options.image_max_pixels =
+            std::min(options.image_max_pixels,
+                     static_cast<std::uint64_t>(image_token_budget) * kPixelsPerVisionToken);
+    }
     options.video_min_pixels = positive_u64(
         require_integer(video_size, "shortest_edge", "video_preprocessor_config.json.size"),
         "video shortest_edge");
@@ -205,8 +225,26 @@ void validate_tokenizer_config(const FrontendResources& resources) {
     }
 }
 
-fi::CompiledChatTemplate compile_chat_template(const FrontendResources& resources) {
+std::string read_chat_template_file(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        throw std::invalid_argument("failed to open Jinja chat template '" + path.string() + "'");
+    }
+    const std::string source((std::istreambuf_iterator<char>(stream)),
+                             std::istreambuf_iterator<char>());
+    if (stream.bad()) {
+        throw std::invalid_argument("failed to read Jinja chat template '" + path.string() + "'");
+    }
+    return source;
+}
+
+fi::CompiledChatTemplate compile_chat_template(const FrontendResources& resources,
+                                               const FrontendOptions& options) {
     validate_tokenizer_config(resources);
+    if (!options.chat_template_path.empty()) {
+        return fi::CompiledChatTemplate::compile_jinja(
+            read_chat_template_file(options.chat_template_path), options.chat_template_path.string());
+    }
     return fi::CompiledChatTemplate::resolve(resources.chat_template_jinja);
 }
 
@@ -595,12 +633,13 @@ DecoderState terminal_state(DecoderState state) {
 class Frontend::Impl {
 public:
     Impl(const FrontendResources& resources, bool registered_checkpoint, FrontendOptions options)
-        : chat_template(compile_chat_template(resources)),
+        : chat_template(compile_chat_template(resources, options)),
           tokenizer(std::make_shared<const fi::Tokenizer>(
               fi::TokenizerResources{.tokenizer_json         = resources.tokenizer_json,
                                      .tokenizer_config_json  = resources.tokenizer_config_json,
                                      .generation_config_json = resources.generation_config_json})),
-          processor(processor_options(resources)), vision_enabled(options.vision_enabled) {
+          processor(processor_options(resources, options.image_token_budget)),
+          vision_enabled(options.vision_enabled) {
         if (options.max_context == 0) {
             throw std::invalid_argument("frontend max_context must be nonzero");
         }
@@ -884,6 +923,7 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
 
     auto prepared              = std::make_unique<PreparedPromptData>();
     PreparedPromptData& result = *prepared;
+    bool starts_in_reasoning   = false;
     if (has_media) {
         fi::Processor processor(*impl_->tokenizer, impl_->chat_template, impl_->processor,
                                 impl_->media_cache);
@@ -916,9 +956,13 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
             processed.stats.media_preprocess_work_seconds;
         result.prepare.tokenize_seconds    = processed.stats.tokenize_seconds;
         result.identity.rewrite_checkpoint = processed.rewrite_checkpoint;
+        starts_in_reasoning                =
+            options.add_generation_prompt && processed.opens_reasoning;
     } else {
         const fi::RenderedChat rendered =
             impl_->chat_template.render(messages, render_options(options));
+        starts_in_reasoning =
+            options.add_generation_prompt && fi::prompt_ends_in_open_reasoning(rendered.text);
         const auto tokenize_started = Clock::now();
         fi::EncodedChat encoded     = fi::encode_rendered_chat(*impl_->tokenizer, rendered);
         result.prepare.tokenize_seconds =
@@ -930,7 +974,7 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
     }
     (void)checked_token_count(result.token_ids.size());
     result.identity.reusable   = true;
-    result.starts_in_reasoning = options.add_generation_prompt && options.enable_thinking;
+    result.starts_in_reasoning = starts_in_reasoning;
     result.prepare.seconds     = std::chrono::duration<double>(Clock::now() - start).count();
     return PreparedPrompt(std::move(prepared));
 }

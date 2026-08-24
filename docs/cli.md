@@ -30,6 +30,17 @@ template's default. An artifact whose template does not expose effort rejects th
 `--no-thinking` for direct-response prompt rendering; it cannot be combined with
 `--reasoning-effort`. `--greedy` selects exact argmax decoding independently.
 
+## Chat templates
+
+By default, the Engine validates and uses `frontend/chat_template.jinja` embedded in the loaded
+artifact. Pass `--chat-template-file PATH` to replace that prompt renderer for this Engine startup:
+
+```bash
+./build/apps/ninfer models/qwen3_6_27b.ninfer \
+  --chat-template-file /path/to/chat_template.jinja \
+  --prompt "Return one sentence."
+```
+
 ## Startup memory profile
 
 GPU residency is frozen when the Engine starts:
@@ -145,6 +156,7 @@ measured recommendation rather than a semantic limit.
 | `--draft-tokens N` | MTP `1..5`; DFlash `1..15` | unset |
 | `--lm-head-draft` | optimized proposal head | off |
 | `--vision` | enable image/video input and load Vision GPU allocations | off |
+| `--chat-template-file PATH` | self-contained Jinja prompt-template override loaded at startup | artifact template |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--no-thinking` | disable thinking in prompt rendering | thinking on |
 | `--reasoning-effort low\|medium\|xhigh` | select an effort exposed by the loaded chat template | template default |

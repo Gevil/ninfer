@@ -110,6 +110,10 @@ struct ProcessedInput {
     // One immutable row-major [raw_patches, 1536] payload per Vision item.
     std::vector<std::shared_ptr<const qwen3_6::PreparedMediaPayload>> media_payloads;
     std::optional<RewriteCheckpointSpec> rewrite_checkpoint;
+    // True when the rendered prompt (after media expansion) leaves the reasoning
+    // channel open. Lets the Frontend seed `starts_in_reasoning` from the
+    // actually-rendered prompt on the media path.
+    bool opens_reasoning = false;
     PreprocessStats stats;
 
     [[nodiscard]] std::span<const std::int32_t> position_axis(int axis) const;

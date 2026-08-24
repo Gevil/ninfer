@@ -227,6 +227,7 @@ GenerationService::GenerationService(ServeOptions options, LoadProgress load_pro
     : options_(std::move(options)) {
     ninfer::EngineOptions engine_options;
     engine_options.artifact_path            = options_.artifact_path;
+    engine_options.chat_template_path       = options_.chat_template_path;
     engine_options.device                   = options_.device;
     engine_options.max_context              = options_.max_context;
     engine_options.kv_capacity              = options_.kv_capacity;
@@ -241,6 +242,7 @@ GenerationService::GenerationService(ServeOptions options, LoadProgress load_pro
     engine_options.media_cache_bytes        = options_.media_cache_bytes;
     engine_options.media_live_bytes         = options_.media_live_bytes;
     engine_options.media_preprocess_threads = options_.media_preprocess_threads;
+    engine_options.image_token_budget       = options_.image_token_budget;
     engine_options.load_progress            = std::move(load_progress);
     engine_              = std::make_unique<ninfer::Engine>(std::move(engine_options));
     prompt_capabilities_ = engine_->prompt_capabilities();
@@ -248,7 +250,8 @@ GenerationService::GenerationService(ServeOptions options, LoadProgress load_pro
         static_cast<std::size_t>(options_.max_concurrency) + options_.max_pending_requests);
 }
 
-std::shared_ptr<RequestLifetime> GenerationService::acquire_request_lifetime() const {
+std::shared_ptr<RequestLifetime> GenerationService::acquire_request_lifetime(
+    std::optional<std::chrono::milliseconds> timeout_override) const {
     const auto started = Clock::now();
     {
         std::lock_guard lock(request_capacity_->mutex);
@@ -258,10 +261,10 @@ std::shared_ptr<RequestLifetime> GenerationService::acquire_request_lifetime() c
         }
         ++request_capacity_->active;
     }
+    const auto timeout =
+        timeout_override.value_or(std::chrono::milliseconds(options_.pending_timeout_ms));
     try {
-        return std::make_shared<RequestLifetime>(
-            request_capacity_, started,
-            started + std::chrono::milliseconds(options_.pending_timeout_ms));
+        return std::make_shared<RequestLifetime>(request_capacity_, started, started + timeout);
     } catch (...) {
         std::lock_guard lock(request_capacity_->mutex);
         --request_capacity_->active;
@@ -269,13 +272,15 @@ std::shared_ptr<RequestLifetime> GenerationService::acquire_request_lifetime() c
     }
 }
 
-PreparedRequest GenerationService::prepare(const GenerationRequest& request,
-                                           std::function<bool()> is_cancelled) const {
+PreparedRequest GenerationService::prepare(
+    const GenerationRequest& request, std::function<bool()> is_cancelled,
+    std::optional<std::chrono::milliseconds> timeout_override) const {
     PreparedRequest prepared;
     ninfer::RequestOptions request_options = to_request_options(request, options_);
     prepared.include_usage                 = request.include_usage;
     prepared.tool_capable                  = request.uses_tools() || request.has_tool_history();
     prepared.tool_name_max_length          = request.tool_name_max_length;
+    prepared.param_types                   = build_tool_param_type_map(request.tools);
     const ResolvedPromptSemantics semantics =
         resolve_prompt_semantics(request, options_, prompt_capabilities_);
     prepared.enable_thinking                   = semantics.enable_thinking;
@@ -286,7 +291,7 @@ PreparedRequest GenerationService::prepare(const GenerationRequest& request,
         const std::invalid_argument error("Vision is disabled for this server");
         throw_invalid_input(error, "vision_disabled");
     }
-    prepared.lifetime = acquire_request_lifetime();
+    prepared.lifetime = acquire_request_lifetime(timeout_override);
 
     try {
         const auto acquisition_started = Clock::now();
@@ -401,8 +406,8 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
 
     bool is_tool_call_response = false;
     if (prepared.tool_capable) {
-        ParsedToolCallOutput parsed =
-            parse_qwen_tool_call_output(outcome.text, prepared.tool_name_max_length);
+        ParsedToolCallOutput parsed = parse_qwen_tool_call_output(
+            outcome.text, prepared.tool_name_max_length, prepared.param_types);
         outcome.text          = std::move(parsed.content);
         is_tool_call_response = parsed.is_tool_call_response;
         if (is_tool_call_response) { outcome.tool_calls = std::move(parsed.tool_calls); }
@@ -426,11 +431,14 @@ void GenerationService::warmup() {
         request.messages.push_back(std::move(turn));
         request.max_tokens       = 4;
         request.max_tokens_set   = true;
-        PreparedRequest prepared = prepare(request);
+        // Warmup is internal startup priming and must not inherit the client-facing
+        // request deadline (--pending-timeout-ms bounds incoming-request preparation
+        // and queue waiting, not warmup).
+        constexpr auto kWarmupTimeout = std::chrono::seconds(60);
+        PreparedRequest prepared = prepare(request, {}, kWarmupTimeout);
         run(prepared, nullptr);
     } catch (const std::exception& exception) {
-        write_console_log(ConsoleLogLevel::Warning,
-                          std::string("warmup failed (continuing): ") + exception.what());
+        throw std::runtime_error(std::string("warmup generation failed: ") + exception.what());
     }
 }
 

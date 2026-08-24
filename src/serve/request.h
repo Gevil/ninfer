@@ -51,6 +51,12 @@ struct RequestLimits {
 struct CompletionUsage {
     int prompt_tokens     = 0;
     int completion_tokens = 0;
+    // The subset of prompt_tokens the prefix cache served, so a client can tell a
+    // reused prompt from a recomputed one. OpenAI semantics: a subset, not an
+    // addend. The Anthropic schema deliberately does not emit this -- there
+    // input_tokens *excludes* cache reads, so reporting it would also have to
+    // change what input_tokens means for every existing Messages client.
+    int cached_prompt_tokens = 0;
 };
 
 enum class ContentKind {
@@ -171,7 +177,7 @@ struct GenerationRequest {
     std::size_t tool_name_max_length = 64;
     ToolChoice tool_choice;
     std::vector<std::string> stop_strings;
-    int max_tokens      = 0; // 0 => use server default
+    int max_tokens      = 0; // 0 => use server default; set via max_tokens_set when client pinned a value
     bool max_tokens_set = false;
     bool stream         = false;
     bool include_usage  = false;
