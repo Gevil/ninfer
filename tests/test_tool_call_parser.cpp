@@ -32,7 +32,7 @@ int test_single_call() {
     // build_tool_param_type_map records only non-string types; city (string)
     // and any unknown param are absent, so the parser preserves raw text.
     ninfer::serve::ToolParamTypeMap map;
-    map["get_weather"]["days"] = {"integer"};
+    map["get_weather"]["days"] = "integer";
 
     const ninfer::serve::ParsedToolCallOutput parsed =
         ninfer::serve::parse_qwen_tool_call_output("Calling weather.\n"
@@ -59,7 +59,7 @@ int test_single_call() {
 int test_multiple_calls_and_json_values() {
     // payload is object => recorded; value is string => absent.
     ninfer::serve::ToolParamTypeMap map;
-    map["first"]["payload"]  = {"object"};
+    map["first"]["payload"]  = "object";
 
     const ninfer::serve::ParsedToolCallOutput parsed = ninfer::serve::parse_qwen_tool_call_output(
         "<tool_call>\n"
@@ -92,7 +92,7 @@ int test_string_param_keeps_numeric_looking_value() {
     // absent (exactly what build_tool_param_type_map produces). The tool
     // is known, yet its string-typed params still preserve raw text.
     ninfer::serve::ToolParamTypeMap map;
-    map["TaskUpdate"]["priority"] = {"integer"};
+    map["TaskUpdate"]["priority"] = "integer";
 
     const ninfer::serve::ParsedToolCallOutput parsed =
         ninfer::serve::parse_qwen_tool_call_output(
@@ -392,98 +392,6 @@ int test_schema_invalid_type_spelling_preserves_raw() {
     return failures;
 }
 
-// (d) boolean param: Python-style scalars coerce to JSON booleans
-// (vLLM qwen3coder coercion); non-boolean text stays raw.
-int test_schema_boolean_param_coerces_python_scalars() {
-    const ninfer::serve::ToolDefinition tool = make_tool(
-        "set_flags",
-        R"({"type":"object","properties":{)"
-        R"("a":{"type":"boolean"},"b":{"type":"boolean"},"c":{"type":"boolean"},)"
-        R"("d":{"type":"boolean"},"e":{"type":"boolean"},"f":{"type":"boolean"},)"
-        R"("g":{"type":"boolean"}}})");
-    const ninfer::serve::ToolParamTypeMap map =
-        ninfer::serve::build_tool_param_type_map({tool});
-
-    const ninfer::serve::ParsedToolCallOutput parsed =
-        ninfer::serve::parse_qwen_tool_call_output(
-            "    <tool_call>\n"
-            "<function=set_flags>\n"
-            "<parameter=a>True</parameter>\n"
-            "<parameter=b>1</parameter>\n"
-            "<parameter=c>False</parameter>\n"
-            "<parameter=d>0</parameter>\n"
-            "<parameter=e>maybe</parameter>\n"
-            "<parameter=f>true</parameter>\n"
-            "<parameter=g> TRUE </parameter>\n"
-            "</function>\n"
-            "</tool_call>",
-            64, map);
-
-    int failures = 0;
-    failures += check(parsed.is_tool_call_response, "schema boolean call parsed as tool response");
-    failures += check(parsed.tool_calls.size() == 1, "one schema boolean call");
-    const Json args = Json::parse(parsed.tool_calls[0].arguments_json);
-    failures += check(args.at("a").is_boolean() && args.at("a") == true,
-                      "boolean param True coerces to true");
-    failures += check(args.at("b").is_boolean() && args.at("b") == true,
-                      "boolean param 1 coerces to true");
-    failures += check(args.at("c").is_boolean() && args.at("c") == false,
-                      "boolean param False coerces to false");
-    failures += check(args.at("d").is_boolean() && args.at("d") == false,
-                      "boolean param 0 coerces to false");
-    failures += check(args.at("e").is_string() && args.at("e") == "maybe",
-                      "non-boolean text for a boolean param stays raw");
-    failures += check(args.at("f").is_boolean() && args.at("f") == true,
-                      "JSON true for a boolean param still coerces");
-    failures += check(args.at("g").is_boolean() && args.at("g") == true,
-                      "padded all-caps TRUE coerces to true");
-    return failures;
-}
-
-// (g) nullable boolean: Python scalars coerce, the literal null is JSON
-// null, and the result does not depend on the type-array order.
-int test_schema_nullable_boolean_param() {
-    const ninfer::serve::ToolDefinition tool = make_tool(
-        "flags",
-        R"({"type":"object","properties":{)"
-        R"("a":{"type":["boolean","null"]},"b":{"type":["null","boolean"]},)"
-        R"("c":{"type":"boolean"},"d":{"type":["boolean","null"]},"e":{"type":["null","boolean"]},"f":{"type":["boolean","null"]}}})");
-    const ninfer::serve::ToolParamTypeMap map =
-        ninfer::serve::build_tool_param_type_map({tool});
-
-    const ninfer::serve::ParsedToolCallOutput parsed =
-        ninfer::serve::parse_qwen_tool_call_output(
-            "    <tool_call>\n"
-            "<function=flags>\n"
-            "<parameter=a>True</parameter>\n"
-            "<parameter=b>null</parameter>\n"
-            "<parameter=c>null</parameter>\n"
-            "<parameter=d>maybe</parameter>\n"
-            "<parameter=e>False</parameter>\n"
-            "<parameter=f>Null</parameter>\n"
-            "</function>\n"
-            "</tool_call>",
-            64, map);
-
-    int failures = 0;
-    failures += check(parsed.is_tool_call_response, "nullable boolean call parsed as tool response");
-    failures += check(parsed.tool_calls.size() == 1, "one nullable boolean call");
-    const Json args = Json::parse(parsed.tool_calls[0].arguments_json);
-    failures += check(args.at("a").is_boolean() && args.at("a") == true,
-                      "nullable boolean True coerces to true");
-    failures += check(args.at("b").is_null(),
-                      "nullable boolean null is JSON null (null listed first)");
-    failures += check(args.at("c").is_null(),
-                      "plain boolean null is JSON null");
-    failures += check(args.at("d").is_string() && args.at("d") == "maybe",
-                      "non-boolean text for a nullable boolean stays raw");
-    failures += check(args.at("e").is_boolean() && args.at("e") == false,
-                      "nullable boolean False coerces to false (null listed first)");
-    failures += check(args.at("f").is_null(),
-                      "capitalized Null is JSON null (case-insensitive)");
-    return failures;
-}
-
 // (e) boolean true for a string param -> raw text "true".
 // (f) null for a string param -> raw text "null".
 int test_schema_string_param_bool_and_null_preserve_raw() {
@@ -655,8 +563,6 @@ int main() {
     failures += test_schema_integer_param_deserializes();
     failures += test_schema_nullable_integer_deserializes();
     failures += test_schema_nullable_string_preserves_raw();
-    failures += test_schema_boolean_param_coerces_python_scalars();
-    failures += test_schema_nullable_boolean_param();
     failures += test_schema_mixed_integer_string_preserves_raw();
     failures += test_schema_invalid_type_spelling_preserves_raw();
     failures += test_schema_string_param_bool_and_null_preserve_raw();

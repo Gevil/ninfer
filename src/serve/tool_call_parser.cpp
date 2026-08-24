@@ -6,7 +6,6 @@
 #include <array>
 #include <cctype>
 #include <cstdio>
-#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -69,31 +68,25 @@ std::string new_tool_call_id() {
     return std::string(buf.data());
 }
 
-const std::unordered_map<std::string, std::vector<std::string>>* tool_param_types(
+const std::unordered_map<std::string, std::string>* tool_param_types(
     const ToolParamTypeMap& map, const std::string& tool_name) {
     const auto it = map.find(tool_name);
     return it == map.end() ? nullptr : &it->second;
 }
 
-// The full set of declared non-string types recorded for (tool_name, param),
-// or nullptr when the parameter has no non-string schema permission.
-const std::vector<std::string>* param_declared_types(const ToolParamTypeMap& map,
-                                                     const std::string& tool_name,
-                                                     const std::string& param) {
+// Whether the schema explicitly permits a non-string JSON type for
+// (tool_name, param). The map only records non-string-typed params (string,
+// unknown/invalid, and absent-type params are omitted), so a recorded entry
+// means the schema positively wants a number/boolean/array/object/null and
+// the parser may adopt the deserialized JSON type. Only membership is tested;
+// the stored value is never read. Absence => preserve raw text: the client
+// owns the schema and decides type interpretation.
+bool param_allows_deserialization(const ToolParamTypeMap& map,
+                                  const std::string& tool_name,
+                                  const std::string& param) {
     const auto* params = tool_param_types(map, tool_name);
-    if (params == nullptr) { return nullptr; }
-    const auto it = params->find(param);
-    return it == params->end() ? nullptr : &it->second;
-}
-
-// vLLM's qwen3coder coercion for boolean-declared parameters: the model may
-// emit Python-style scalars (True/False, 1/0) that are not valid JSON.
-// `value` is the lowercased raw text; "true"/"1" -> true, "false"/"0" ->
-// false; anything else is not a boolean and stays raw text.
-std::optional<bool> coerce_boolean(std::string_view value) {
-    if (value == "true" || value == "1") { return true; }
-    if (value == "false" || value == "0") { return false; }
-    return std::nullopt;
+    if (params == nullptr) { return false; }
+    return params->find(param) != params->end();
 }
 
 } // namespace
@@ -127,8 +120,7 @@ bool classify_param_type(const Json& spec, std::vector<std::string>& declared) {
         // An empty type array (e.g. "type":[]) is uncertain, not a positive
         // declaration of a non-string type; returning false here preserves
         // raw text and prevents all_non_string_types from succeeding vacuously
-        // on an empty set (which would record the parameter with no declared
-        // types).
+        // on an empty vector (which would then crash on declared.front()).
         if (declared.empty()) { return false; }
         return true;
     }
@@ -162,18 +154,15 @@ ToolParamTypeMap build_tool_param_type_map(const std::vector<ToolDefinition>& to
         if (props_it == schema.end() || !props_it->is_object()) { continue; }
         // The entry for tool.name was already reset to empty at the top of
         // the loop; populate it only from this definition's properties.
-        auto& inner = map[tool.name];
+        std::unordered_map<std::string, std::string>& inner = map[tool.name];
         for (const auto& [name, spec] : props_it->items()) {
             if (!spec.is_object()) { continue; }
             std::vector<std::string> declared;
             if (!classify_param_type(spec, declared)) { continue; }
             // Record only when every declared type is a valid non-string type;
             // string-allowed, unknown/invalid, and absent-type params are left
-            // out so the parser preserves raw text for them. Store the full
-            // declared set (not just the first element) so the parser can
-            // reason about nullable types (e.g. ["boolean","null"])
-            // independently of the type-array order.
-            if (all_non_string_types(declared)) { inner[name] = declared; }
+            // out so the parser preserves raw text for them.
+            if (all_non_string_types(declared)) { inner[name] = declared.front(); }
         }
     }
     return map;
@@ -194,40 +183,12 @@ bool parse_parameter(std::string_view inner, std::size_t& pos, Json& args,
     const std::size_t value_end = inner.find(kParamClose, pos);
     if (value_end == std::string_view::npos) { return false; }
     const std::string raw_value = trim_ascii(inner.substr(pos, value_end - pos));
-    const std::vector<std::string>* declared = param_declared_types(param_types, tool_name, key);
-    const bool is_boolean =
-        declared != nullptr &&
-        std::find(declared->begin(), declared->end(), "boolean") != declared->end();
-    if (is_boolean) {
-        // Boolean-declared params: the model may emit Python-style scalars
-        // (True/False, 1/0) that are not valid JSON, so coerce the raw text
-        // instead of adopting a parsed value. The literal null is JSON null:
-        // a valid value for a nullable boolean, and the faithful reading of
-        // the token otherwise (matching the fallthrough for other nullable
-        // types). Any other value stays raw text for the client to validate.
-        // Both comparisons are case-insensitive, matching the model's
-        // Python-style emissions (True/TRUE, Null/NULL).
-        std::string lower;
-        lower.reserve(raw_value.size());
-        for (const char c : raw_value) {
-            lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-        }
-        if (std::optional<bool> coerced = coerce_boolean(lower)) {
-            args[key] = *coerced;
-        } else if (lower == "null") {
-            args[key] = nullptr;
-        } else {
-            args[key] = Json(raw_value);
-        }
-        pos = value_end + kParamClose.size();
-        return true;
-    }
     // Only adopt the deserialized JSON type when the schema explicitly
     // permits a non-string type. For string-typed, unknown, or absent
     // params, keep the raw text so the model's value reaches the client
     // with its type intact; the client owns the schema and validates.
     Json parsed = Json::parse(raw_value, nullptr, false);
-    const bool can_deserialize = declared != nullptr;
+    const bool can_deserialize = param_allows_deserialization(param_types, tool_name, key);
     args[key] = (parsed.is_discarded() || !can_deserialize) ? Json(raw_value) : parsed;
     pos                         = value_end + kParamClose.size();
     return true;
