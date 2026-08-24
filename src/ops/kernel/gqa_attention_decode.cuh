@@ -334,6 +334,7 @@ __launch_bounds__(256) __global__ void gqa_attention_small_t_reduce_output_kerne
             const float gated = __bfloat162float(reduced) * sigmoid(__bfloat162float(gate[out_index]));
             out[out_index]    = __float2bfloat16_rn(gated);
         }
+    }
 }
 
 } // namespace ninfer::ops
