@@ -72,6 +72,15 @@ struct LoadProgress {
     std::function<void(std::string_view phase, std::uint64_t done, std::uint64_t total)> callback;
 };
 
+enum class VisionResidency : std::uint8_t {
+    // Vision weights stay resident on the device for the process lifetime.
+    Resident,
+    // Vision weights live in pinned host memory and are streamed through device
+    // memory borrowed from evicted read-only text weights for the duration of
+    // each image encode. Requires enable_vision.
+    Overlay,
+};
+
 struct EngineOptions {
     std::filesystem::path artifact_path;
     // Optional self-contained Jinja chat template loaded once with this Engine.
@@ -97,6 +106,13 @@ struct EngineOptions {
     // than discarding them. Each parked sequence takes only the bytes it needs;
     // zero keeps the discard-on-eviction behaviour.
     std::uint64_t host_kv_cache_bytes = 0;
+    // Vision weight residency policy (inert until the overlay engine implementation
+    // is ported; overlay currently behaves as resident).
+    VisionResidency vision_residency = VisionResidency::Resident;
+    // Largest merged vision-token count a single item may carry (bounds the vision
+    // share of startup workspace/transient reservations).
+    std::uint32_t vision_max_merged_tokens = 32768;
+
     // Pinned-host content cache for computed context (0 disables the feature entirely).
     std::size_t kv_host_cache_mib          = 0;
     LoadProgress load_progress;
