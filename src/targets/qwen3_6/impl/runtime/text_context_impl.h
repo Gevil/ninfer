@@ -381,6 +381,9 @@ void TextContext::mtp_forward_tail(Tensor& x, const Tensor& ah, const Tensor& po
     Tensor qn          = results.normalized_query.view({kCfg.head_dim, kCfg.n_q, T});
     Tensor kn          = results.normalized_key.view({kCfg.head_dim, kCfg.n_kv, T});
     Tensor rope_for_op = active_sequence_batch_ != 0 ? rope_positions.view({T}) : rope_positions;
+    // BASEOPT-23: route the draft head through the same fused q/k norm the main decode path
+    // uses. The op falls back to the two standalone norms for any other geometry, and rope
+    // stays in its own kernel (see the note on qk_norm_rope_text_kernel).
     ops::qk_norm_rope(rope_for_op, kCfg.rotary_dim, kCfg.rope_theta, q, *mtp_.q_norm, qn, k,
                       *mtp_.k_norm, kn, kCfg.rms_eps, s);
 
@@ -396,10 +399,11 @@ void TextContext::mtp_forward_tail(Tensor& x, const Tensor& ah, const Tensor& po
         Tensor v_batch        = v.view({kCfg.head_dim, kCfg.n_kv, width, active_sequence_batch_});
         Tensor a_batch        = a.view({kCfg.head_dim, kCfg.n_q, width, active_sequence_batch_});
         Tensor position_batch = positions.view({width, active_sequence_batch_});
+        // BASEOPT-24: hand the sigmoid gate to the attention epilogue, as the main decode
+        // path already does; the op falls back to the standalone multiply when it cannot fuse.
         ops::gqa_attention(q_batch, k_batch, v_batch, position_batch, *active_valid_columns_,
                            *active_backend_kv_table_rows_, kAttnScale,
-                           batch_mtp_kv_->batch_layer_view(0), envelope, work_, a_batch, s);
-        ops::sigmoid_mul(gate, a, s);
+                           batch_mtp_kv_->batch_layer_view(0), envelope, work_, a_batch, s, &gate);
     } else {
         ops::gqa_attention(qn, kn, v, positions, Tensor{}, io_.backend_kv_table_row, kAttnScale,
                            batch_mtp_kv_->batch_layer_view(0), envelope, work_, a, s, &gate);

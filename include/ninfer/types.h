@@ -72,6 +72,15 @@ struct LoadProgress {
     std::function<void(std::string_view phase, std::uint64_t done, std::uint64_t total)> callback;
 };
 
+enum class VisionResidency : std::uint8_t {
+    // Vision weights stay resident on the device for the process lifetime.
+    Resident,
+    // Vision weights live in pinned host memory and are streamed through device
+    // memory borrowed from evicted read-only text weights for the duration of
+    // each image encode. Requires enable_vision.
+    Overlay,
+};
+
 struct EngineOptions {
     std::filesystem::path artifact_path;
     // Optional self-contained Jinja chat template loaded once with this Engine.
@@ -93,6 +102,19 @@ struct EngineOptions {
     std::uint32_t image_token_budget       = 0;
     bool enable_vision                     = false;
     bool use_cuda_graph                    = true;
+    // Total pinned host RAM budget (bytes) for parking evicted sequences rather
+    // than discarding them. Each parked sequence takes only the bytes it needs;
+    // zero keeps the discard-on-eviction behaviour.
+    std::uint64_t host_kv_cache_bytes = 0;
+    // Vision weight residency policy (inert until the overlay engine implementation
+    // is ported; overlay currently behaves as resident).
+    VisionResidency vision_residency = VisionResidency::Resident;
+    // Largest merged vision-token count a single item may carry (bounds the vision
+    // share of startup workspace/transient reservations).
+    std::uint32_t vision_max_merged_tokens = 32768;
+
+    // Pinned-host content cache for computed context (0 disables the feature entirely).
+    std::size_t kv_host_cache_mib          = 0;
     LoadProgress load_progress;
 };
 
@@ -388,10 +410,12 @@ struct SpeculativeStats {
 };
 
 enum class PrefixReusePath : std::uint8_t {
+
     FullReset,
     AppendAtFrontier,
     RestoreTurnCheckpoint,
     RestoreResponseCheckpoint,
+    ContentRestore,
 };
 
 struct GenerationResult {
@@ -436,6 +460,20 @@ struct MemorySummary {
     std::size_t cuda_graph_allowance_bytes        = 0;
     std::size_t cuda_graph_observed_bytes         = 0;
     std::size_t kv_payload_bytes                  = 0;
+};
+
+// Content-addressed host KV cache counters; all zeros when the cache is disabled.
+struct KvHostCacheStats {
+    bool enabled                   = false;
+    std::uint64_t budget_bytes     = 0;
+    std::uint64_t stored_bytes     = 0;
+    std::uint64_t stored_segments  = 0;
+    std::uint64_t stored_pages     = 0;
+    std::uint64_t hit_requests     = 0;
+    std::uint64_t hit_tokens       = 0;
+    std::uint64_t restored_bytes   = 0;
+    std::uint64_t writeback_bytes  = 0;
+    std::uint64_t evicted_segments = 0;
 };
 
 // Monotonic execution counters plus one boundary-consistent scheduler snapshot. Consumers derive

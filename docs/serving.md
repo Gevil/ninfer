@@ -464,6 +464,10 @@ curl http://127.0.0.1:8080/v1/messages \
 The endpoint supports top-level system text, ordered mid-conversation system messages,
 user/assistant history, text and image blocks, thinking blocks, tool-use history, tool results,
 client-defined tools, non-streaming responses, and Anthropic SSE events.
+`tool_result` blocks remain in request order, including nested text and image blocks; their order
+does not need to match the preceding assistant `tool_use` blocks. Literal Qwen Vision control-token
+spellings in text, reasoning, tool definitions, or tool arguments remain text and do not create
+media placeholders.
 Mid-conversation system messages remain at their `messages` array position and are not merged into
 the top-level system instruction. A system section must follow a user/tool-result message and be
 final or immediately precede an assistant message; it cannot interrupt a tool-use/tool-result pair.
@@ -529,12 +533,14 @@ curl http://127.0.0.1:8080/v1/models \
 | `--response-store-max-records N` | maximum locally retained Responses objects | `1024` |
 | `--response-store-max-mib N` | total local Response envelope/Item/context budget | `256` |
 | `--kv-dtype bf16\|int8` | KV-cache storage | `bf16` |
+| `--host-kv-cache-mib N` | park evicted sequences in a pinned host-RAM budget of N MiB instead of discarding them; each parked sequence takes only its real size, and a session larger than the budget falls back to re-prefill; not supported with `--spec dflash` or `--no-prefix-reuse` (startup error) | `0` (off) |
 | `--spec mtp\|dflash` | speculative backend | off |
 | `--draft-tokens N` | MTP `1..5`; DFlash `1..15` | unset |
 | `--lm-head-draft` | optimized proposal head | off |
 | `--default-max-tokens N` | output limit when omitted by a request | `8192` |
 | `--vision` | enable media input and load Vision GPU allocations | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
+| `--kv-host-cache-mib N` | pinned-host content cache for computed context: previously computed prefixes restore through PCIe instead of re-prefilling, and branches sharing a prefix deduplicate against the same stored pages; conflicts with `--no-prefix-reuse` and `--spec dflash`; the budget shares process pinned host RAM with the vision pinned block and overlay mirrors, carved pinned chunks are retained until shutdown (RSS follows the high-water mark), and a failed pinned allocation degrades to skipping the save, never to an error | `0` (off) |
 | `--no-prefix-reuse` | disable compatible-prefix caching | prefix reuse on |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |
@@ -685,6 +691,19 @@ a prefix whose effort instruction differs.
 An appended mid-conversation system message is an ordinary prompt suffix, so an unchanged prior
 history remains eligible for `append_frontier`. If the client modifies, removes, or moves a
 historical system message, the token prefix genuinely differs and a miss/reset is correct.
+
+### Determinism
+
+Greedy decoding is reproducible for an identical execution schedule: the same prompt served on an
+otherwise idle server produces the same tokens on every run. It is not bitwise-reproducible across
+different batch compositions. Decode-phase projection kernels are selected by the number of tokens
+in the step (the sum over active lanes of one plus the accepted speculative drafts), and the
+variants differ in reduction order; the resulting sub-ulp logit differences flip the argmax only on
+near-ties, but over a long greedy continuation such flips accumulate into divergent text. A request
+therefore yields distribution-equivalent, not byte-equivalent, output when other requests share its
+decode steps, with the cache on or off. Short answers are stable in practice; treat long greedy
+continuations under concurrent load as equivalent rather than identical, and compare them against a
+solo run of the same prompt when bitwise reproduction matters (`tools/smoke/determinism_fingerprint.py`).
 
 Speculative decoding is an engine option and does not change protocol output shapes, stop behavior,
 or usage accounting. If a stop truncates a multi-token MTP or DFlash round, the Engine commits the

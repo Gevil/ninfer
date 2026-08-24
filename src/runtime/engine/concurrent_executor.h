@@ -5,6 +5,8 @@
 #include "ninfer/types.h"
 #include "runtime/contract/types.h"
 #include "runtime/engine/admission_policy.h"
+#include "runtime/engine/host_kv_restore_transaction.h"
+#include "core/host_kv_log.h"
 #include "runtime/engine/request_memory.h"
 #include "runtime/generation/generation_budget.h"
 #include "targets/qwen3_6/export/ninfer/targets/qwen3_6/frontend.h"
@@ -54,6 +56,12 @@ public:
         if (admission_capacity_.active_lanes != max_concurrency_ ||
             admission_capacity_.main_kv_pages == 0) {
             throw std::logic_error("target admission capacity does not match the Engine");
+        }
+        if (options.host_kv_cache_bytes > 0) {
+            // The Program owns the cache: budget sizing and the parked-sequence
+            // layout are target-specific, and the executor is generic over
+            // Program. It only ever asks "park this lane" / "restore this lane".
+            instance.program->enable_host_kv_cache(options.host_kv_cache_bytes);
         }
         worker_ = std::thread([this] { worker_loop(); });
     }
@@ -165,6 +173,11 @@ public:
         }
         queue_cv_.notify_one();
         return Submission(*this, std::move(request));
+    }
+
+    [[nodiscard]] KvHostCacheStats host_cache_stats() const {
+        std::scoped_lock lock(execution_mutex_);
+        return instance_.program->host_cache_stats();
     }
 
     [[nodiscard]] MemorySummary memory_summary() const {
@@ -292,12 +305,28 @@ private:
         std::string content;
         std::string reasoning;
         std::optional<std::uint32_t> lane;
+        std::uint64_t content_identity = 0;
         std::atomic<bool> cancelled{false};
         bool decode_ready = false;
 
         std::optional<BasePlan> base_plan;
         std::array<std::optional<Plan>, kMaximumConcurrency> lane_plans{};
         std::array<std::uint64_t, kMaximumConcurrency> lane_plan_versions{};
+        // Set by the probe to the id of the host-KV entry that matched this
+        // request but whose restore deferred (the device pool could not reserve
+        // the parked entitlement), or 0 when no restore deferred. The admission
+        // runs the evicting-restore transaction (host_kv_restore_transaction.h)
+        // against that exact entry id: it first checks the target can ever fit
+        // (the pre-check), then parks other retained lanes until both the entry
+        // and the plan fit, then restores the entry so the request reuses the
+        // cached prefix instead of re-prefilling. The id (not a bool) is what
+        // lets the admission revalidate the entry's existence before any
+        // destructive parking: a concurrent admission may have LRU-evicted the
+        // entry between the probe and this admission, and acting on a stale id
+        // would park or discard a resident for an entry that no longer exists.
+        // Refreshed by every probe of the lane; consumed (and cleared) by the
+        // admission of the selected lane.
+        std::array<std::uint64_t, kMaximumConcurrency> host_kv_deferred_entry{};
         AdmissionResources admission_resources;
         std::uint64_t remaining_service_work = 0;
         std::uint64_t backfill_epoch         = 0;
@@ -494,9 +523,52 @@ private:
 
     void invalidate_lane_plans(std::uint32_t lane) noexcept { ++lane_plan_versions_[lane]; }
 
+    std::uint64_t observed_store_epoch_ = 0;
+
+    // When identical prompts wait in the queue, publish this lane's prompt-boundary anchor
+    // into the host cache now (one D2H of the prompt state) so the twins content-restore in
+    // milliseconds instead of repeating the full prefill they were held back from.
+    bool maybe_publish_prefill_checkpoint(std::uint32_t lane) {
+        const std::uint64_t identity = lane_identities_[lane];
+        if (identity == 0 || lane_publish_attempted_[lane]) { return false; }
+        bool waiting = false;
+        {
+            std::lock_guard lock(queue_mutex_);
+            for (const auto& pending : pending_) {
+                if (pending->content_identity == identity) {
+                    waiting = true;
+                    break;
+                }
+            }
+        }
+        if (!waiting) { return false; }
+        lane_publish_attempted_[lane] = true;
+        if (!instance_.program->save_prefill_checkpoint(lane)) { return false; }
+        observed_store_epoch_ = instance_.program->host_cache_epoch();
+        for (std::uint32_t index = 0; index < max_concurrency_; ++index) {
+            invalidate_lane_plans(index);
+        }
+        return true;
+    }
+
     void remove_completed_slot(std::uint32_t lane) {
         slots_[lane].reset();
-        invalidate_lane_plans(lane);
+        lane_identities_[lane]        = 0;
+        lane_publish_attempted_[lane] = false;
+        // Completion runs the host-cache save, whose staging may evict store segments that
+        // other lanes' cached plans reference (ContentRestore anchors), and whose sealed
+        // segment may improve waiting plans. Replan everyone only when the store actually
+        // mutated; a completion that stored nothing (short prompts, duplicate trajectories,
+        // cache off) keeps the pre-cache single-lane invalidation.
+        const std::uint64_t epoch = instance_.program->host_cache_epoch();
+        if (epoch != observed_store_epoch_) {
+            observed_store_epoch_ = epoch;
+            for (std::uint32_t index = 0; index < max_concurrency_; ++index) {
+                invalidate_lane_plans(index);
+            }
+        } else {
+            invalidate_lane_plans(lane);
+        }
     }
 
     void consume_service_work(const std::shared_ptr<Request>& request, std::uint64_t work) {
@@ -632,6 +704,7 @@ private:
             instance_.request_memory.deactivate();
             prefill_lane_.reset();
         }
+        maybe_publish_prefill_checkpoint(*request->lane);
         request->begin = step.summary;
         if (step.round.tokens.size() != 1) {
             throw std::logic_error("prefill did not license exactly one token");
@@ -690,14 +763,133 @@ private:
             request->lane_plans[lane]) {
             return;
         }
+        // plan_request_for_lane() reads this lane's SequenceState to choose
+        // append over rewind, so a parked sequence must be resident before it
+        // runs or it plans a full reset against the wrong occupant.
+        //
+        // The lane is rarely empty: it holds whichever sequence ran last. So
+        // restore whenever the cache serves this prompt better than the
+        // resident sequence does, parking the resident one first to make room.
+        // A request that disabled prefix reuse must not touch the host cache:
+        // the planner will report zero reuse for it, so restoring (and evicting
+        // the resident to make room) is wasted host traffic that can destroy
+        // another session's cache opportunity for nothing.
+        // The identity.reusable half of the gate lives in host_kv_reusable_tokens
+        // (where the PreparedPromptData is in scope), so a request with a
+        // non-reusable identity returns zero cached tokens and skips the block.
+        if (instance_.program->host_kv_cache_enabled() &&
+            request->options.execution.allow_prefix_reuse) {
+            // Refresh the deferred-restore entry id for this lane: it is set only
+            // when the restore below defers, so a probe that does not defer
+            // (no match, resident wins, or the restore succeeds) clears it.
+            request->host_kv_deferred_entry[lane] = 0;
+            const std::uint32_t cached =
+                instance_.program->host_kv_reusable_tokens(request->prompt);
+            if (cached == 0) {
+                // Log only the first few misses (the rest are the common case in a
+                // multi-session workload); the park/restore/evict lines stay
+                // unthrottled because they are rare and diagnostic. The counter
+                // re-arms on a successful restore, so the log keeps telling you
+                // "this session stopped matching" instead of going blind after 8.
+                if (host_kv_miss_log_count_ < 8) {
+                    ++host_kv_miss_log_count_;
+                    host_kv_log("req " + std::to_string(request->id) +
+                                " host KV miss: no entry matches this prompt");
+                }
+            }
+            if (cached != 0) {
+                // Resolve the best match's stable id once: the probe's restore
+                // and feasibility check address that exact entry, so a resident
+                // parked here (whose reuse is lower) cannot retarget the
+                // transaction mid-way.
+                const std::uint64_t match_id =
+                    instance_.program->host_kv_match_id(request->prompt);
+                std::uint32_t resident = 0;
+                if (instance_.program->has_retained_lane(lane)) {
+                    const Plan probe = instance_.program->plan_request_for_lane(
+                        lane, request->prompt, *request->base_plan);
+                    resident = probe.summary().reusable_prompt_tokens;
+                }
+                if (cached > resident) {
+                    // Only park the resident if the restore will actually fit:
+                    // parking frees the lane's pages, but if the entry's
+                    // entitlement still exceeds the freed space (the pool is
+                    // saturated by the other lanes), the park is wasted and -
+                    // because find_admission_lane probes every free lane - the
+                    // cumulative parks free the pool so a later lane's probe
+                    // restores directly, making the admission's evicting-restore
+                    // redundant. Keep the pool saturated so the admission's
+                    // evict_retained loop can park the other retained lanes and
+                    // the evicting-restore step restores the entry.
+                    if (!instance_.program->can_restore_lane(lane, match_id)) {
+                        // The entry cannot fit even after parking this lane's
+                        // resident: defer to the admission, which parks the other
+                        // retained lanes (freeing more pages) and retries the
+                        // restore. The lane keeps its resident, so the plan below
+                        // is computed against it (a nonzero-reuse append when the
+                        // resident shares a prefix, a full reset otherwise), and
+                        // the entry id tells the admission which entry to restore.
+                        request->host_kv_deferred_entry[lane] = match_id;
+                    } else {
+                        // Park the resident to make room, protecting the entry
+                        // this prompt will restore: without it, the LRU eviction
+                        // that frees budget room could evict the very entry the
+                        // restore needs.
+                        bool lane_cleared = !instance_.program->has_retained_lane(lane);
+                        if (!lane_cleared) {
+                            if (instance_.program->park_lane(lane, match_id)) {
+                                // park_lane cleared the lane; the resident's state is
+                                // now in the cache and the lane is free for the restore.
+                                lane_cleared = true;
+                            } else {
+                                // No budget room for the resident: every free range is held by
+                                // protected entries (the budget-holds-only-the-protected-entry
+                                // case, where this prompt's own entry holds the whole budget).
+                                // Discard the resident rather than destroy the entry the
+                                // restore needs - the request in front of us is this
+                                // prompt's, so restoring it beats parking the resident. The
+                                // resident re-prefills on its next request, exactly as
+                                // it would without the cache.
+                                instance_.program->evict_retained_lane(lane);
+                                lane_cleared = true;
+                            }
+                        }
+                        if (lane_cleared &&
+                            instance_.program->restore_lane(lane, match_id, request->prompt)) {
+                            invalidate_lane_plans(lane);
+                            // The cache is demonstrably working again: re-arm the
+                            // miss log so a later "stopped matching" is visible.
+                            host_kv_miss_log_count_ = 0;
+                        } else if (lane_cleared) {
+                            // The lane was cleared (resident parked or discarded) but
+                            // the restore failed: the lane state changed, so cached
+                            // plans for it are stale.
+                            invalidate_lane_plans(lane);
+                            // A failed restore is either a capacity deferral (the
+                            // entry is kept, touched, and a later admission can
+                            // retry it) or a materialization failure (the entry was
+                            // dropped). Record the entry id either way: the
+                            // admission revalidates with host_kv_entry_exists, so a
+                            // dropped entry simply falls back to the plain reuse-0
+                            // path rather than parking or discarding a resident for
+                            // a phantom entry.
+                            request->host_kv_deferred_entry[lane] = match_id;
+                        }
+                    }
+                }
+            }
+        }
         request->lane_plans[lane].reset();
         request->lane_plans[lane].emplace(
             instance_.program->plan_request_for_lane(lane, request->prompt, *request->base_plan));
         request->lane_plan_versions[lane] = lane_plan_versions_[lane];
+        request->content_identity =
+            instance_.program->content_identity(*request->lane_plans[lane]);
     }
 
     [[nodiscard]] std::optional<LaneChoice>
-    find_admission_lane(const std::shared_ptr<Request>& request) {
+    find_admission_lane(const std::shared_ptr<Request>& request,
+                        std::optional<std::uint32_t>* held_by_twin_lane = nullptr) {
         std::optional<LaneChoice> selected;
         std::uint32_t selected_reuse = 0;
         for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
@@ -705,6 +897,21 @@ private:
             ensure_lane_plan(request, lane);
             const Plan& plan          = *request->lane_plans[lane];
             const std::uint32_t reuse = plan.summary().reusable_prompt_tokens;
+            // An identical prompt is active on another lane and this plan would still pay the
+            // full prefill: hold it. When the twin's prefill completes its prompt-boundary
+            // anchor is published, the replan turns into a content restore (reuse > 0) and
+            // this gate stops matching. Checked against every active lane, not just the one
+            // currently prefilling — a burst can admit two twins in one scheduling pass
+            // before the first prefill starts.
+            if (request->content_identity != 0 && reuse == 0) {
+                for (std::uint32_t occupied = 0; occupied < max_concurrency_; ++occupied) {
+                    if (slots_[occupied] != nullptr &&
+                        lane_identities_[occupied] == request->content_identity) {
+                        if (held_by_twin_lane != nullptr) { *held_by_twin_lane = occupied; }
+                        return std::nullopt;
+                    }
+                }
+            }
             if (instance_.program->can_admit_lane(lane, plan) &&
                 (!selected || reuse > selected_reuse)) {
                 selected       = LaneChoice{.lane = lane};
@@ -761,22 +968,56 @@ private:
         if (!request->lane_plans[lane]) {
             throw std::logic_error("selected admission lane has no request plan");
         }
-        if (choice.evict_retained) {
-            for (std::uint32_t retained_lane = 0;
-                 retained_lane < max_concurrency_ &&
-                 !instance_.program->can_admit_lane(lane, *request->lane_plans[lane]);
-                 ++retained_lane) {
-                if (retained_lane != lane && slots_[retained_lane] == nullptr &&
-                    instance_.program->has_retained_lane(retained_lane)) {
-                    instance_.program->evict_retained_lane(retained_lane);
-                    invalidate_lane_plans(retained_lane);
+        const std::uint64_t deferred_entry = request->host_kv_deferred_entry[lane];
+        // The host-KV admission handling (host_kv_restore_transaction.h):
+        // revalidate the deferred entry by id (not best match - a concurrent
+        // admission may have LRU-evicted it, and a better match inserted mid-
+        // transaction must not retarget the restore), run the evicting-restore
+        // transaction if the entry still exists, and fall back to the ordinary
+        // admission of the resident plan when the restore is abandoned
+        // (KeptResident) or the entry is stale. The fallback still honors the
+        // lane choice's ordinary eviction requirement (choice.evict_retained),
+        // so an infeasible resident plan is never fed to start_prefill_lane.
+        const HostKvRestoreOutcome host_kv_outcome = admit_host_kv_restore(
+            *instance_.program, lane, request->prompt, *request->base_plan,
+            request->lane_plans[lane], deferred_entry, choice.evict_retained,
+            max_concurrency_,
+            [this](std::uint32_t l) { return slots_[l] != nullptr; },
+            [this](std::uint32_t l) { invalidate_lane_plans(l); },
+            [this, request](std::uint32_t l) {
+                // Park the resident only when the plan reuses nothing (a full
+                // reset overwrites it); a plan that reuses the resident's own
+                // prefix must not park it out from under itself. This cannot
+                // live in the evict_retained branch: can_admit_lane() counts the
+                // candidate lane's own retained pages as reclaimable, so the
+                // first admission loop succeeds and that branch is unreachable
+                // at --max-concurrency 1, which is exactly the configuration
+                // that needs the cache.
+                if (instance_.program->host_kv_cache_enabled() &&
+                    instance_.program->has_retained_lane(l) &&
+                    request->lane_plans[l]->summary().reusable_prompt_tokens == 0) {
+                    (void)instance_.program->park_lane(l);
                 }
-            }
-            if (!instance_.program->can_admit_lane(lane, *request->lane_plans[lane])) {
-                throw std::logic_error("retained eviction did not make admission feasible");
-            }
+            });
+        if (host_kv_outcome != HostKvRestoreOutcome::KeptResident) {
+            // The lane state changed (the entry is now resident, or the restore
+            // failed and the lane is empty), so resync the plan version the
+            // transaction invalidated.
+            request->lane_plan_versions[lane] = lane_plan_versions_[lane];
         }
+        // The deferred id is consumed (or was stale/absent): clear it so the
+        // "consumed and cleared" invariant holds on every path out of the
+        // host-KV block.
+        request->host_kv_deferred_entry[lane] = 0;
 
+        if (!instance_.program->content_restore_valid(*request->lane_plans[lane])) {
+            // A completion processed inside this scheduling pass ran save(), and its staging
+            // evicted the anchor this cached plan restores from. Replan against the current
+            // store instead of executing a stale restore.
+            invalidate_lane_plans(lane);
+            ensure_lane_plan(request, lane);
+        }
+        const std::uint64_t plan_identity = request->content_identity;
         Plan selected_plan = std::move(*request->lane_plans[lane]);
         request->lane_plans[lane].reset();
         if (!erase_pending(request)) { return AdmissionProgress::None; }
@@ -804,6 +1045,8 @@ private:
             request->backfill_epoch         = backfill_epoch;
             request->backfill_class         = backfill_class;
             slots_[lane]                    = request;
+            lane_identities_[lane]          = plan_identity;
+            lane_publish_attempted_[lane]   = false;
             invalidate_lane_plans(lane);
 
             TransientRegion transient;
@@ -833,6 +1076,16 @@ private:
             slots_[lane].reset();
             invalidate_lane_plans(lane);
             complete_error(request, error);
+            // A prefill-path C++ exception is a genuine invariant violation (or
+            // OOM), not a per-request admission failure: the request is marked
+            // failed above, but the exception propagates so a broken engine fails
+            // loudly rather than keep admitting requests off inconsistent state.
+            // (A CUDA error in this path aborts via CUDA_CHECK, the executor's
+            // established policy, before reaching this catch.) The host-KV
+            // restore path is not in this catch at all: it runs in
+            // find_admission_lane under try_admit_one's catch, and is
+            // non-throwing for C++ exceptions (restore_lane returns bool and
+            // drops the entry on failure).
             throw;
         }
         return AdmissionProgress::RanGpuUnit;
@@ -885,8 +1138,9 @@ private:
             }
 
             std::optional<LaneChoice> head_lane;
+            std::optional<std::uint32_t> head_held_by;
             try {
-                head_lane = find_admission_lane(head);
+                head_lane = find_admission_lane(head, &head_held_by);
             } catch (...) {
                 (void)remove_pending_error(head, std::current_exception());
                 control_progress = true;
@@ -894,6 +1148,19 @@ private:
             }
             if (head_lane) {
                 return admit_planned_request(head, *head_lane, BackfillClass::None, 0);
+            }
+            if (head_held_by) {
+                // Identity hold, not resource blockage: lanes are free by choice, so the
+                // protected-admission math must not run. If the twin is already generating,
+                // publish its prompt-boundary anchor now; the head replans into a restore on
+                // the next pass. While the twin is still prefilling, its completion hook
+                // publishes and invalidates plans.
+                if ((!prefill_lane_ || *prefill_lane_ != *head_held_by) &&
+                    maybe_publish_prefill_checkpoint(*head_held_by)) {
+                    control_progress = true;
+                }
+                return control_progress ? AdmissionProgress::ControlProgress
+                                        : AdmissionProgress::None;
             }
 
             const ActiveAdmissionSet active = active_admission_set();
@@ -953,8 +1220,9 @@ private:
                 }
 
                 std::optional<LaneChoice> candidate_lane;
+                std::optional<std::uint32_t> candidate_held_by;
                 try {
-                    candidate_lane = find_admission_lane(candidate);
+                    candidate_lane = find_admission_lane(candidate, &candidate_held_by);
                 } catch (...) {
                     (void)remove_pending_error(candidate, std::current_exception());
                     control_progress = true;
@@ -1163,9 +1431,16 @@ private:
     std::deque<std::shared_ptr<Request>> pending_;
     std::size_t outstanding_       = 0;
     std::uint64_t next_request_id_ = 1;
+    // Throttles the per-request host-KV miss log: most requests in a
+    // multi-session workload are new sessions, so an unthrottled stderr write
+    // (mutex + localtime + ostringstream) per miss would hit the hot path.
+    // Counts misses since the last successful restore (which re-arms it).
+    std::uint64_t host_kv_miss_log_count_ = 0;
     std::array<std::shared_ptr<Request>, kMaximumConcurrency> slots_{};
     std::optional<std::uint32_t> prefill_lane_;
     std::array<std::uint64_t, kMaximumConcurrency> lane_plan_versions_{};
+    std::array<std::uint64_t, kMaximumConcurrency> lane_identities_{};
+    std::array<bool, kMaximumConcurrency> lane_publish_attempted_{};
     std::optional<AdmissionProtection> protection_;
     std::uint64_t next_protection_epoch_ = 1;
     RuntimeStats cumulative_stats_;

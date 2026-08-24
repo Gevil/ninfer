@@ -17,17 +17,14 @@ struct ParsedToolCallOutput {
 };
 
 // Per-tool parameter deserialization allow-list distilled from the request
-// ToolDefinition list. Outer key: tool name. Inner key: parameter name; the
-// inner value is the full set of declared non-string types, in schema order.
-// Only parameters whose JSON Schema "type" is a valid non-string type (or an
-// array of valid non-string types) are recorded. The parser deserializes
-// recorded parameters and, for sets containing "boolean", coerces
-// Python-style scalars (True/False, 1/0) to JSON booleans and the literal
-// null to JSON null. A parameter absent from the inner map (and a tool
-// absent from the outer map) has no schema permission to deserialize: the
-// parser preserves raw text and the client owns type interpretation.
+// ToolDefinition list. Outer key: tool name. Inner key: parameter name. Only
+// parameters whose JSON Schema "type" is a valid non-string type (or an array
+// of valid non-string types) are recorded; the parser tests membership only,
+// it never reads the inner value. A parameter absent from the inner map (and
+// a tool absent from the outer map) has no schema permission to deserialize:
+// the parser preserves raw text and the client owns type interpretation.
 using ToolParamTypeMap =
-    std::unordered_map<std::string, std::unordered_map<std::string, std::vector<std::string>>>;
+    std::unordered_map<std::string, std::unordered_map<std::string, std::string>>;
 
 // Distill the request ToolDefinition list into a per-tool parameter
 // deserialization allow-list. Each ToolDefinition::parameters_json is a JSON
