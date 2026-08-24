@@ -132,6 +132,40 @@ VRAM cold tier (`117d83e0` + follow-ups `581d56c8`/`a82d8f75`/`44e34e26`,
 bench `9168239b`); `dylan/experimental` — sage/sparge decode + TMA/PPL series.
 Evaluated per commit at execution time.
 
+### Tier 3 Wave B1 — dylan decode-path perf (EXECUTED 2026-08-24, `tier3-waveb` branch)
+
+Three always-on decode picks from `dylanbrodiefafard/experimental` (no feature flag;
+the current int8-KV lane takes them as-is). Each lands as its own commit naming the
+source fork/commit.
+
+| Pick | Source | What it brings | Commit |
+|---|---|---|---|
+| SwiGLU W4A4 evict-first prereq | dylan/experimental `46d2f59e` | T=4 SwiGLU runs W4A4 with L2 evict-first weights; adds `Cache::EvictFirst` to `ops/common/memory.cuh` + `memory_evict.cu` noinline helper (inlining createpolicy+cache_hint into large MMA is illegal on sm_120/ptxas 13.1), kernel `Cache` template param | `55036778` |
+| staged split-KV reduce | dylan/experimental `83b16e71` | the small-T attention reduce bulk-stages its partial column (acc slice + m/l stats) into dynamic smem via cp.async and runs the m/l/acc tree over smem — 3 serial global-load chains became one parallel bulk copy; bit-identical numerics (4-way quarter-sum order unchanged); reduce 19.2→7.2us (T=1), 22.2→13.8us (T=6); `NINFER_SMALL_T_REDUCE_DCHUNK` knob (default 64). Hand-merged with the tier2 `ed505ebc` fused-sigmoid-gate epilogue: both stores stay gate-aware with the exact BF16-replicated arithmetic | `0d5efa28` |
+| merge fix | local | the 83b16e71 hand-merge dropped one closing brace (the `if (q == 0)` closer in the reduce epilogue), leaving the kernel function scope open and leaking the namespace into the launcher TU's later includes (`ninfer::ops::std` errors, unbound `cp_async`). Closed the scope; production build + ctest re-verified | `89354ca7` |
+| GEMV cp.async evict_first | dylan/experimental `2660be68` | in the T<=4 one-shot GEMV (MTP verify/decode) every weight byte is streamed once, so the weight cp.async loads are marked `Cache::EvictFirst` (L2 evict-first) at all W4A4 sites (gdn_input_proj / attn_input_proj / linear / linear_add) — the 10s-100s MB stream no longer displaces the downstream consumer's L2 set; quality-neutral (identical bytes, eviction priority only) | `e481ccd8` |
+
+**Wave B evaluation record (2026-08-24, per ADOPTION plan "evaluated per commit"):**
+- dylan/experimental series (98972696..2660be68, 21 commits): 3 PICKs above;
+  the NVFP4-KV `--sage` block (49790f72 → 7dbbbcd0 → 24c23686 → 26276e0b →
+  ea0cd367 → 060dba3b, opt-in `--sage`, dormant on the int8 lane) is HELD for a
+  separate lane-config decision (NVFP4 KV cache); 11 research/tooling/bench
+  commits (kdev control plane, TMA A/B harness, NIAH fixtures, op-dumps, PPL
+  knobs, merge 9808de6b = pure history-join) SKIPPED.
+- eason/develop series (117d83e0..9168239b, 5 commits): SKIPPED — the
+  cross-GPU VRAM cold-tier chain is inert on the 1-GPU lane (auto-disable, zero
+  VRAM/behavior change) and its exact-`cached_tokens` half duplicates the in-tree
+  pr-55 reporting (`usage.prompt_tokens_details.cached_tokens` from
+  `prefix_cache_hit_tokens`).
+
+**Verification (2026-08-24):** buildstage production build clean from this tip
+(CUDA 13.1.2); ctest 6/6. Lane image `ninfer-nvfp4:tier3-waveb-<sha>` + `:latest`
+built from the public clone; restart battery all-PASS (boot ledger, `/v1/models`
+225280 contract, thinking + xhigh smokes, kwargs 400 contracts, decode probe
+vs 154.5 tok/s Wave-A baseline, `cached_tokens` regression). Log:
+`~/.local/share/ninfer/logs/tier3-waveb-restart-verify-2026-08-24.log`.
+Public review: [Gevil/ninfer PR #4](https://github.com/Gevil/ninfer/pull/4)
+(`tier3-waveb` → `qwen3.8-nvfp4full`, open, stacked on PR #3).
 ## Lane build
 
 The lane image is built **from this branch** (public repo clone → `podman build`),
