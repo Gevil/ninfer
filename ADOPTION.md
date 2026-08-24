@@ -127,11 +127,115 @@ decode probe, `cached_tokens` regression). Log:
 Public review: [Gevil/ninfer PR #3](https://github.com/Gevil/ninfer/pull/3)
 (`tier3` → `qwen3.8-nvfp4full`, open).
 
-**Wave B (next, planned):** `eason/develop` — exact `cached_tokens` + cross-GPU
-VRAM cold tier (`117d83e0` + follow-ups `581d56c8`/`a82d8f75`/`44e34e26`,
-bench `9168239b`); `dylan/experimental` — sage/sparge decode + TMA/PPL series.
-Evaluated per commit at execution time.
+**Wave B (EXECUTED 2026-08-24):** `dylan/experimental` decode-path perf adopted
+(Wave B1, below); `eason/develop` SKIPPED (inert on the 1-GPU lane); the
+NVFP4-KV `--sage` family REJECTED, vLLM work out of scope — decision
+2026-08-24: **the KV-cache precision floor is INT8/FP8: no lower-precision KV
+(NVFP4/sage/hyperquant/compressed-KV) is adopted, and vLLM is completely
+ignored.**
 
+**Tier 4 (PROPOSED 2026-08-24 — "upstream convergence + agent-workload" tier:
+new `tier4` branch stacked on `tier3-waveb`, per user's "open a new tier"
+direction).** Upstream `Neroued/ninfer` audit (2026-08-24: 26 open issues,
+32 open PRs, Discussions disabled) compared against the shipped tree (Wave A
++ B1 + 22c46df7 vision fix; lane runs code @ 89354ca7):
+
+- **Already covered in-tree (no action):** #24 (context in `/v1/models` —
+  battery contract), #43 (Jinja `--chat-template-file` — Sharp template path),
+  #54 (exception naming — B1 `55036778`), #55 (`cached_tokens` — tier2), #57
+  (tool message content parts — tier1 `fdcf6839`), #61 (image-token budget —
+  tier1 `325986ea`), #65 base (tool-param typing — tier1), #79 base (warmup
+  decoupling — tier2 `f91b7c85`), top-level `reasoning_effort` (#60: parsed in
+  the chat path, `openai_schema.cpp:517/567` + tier2 kwargs path — OMP's
+  `xhigh` is handled; a behavioral confirmation belongs in the battery).
+- **REJECTED per the precision-floor decision:** #35 compressed-KV E8 lattice
+  (pr-35 family) and `cometkim/feat/hyperquant` (54 commits).
+- **WAVE C1 — serving correctness for agent sessions (small, high value):**
+  - #86 (mr-september, 2026-08-24): drop stray think-close markers leaking
+    into tool-capable output (reproduced live on Qwen3.8-27B NVFP4 — the
+    exact "model error" class our OMP sessions hit);
+  - `99d39090` (pr-65 follow-up): preserve string-typed tool params instead
+    of eager-deserializing (fixes issue #66 — string params containing
+    JSON-shaped text ship coerced types);
+  - #88 (geoffwatts, 2026-08-24): U+2060 word-joiner neutralizes literal
+    Qwen vision-token spellings inside text — complements our 22c46df7 strip
+    fix (covers the "chat media order does not match rendered placeholders"
+    class; NOT in tree);
+  - #79 follow-up: fail-fast warmup exit — verify the tier2 adoption already
+    covers it, pick the diff if not;
+  - `9ed62e70` (dylan/chat-template): skip empty think wrappers on past
+    assistant turns (qwen3.8 template fix).
+- **WAVE C2 — decode perf (measured; bit-exact where applicable):**
+  - #67 (MichaelDementii): remove three redundant decode graph nodes,
+    +2.3% decode (nsys: `sigmoid_mul` 10/step, q/k `rmsnorm_warp` 20,
+    `sparse_moe_d2` routing 40 — measured on 35B; model-fit check on 27B);
+  - #85 (devan-carlin): adaptive CUDA-graph allowance (linear interpolation
+    vs our step function `d85278b1`) — the graph table jumps 2 MiB@128k →
+    223 MiB@256k, so at our 225280 context the step function undershoots;
+  - `cfb96526` GDN 27B gating-proj cooperative fuse + `604bdc5f`
+    thinking-preserving prefix reuse (dylan/perf/rtx5090-qwen38) —
+    grid-safety check per issue #39 (GB203 laptop overflow; our GB202
+    desktop has ~2× the SMs, should fit — verify the cooperative grid
+    sizing);
+  - `md` micros `90d4c423`/`8330672c`, `baseopt` m13/m14, `adaptive-gamma`
+    v2.1 (+1.9% mean, opt-in) — model-fit check (35B origin);
+  - #69 (MichaelDementii): warm the next consumer's L2 from the MoE tail,
+    +3.7% decode — needs a cross-layer contract; evaluate last.
+- **WAVE C3 — agent-workload KV lifetime (precision-neutral, opt-in):**
+  - #64 (gzenz; = dylan/ram-cache + origin/pr-64): host-backed KV cache —
+    park evicted lanes to pinned RAM;
+  - #73 (iamwavecut): content-addressed host KV (`--kv-host-cache-mib N`,
+    N=0 inert) — 118k prefix restore 422 ms vs 53.4 s cold (126×), branch
+    switch over a shared prefix ~100 ms (subagent workloads); the #75 design
+    doc converges #64 as fast path + #73 as shared page substrate.
+- **Battery additions (per wave):** 5090 land-gate T=4 decode harness
+  (`332b7a97`/`eeb6c9b3`/`596940d5`/`0f05e643`), think-close marker
+  regression (C1), tool-params schema check (C1), host-KV restore probe
+  (C3).
+- **Flagged non-code decision (user, from #38):** the official Qwen3.8-27B
+  NVFP4 artifact is ~20 GB vs the community artifact's ~14.3 GB → ~20%
+  decode-speed ceiling (weights read per step; maintainer-confirmed in
+  issue #38). The lane runs the official artifact (GPQA 89.39% gate).
+  Switching to the community artifact = ~20% faster decode, quality
+  unverified (maintainer has asked for a reproducible comparison; none
+  exists yet).
+
+### Tier 3 Wave B1 — dylan decode-path perf (EXECUTED 2026-08-24, `tier3-waveb` branch)
+
+Three always-on decode picks from `dylanbrodiefafard/experimental` (no feature flag;
+the current int8-KV lane takes them as-is). Each lands as its own commit naming the
+source fork/commit.
+
+| Pick | Source | What it brings | Commit |
+|---|---|---|---|
+| SwiGLU W4A4 evict-first prereq | dylan/experimental `46d2f59e` | T=4 SwiGLU runs W4A4 with L2 evict-first weights; adds `Cache::EvictFirst` to `ops/common/memory.cuh` + `memory_evict.cu` noinline helper (inlining createpolicy+cache_hint into large MMA is illegal on sm_120/ptxas 13.1), kernel `Cache` template param | `55036778` |
+| staged split-KV reduce | dylan/experimental `83b16e71` | the small-T attention reduce bulk-stages its partial column (acc slice + m/l stats) into dynamic smem via cp.async and runs the m/l/acc tree over smem — 3 serial global-load chains became one parallel bulk copy; bit-identical numerics (4-way quarter-sum order unchanged); reduce 19.2→7.2us (T=1), 22.2→13.8us (T=6); `NINFER_SMALL_T_REDUCE_DCHUNK` knob (default 64). Hand-merged with the tier2 `ed505ebc` fused-sigmoid-gate epilogue: both stores stay gate-aware with the exact BF16-replicated arithmetic | `0d5efa28` |
+| merge fix | local | the 83b16e71 hand-merge dropped one closing brace (the `if (q == 0)` closer in the reduce epilogue), leaving the kernel function scope open and leaking the namespace into the launcher TU's later includes (`ninfer::ops::std` errors, unbound `cp_async`). Closed the scope; production build + ctest re-verified | `89354ca7` |
+| GEMV cp.async evict_first | dylan/experimental `2660be68` | in the T<=4 one-shot GEMV (MTP verify/decode) every weight byte is streamed once, so the weight cp.async loads are marked `Cache::EvictFirst` (L2 evict-first) at all W4A4 sites (gdn_input_proj / attn_input_proj / linear / linear_add) — the 10s-100s MB stream no longer displaces the downstream consumer's L2 set; quality-neutral (identical bytes, eviction priority only) | `e481ccd8` |
+
+**Wave B evaluation record (2026-08-24, per ADOPTION plan "evaluated per commit"):**
+- dylan/experimental series (98972696..2660be68, 21 commits): 2 PICKs inside
+  the window (+ `46d2f59e` just below it, 3 total); the NVFP4-KV
+  `--sage`/s3/sparge family (49790f72, 7dbbbcd0, 24c23686, 26276e0b,
+  ea0cd367, 060dba3b, 7ea7efc3, a37580f2, 0f2bd013, d98fb9a4) REJECTED
+  2026-08-24 — KV-cache precision floor is INT8/FP8, no lower-precision KV,
+  vLLM ignored; 9 research/tooling/bench commits (kdev control plane, TMA A/B
+  harness, NIAH fixtures, op-dumps, PPL campaign `98972696`, bench sweeps,
+  merge 9808de6b = pure history-join) SKIPPED.
+- eason/develop series (117d83e0..9168239b, 5 commits): SKIPPED — the
+  cross-GPU VRAM cold-tier chain is inert on the 1-GPU lane (auto-disable, zero
+  VRAM/behavior change) and its exact-`cached_tokens` half duplicates the in-tree
+  pr-55 reporting (`usage.prompt_tokens_details.cached_tokens` from
+  `prefix_cache_hit_tokens`).
+
+**Verification (2026-08-24):** buildstage production build clean from this tip
+(CUDA 13.1.2); ctest 6/6. Lane image `ninfer-nvfp4:tier3-waveb-<sha>` + `:latest`
+built from the public clone; restart battery all-PASS (boot ledger, `/v1/models`
+225280 contract, thinking + xhigh smokes, kwargs 400 contracts, decode probe
+vs 154.5 tok/s Wave-A baseline, `cached_tokens` regression). Log:
+`~/.local/share/ninfer/logs/tier3-waveb-restart-verify-2026-08-24.log`.
+Public review: [Gevil/ninfer PR #4](https://github.com/Gevil/ninfer/pull/4)
+(`tier3-waveb` → `qwen3.8-nvfp4full`, open, stacked on PR #3).
 ## Lane build
 
 The lane image is built **from this branch** (public repo clone → `podman build`),
