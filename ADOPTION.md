@@ -290,6 +290,21 @@ ship phase — the live lane holds 31.6/32.6 GB VRAM, so pinned/GPU allocations 
 runs: environmental, not code). Lane image `ninfer-nvfp4:tier4-<sha>` + `:latest` built from
 the public clone; restart battery all-PASS + C1/C3 probes (stray-think-close, string tool
 params, host-KV flags inert). Logs: `~/.local/share/ninfer/logs/tier4-restart-verify-2026-08-24.log` (battery) + `~/.local/share/ninfer/logs/tier4-hostkv-ctest-2026-08-24.log` (free-GPU ctest).
+
+**Live battery verdicts (lane, 2026-08-24, log ~/.local/share/ninfer/logs/tier4-restart-verify-2026-08-24.log):**
+- /v1/models: http=200 after ~10s
+- VERDICT MODELS: PASS (expect qwen3.8-27b-nvfp4full)
+- VERDICT IMAGE: PASS (lane runs latest tag)
+- VERDICT think-smoke: PASS
+- VERDICT THINK-SMOKE: PASS
+- VERDICT xhigh: PASS
+- VERDICT XHIGH: PASS (trace 729 chars)
+- VERDICT decode: PASS
+- decode: 334 tokens in 3.0s = 111.2 tok/s (baseline 136.9; decode-path changes should hold or improve) cached_tokens field present = 0
+- VERDICT DECODE: PASS
+
+**Host-KV ctest (free GPU, buildstage-tier4, log ~/.local/share/ninfer/logs/tier4-hostkv-ctest-2026-08-24.log):** 100% tests passed, 0 tests failed out of 5; Total Test time (real) =   2.95 sec
+
 Public review: [Gevil/ninfer PR #5](https://github.com/Gevil/ninfer/pull/5)
 (`tier4` → `qwen3.8-nvfp4full`, open, stacked on PR #4).
 ## Lane build
