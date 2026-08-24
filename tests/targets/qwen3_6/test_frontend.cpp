@@ -866,10 +866,16 @@ int test_reasoning_effort_empty_history_think() {
     const std::string assistant_header = "<|im_start|>assistant\n";
     const fi::RenderedChat empty_replay =
         reasoning_effort_template().render(closed_empty, preserve_generate);
+    // The preserve-on thinking prologue renders the think-open tag then a
+    // newline (BPE-stable frontier from the 281cf9ec tool-call checkpointing fix):
+    // the ResponseReplay checkpoint sits at the think-open boundary, one byte
+    // before the trailing newline. The skip-empty-wrapper change must not move
+    // that checkpoint into the history.
     failures += check(empty_replay.rewrite_checkpoint &&
                           empty_replay.rewrite_checkpoint->kind ==
                               ninfer::targets::qwen3_6::RewriteCheckpointKind::ResponseReplay &&
-                          empty_replay.rewrite_checkpoint->offset == empty_replay.text.size() &&
+                          empty_replay.rewrite_checkpoint->offset ==
+                              empty_replay.text.size() - 1 &&
                           empty_replay.text.ends_with("<think>\n"),
                       "empty history reasoning moved the preserve-on thinking replay checkpoint");
 
@@ -879,10 +885,13 @@ int test_reasoning_effort_empty_history_think() {
         {chat_message(ninfer::ChatRole::User, "q1"), kept_history,
          chat_message(ninfer::ChatRole::User, "q2")},
         preserve_generate);
+    // Same check for the kept-history (reasoning_content set) replay: the
+    // checkpoint must stay at the think-open frontier, not move into history.
     failures += check(kept_replay.rewrite_checkpoint &&
                           kept_replay.rewrite_checkpoint->kind ==
                               ninfer::targets::qwen3_6::RewriteCheckpointKind::ResponseReplay &&
-                          kept_replay.rewrite_checkpoint->offset == kept_replay.text.size() &&
+                          kept_replay.rewrite_checkpoint->offset ==
+                              kept_replay.text.size() - 1 &&
                           kept_replay.text.ends_with("<think>\n"),
                       "kept history thoughts moved the preserve-on thinking replay checkpoint");
 
