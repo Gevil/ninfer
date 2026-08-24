@@ -127,10 +127,30 @@ decode probe, `cached_tokens` regression). Log:
 Public review: [Gevil/ninfer PR #3](https://github.com/Gevil/ninfer/pull/3)
 (`tier3` → `qwen3.8-nvfp4full`, open).
 
-**Wave B (next, planned):** `eason/develop` — exact `cached_tokens` + cross-GPU
-VRAM cold tier (`117d83e0` + follow-ups `581d56c8`/`a82d8f75`/`44e34e26`,
-bench `9168239b`); `dylan/experimental` — sage/sparge decode + TMA/PPL series.
-Evaluated per commit at execution time.
+**Wave B (EXECUTED 2026-08-24):** `dylan/experimental` decode-path perf adopted
+(Wave B1, below); `eason/develop` SKIPPED (inert on the 1-GPU lane); the
+NVFP4-KV `--sage` family REJECTED, vLLM work out of scope — decision
+2026-08-24: **the KV-cache precision floor is INT8/FP8: no lower-precision KV
+(NVFP4/sage/hyperquant/compressed-KV) is adopted, and vLLM is completely
+ignored.**
+
+**Wave B2 (candidate list, pending per-commit evaluation):**
+- `dylan/perf/rtx5090-qwen38`: `cfb96526` GDN 27B small-T gating-proj
+  cooperative-kernel fuse; `604bdc5f` thinking-preserving prefix-reuse
+  optimization; 5090 land-gate T=4 decode harnesses + tail-prefill metric
+  (`332b7a97`/`eeb6c9b3`/`596940d5`/`0f05e643`, foldable into the battery).
+- `dylan/ram-cache` (+ upstreamed `origin/pr-64`): system-RAM KV parking for
+  finished chats (`14329810`/`e6391ff5`/`fe89debe`) — precision-neutral
+  (INT8 KV to pinned RAM, LRU-lane eviction, usage logging); multi-turn
+  agent win.
+- `dylan/chat-template` `9ed62e70`: skip empty think wrappers on past
+  assistant turns (qwen3.8 template fix).
+- `origin/pr-65` `99d39090`: preserve string-typed tool params.
+- `md/perf/decode-suite` new micros `90d4c423` (moe router fold into last D1
+  block), `8330672c` (q/k rmsnorm single decode kernel); `md/research/baseopt`
+  m13/m14 (MTP draft-head fused q/k rmsnorm; MTP epilogue sigmoid gate) and
+  `md/research/adaptive-gamma` v2.1 (opt-in adaptive MTP policy, +1.9% mean
+  vs tuned mtp4) — model-fit check first (md research partly ran on 35B).
 
 ### Tier 3 Wave B1 — dylan decode-path perf (EXECUTED 2026-08-24, `tier3-waveb` branch)
 
@@ -146,12 +166,14 @@ source fork/commit.
 | GEMV cp.async evict_first | dylan/experimental `2660be68` | in the T<=4 one-shot GEMV (MTP verify/decode) every weight byte is streamed once, so the weight cp.async loads are marked `Cache::EvictFirst` (L2 evict-first) at all W4A4 sites (gdn_input_proj / attn_input_proj / linear / linear_add) — the 10s-100s MB stream no longer displaces the downstream consumer's L2 set; quality-neutral (identical bytes, eviction priority only) | `e481ccd8` |
 
 **Wave B evaluation record (2026-08-24, per ADOPTION plan "evaluated per commit"):**
-- dylan/experimental series (98972696..2660be68, 21 commits): 3 PICKs above;
-  the NVFP4-KV `--sage` block (49790f72 → 7dbbbcd0 → 24c23686 → 26276e0b →
-  ea0cd367 → 060dba3b, opt-in `--sage`, dormant on the int8 lane) is HELD for a
-  separate lane-config decision (NVFP4 KV cache); 11 research/tooling/bench
-  commits (kdev control plane, TMA A/B harness, NIAH fixtures, op-dumps, PPL
-  knobs, merge 9808de6b = pure history-join) SKIPPED.
+- dylan/experimental series (98972696..2660be68, 21 commits): 2 PICKs inside
+  the window (+ `46d2f59e` just below it, 3 total); the NVFP4-KV
+  `--sage`/s3/sparge family (49790f72, 7dbbbcd0, 24c23686, 26276e0b,
+  ea0cd367, 060dba3b, 7ea7efc3, a37580f2, 0f2bd013, d98fb9a4) REJECTED
+  2026-08-24 — KV-cache precision floor is INT8/FP8, no lower-precision KV,
+  vLLM ignored; 9 research/tooling/bench commits (kdev control plane, TMA A/B
+  harness, NIAH fixtures, op-dumps, PPL campaign `98972696`, bench sweeps,
+  merge 9808de6b = pure history-join) SKIPPED.
 - eason/develop series (117d83e0..9168239b, 5 commits): SKIPPED — the
   cross-GPU VRAM cold-tier chain is inert on the 1-GPU lane (auto-disable, zero
   VRAM/behavior change) and its exact-`cached_tokens` half duplicates the in-tree
