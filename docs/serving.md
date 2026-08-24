@@ -119,7 +119,8 @@ The endpoint supports:
 - function tools, tool choices, assistant tool-call history, and tool-result messages;
 - the top-level `reasoning_effort` field;
 - the `enable_thinking` extension;
-- `chat_template_kwargs.preserve_thinking` and the top-level `preserve_thinking` alias.
+- `chat_template_kwargs.preserve_thinking` and the top-level `preserve_thinking` alias;
+- the top-level `response_format` field with types `text`, `json_object`, and `json_schema`.
 
 The request `model` must equal the public model ID: the artifact `identity.model_id` by default, or
 the explicit `--model-id` override. Reasoning is returned separately as `reasoning_content`; answer
@@ -147,6 +148,16 @@ select the corresponding template effort when available. The other OpenAI protoc
 prompts. It defaults to the server setting, which is off unless `--preserve-thinking` is used. If
 both OpenAI spellings are present they must carry the same boolean value. Unknown non-null
 `chat_template_kwargs` are rejected.
+
+`response_format` accepts `{"type":"text"}`, `{"type":"json_object"}`, and
+`{"type":"json_schema","json_schema":{"name":...,"strict":...,"schema":{...}}}`. The engine has
+no token-level constraint, so the JSON types are enforced by injecting an instruction into the
+prompt: `json_object` requests a single JSON object and nothing else; `json_schema` additionally
+embeds the client `schema` object. The instruction is appended to a leading system turn when one
+is present, otherwise a system turn is prepended. The `name` and `strict` fields of `json_schema`
+are carried for wire compatibility only. Any other `response_format` type, a non-object
+`response_format`, or a `json_schema` entry without an object `schema` returns HTTP 400 with code
+`response_format_not_supported`.
 
 Streaming begins with an assistant-role chunk, sends separate reasoning and content deltas, then a
 finish-reason chunk and `[DONE]`. When `stream_options.include_usage` is true, a final empty
@@ -704,6 +715,10 @@ therefore yields distribution-equivalent, not byte-equivalent, output when other
 decode steps, with the cache on or off. Short answers are stable in practice; treat long greedy
 continuations under concurrent load as equivalent rather than identical, and compare them against a
 solo run of the same prompt when bitwise reproduction matters (`tools/smoke/determinism_fingerprint.py`).
+
+An appended mid-conversation system message is an ordinary prompt suffix, so an unchanged prior
+history remains eligible for `append_frontier`. If the client modifies, removes, or moves a
+historical system message, the token prefix genuinely differs and a miss/reset is correct.
 
 Speculative decoding is an engine option and does not change protocol output shapes, stop behavior,
 or usage accounting. If a stop truncates a multi-token MTP or DFlash round, the Engine commits the
