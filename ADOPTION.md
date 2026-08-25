@@ -383,4 +383,18 @@ Re-verified in-tree this window (all on `tier4`/`tier5` + `gevil/master`): #85 `
 
 **Deferred from this wave (recorded 2026-08-25):** the MirkoCovizzi MTP width-invariant fix (`7d566547`) — deep merge conflict with our perf work (staged-smem GQA reduce, cooperative GDN, T=4 swiglu, fused gate, and a bf16-vs-FP32 Int8-partial divergence). Plan: dedicated wave gated on the MTP greedy-parity test (first confirm our tree has the width-variance bug, then merge).
 
+
+**Live battery verdicts (lane, 2026-08-25, tier6 image):**
+- /v1/models: http=200 after ~10s
+- VERDICT MODELS: PASS (expect qwen3.8-27b-nvfp4full)
+- VERDICT IMAGE: PASS (lane runs latest tag)
+- VERDICT think-smoke: PASS
+- VERDICT THINK-SMOKE: PASS
+- VERDICT xhigh: PASS
+- VERDICT XHIGH: PASS (trace 492 chars)
+- VERDICT decode: PASS
+- decode: 312 tokens in 2.1s = 145.8 tok/s (baseline 136.9; decode-path changes should hold or improve) cached_tokens field present = 0
+- VERDICT DECODE: PASS
+
+**Host-KV ctest (free GPU, buildstage-tier6):** 100% tests passed, 0 tests failed out of 5
 Public review: [Gevil/ninfer PR #7](https://github.com/Gevil/ninfer/pull/7) (`tier6` -> `qwen3.8-nvfp4full`, stacked on PR #6).
