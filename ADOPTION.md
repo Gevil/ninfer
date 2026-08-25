@@ -398,3 +398,27 @@ Re-verified in-tree this window (all on `tier4`/`tier5` + `gevil/master`): #85 `
 
 **Host-KV ctest (free GPU, buildstage-tier6):** 100% tests passed, 0 tests failed out of 5
 Public review: [Gevil/ninfer PR #7](https://github.com/Gevil/ninfer/pull/7) (`tier6` -> `qwen3.8-nvfp4full`, stacked on PR #6).
+
+## Tier 7 (2026-08-25) — MTP width-invariant greedy verification
+
+Stack on tier6: probe parity test `28f15d5d` (real-artifact MTP greedy sweep; permanent regression guard) + `5633015b` (upstream `2a69282e`, fix(cuda): derive cooperative launch limits from the active GPU - 170-SM cooperative launches failed on the 5090 lane) + `5771ad0d` (upstream `7d566547`, fix(mtp): make greedy verification width-invariant - canonical decode reduce profiles across attention/GDN/MLP projection paths, INT8 GQA split partials in FP32, NVFP4 AllowA4 routes aligned across widths) + `2962d997` (header alignment: drop the kernel-level gate param from the small-T launch declarations, gate applied post-call via sigmoid_mul).
+
+Conflict resolution (6 files): attention reduce kernel + launcher taken wholesale from the tested upstream pair (staged-smem reduce dropped by design; re-adding it must preserve the canonical split-loop sum order or parity breaks again); GDN gating collapses to the canonical `{1,8} SmallTSplit10` route (was width-split Gemv/FusedCooperative); swiglu takes one `FusedW4A4` profile for T≤48 (was T=1/T≤3 special routes); serving docs merged (both sides); wrapper chunked call takes `kSmallTChunkTokens`.
+
+**Gate (real-artifact MTP greedy parity sweep, free GPU):** FAIL on tier6 - width variance at k=2 token 46, BF16 KV (ordinary=7873 mtp=1970; evidence: `tier7-parity-ctest-fail-first-run.log`); PASS after the fix - k=1..5 ordinary == MTP for BF16 + INT8 (45.15 s clean run).
+
+**Live battery verdicts (lane, 2026-08-25, tier7 image):**
+- /v1/models: http=200 after ~10s
+- VERDICT MODELS: PASS (expect qwen3.8-27b-nvfp4full)
+- VERDICT IMAGE: PASS (lane runs latest tag)
+- VERDICT think-smoke: PASS
+- VERDICT THINK-SMOKE: PASS
+- VERDICT xhigh: PASS
+- VERDICT XHIGH: PASS (trace 625 chars)
+- VERDICT decode: PASS
+- decode: 335 tokens in 6.6s = 50.6 tok/s (baseline 136.9; decode-path changes should hold or improve) cached_tokens field present = 0
+- VERDICT DECODE: PASS
+
+**Free-GPU ctest (buildstage-tier7, host-KV suites + MTP parity guard):** 100% tests passed, 0 tests failed out of 6
+
+Public review: [Gevil/ninfer PR #8](https://github.com/Gevil/ninfer/pull/8) (`tier7` -> `qwen3.8-nvfp4full`, stacked on PR #7).
