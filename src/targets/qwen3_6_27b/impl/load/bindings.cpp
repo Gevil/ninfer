@@ -39,6 +39,7 @@ NumericFormat endpoint_format(WeightsProfile weights_profile) {
     case WeightsProfile::Qwen38GroupwiseInt:
     case WeightsProfile::Qwen36Nvfp4:
     case WeightsProfile::Qwen38Nvfp4Full:
+    case WeightsProfile::Qwen38Quasar:
         return NumericFormat::W8G32_F16S;
     case WeightsProfile::Qwen38Nvfp4:
         return NumericFormat::FP8_E4M3FN_ROW_BF16S;
@@ -503,6 +504,7 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, WeightsProfile weights_
         bind_qwen38_nvfp4_text_layers(binder, out);
         break;
     case WeightsProfile::Qwen38Nvfp4Full:
+    case WeightsProfile::Qwen38Quasar:
         bind_qwen38_nvfp4full_text_layers(binder, out);
         break;
     default:

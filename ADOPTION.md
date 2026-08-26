@@ -361,3 +361,41 @@ with MTP acceptance ~71%. Model mainline `qwen3.8-nvfp4full` restored to the Tie
 (1b9aef3b). Tier 7 remains available on the `tier7` branch (MTP width-invariant parity work
 still stands - it just costs the decode fast paths); resuming it requires the fast-path
 recovery work recorded in `~/.local/share/ninfer/tier8-experiment-record.md` (pass 2 design).
+
+## Audit 2026-08-25 — new upstream PRs + forks (not yet merged)
+
+Upstream master unchanged (`feaf4dd0`). Upstream PR activity 08-22 → 08-25:
+- **#89** (igorls, OPEN, `f52e2099`): size persistent grids from the active device's SM count — 1 commit / 5 files; `merge-tree` vs `tier5` conflicts in `sparse_moe_prefill_kernels.cu` (our MoE edits). Candidate, small.
+- **#90** (igorls, OPEN **DRAFT**, 31 commits, tip `db7a1220`): cross-request prefix seeding via a content-addressed `PrefixSeedStore` (device arena behind `--prefix-cache-mib`, copy-only restore, `reuse=seed_prefix`). Sibling/alternative to shipped #73 (host content cache). Upstream architecture discussion open — **watch, do not merge** until settled. Standalone sub-fixes: SM-count portability (= #89), tool-message media parts (in-tree via #57/#65); also rides #10 tolerant tool-call parser + boot watchdog + #84 Windows.
+- **#91** (x-n2o) home-agnostic model paths — CLOSED 2026-08-25 without merge. Skip.
+- **#84** (devan-carlin) native Windows MSVC+CUDA — not lane-relevant. Skip.
+- #83/#82 superseded by #85/#84 (#85 ported as `988d72e8`).
+
+Forks pushed 08-23 → 08-25 (vs `gevil/master` `4302983a`):
+- **knoopx** (58 ahead of upstream master, active line): 08-25 `b9a27541` program as resource authority + `4eef14a7` ownership transfer after alias eviction; 08-24 `e0829866` restore anonymous prefix reuse + `fc5c4834` vision workspace reclaim + `c80b2bf2` optional failed timing observation; 08-22 `5fb9a138` nix flake (CUDA 13); 08-18 `665e35fb` MTP adaptive draft depth + `99fbebec` W8G32/FP8 dual-artifact binder. Deep divergence (conflicts vs `tier5`) — **watch**, cherry-pick individually if valued.
+- **MirkoCovizzi** (4 ahead): `7d566547` fix(mtp): greedy verification width-invariant (08-23; ~25-file ops diff, moderate conflicts with our GQA/MoE files) + `3eb6193b` .gitignore. MTP fix = next-wave candidate.
+- **dylan/experimental**: `d8cb420f` dflash2 nvfp4 (bf16 codebooks, tree verify, C=3 identity; 08-25, not in the dflash2 audit branch) + 08-23 `a37580f2` TMA S3 prefill, `2660be68` GEMV L2 evict_first. Next perf-wave candidates.
+- **natpate** (diverged): `b686696e` array content on OpenAI tool messages (08-24) — redundant with in-tree #57/#65. Skip.
+- **cometkim**: 08-25 18:41 push = `cometkim/dev` "roadmap updates" (docs); `feat/qwen3.8-nvfp4full` (`1455676b`) unchanged → no lane/weights impact. New 08-23 branches: `feat/1m-context`, `feat/build-speed`, `feat/hyperquant` (refuted).
+- taylor-shift / Aoyagi-29: nothing in the window. JCraigWasTaken: fork inaccessible (private/renamed).
+
+Re-verified in-tree this window (all on `tier4`/`tier5` + `gevil/master`): #85 `988d72e8`, #86 `e4beff22`, #87→C6 `a568115b`, #88 `6da2efef`, #65 follow-up `102ab113`, empty-think `16f405d4`+`1ffbc388`. #73 zero-drift vs housekeeping head `0ede955f`.
+
+## Tier 6 (2026-08-25) — portability ops fix
+
+**Wave D — portability (no-op on the 170-SM lane; device-portable going forward):**
+
+| Item | Source | What | Local |
+|---|---|---|---|
+| #89 SM-count persistent grids | igorls upstream PR #89 `f52e2099` (cherry-picked as `808bd1d1`) | persistent MoE/GDN prefill grids sized from the active device's SM count (new `ops/common/device_info`, `cudaDevAttrMultiProcessorCount`, fallback 170) instead of the hardcoded `kRtx5090SmCount = 170`; on the 5090 lane `device_sm_count()` = 170, so behavior is unchanged here — the value is portability to other GPU SM counts. Conflict resolved at the Q4 gate_up launch site (kept our route-job kernel args, adopted the runtime `prefill_persistent_blocks`) | `808bd1d1` |
+
+**Deferred from this wave (recorded 2026-08-25):** the MirkoCovizzi MTP width-invariant fix (`7d566547`) — deep merge conflict with our perf work (staged-smem GQA reduce, cooperative GDN, T=4 swiglu, fused gate, and a bf16-vs-FP32 Int8-partial divergence). Plan: dedicated wave gated on the MTP greedy-parity test (first confirm our tree has the width-variance bug, then merge).
+
+Public review: [Gevil/ninfer PR #7](https://github.com/Gevil/ninfer/pull/7) (`tier6` -> `qwen3.8-nvfp4full`, stacked on PR #6).
+## Quasar adoption (2026-08-26)
+- Lane live on `quasar-303dbcaa` (image ninfer-nvfp4:latest, QUASAR artifact
+  /home/gevil/.local/share/ninfer/models/qwen3.8-27b-quasar/qwen3_8_27b_quasar.ninfer, quadlet swapped, model-id qwen3.8-27b-quasar).
+- Battery: 9 PASS / 0 FAIL; decode probes within -5% of the pre-ship
+  baseline (/home/gevil/.local/share/ninfer/logs/quasar-baseline-2026-08-26.json).
+- Rollback: restore /home/gevil/.config/containers/systemd/ninfer-nvfp4.container.nvfp4full.bak + retag ninfer-nvfp4:latest from
+  ninfer-nvfp4:tier6-pre-quasar + systemctl --user restart ninfer-nvfp4.service.

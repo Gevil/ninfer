@@ -166,6 +166,8 @@ def dequantize_nvfp4(
     """Reconstruct represented values ``E2M1 * E4M3FN / d_w`` in FP32."""
 
     target = torch.device(device)
+    if target.type == "cuda" and not torch.cuda.is_available():
+        target = torch.device("cpu")
     rows, groups = words.natural_scales.shape
     columns = groups * 16
     low = (words.packed_codes.to(torch.int32) & 0xF).to(target)
