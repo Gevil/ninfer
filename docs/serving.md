@@ -40,6 +40,13 @@ cannot be combined with `--vision`. A later request cannot enable a capability o
 
 `--chat-template-file PATH` replaces the artifact's embedded prompt renderer for this server
 process.
+For a request resolved to greedy sampling, MTP preserves the committed token sequence. Holding the
+artifact, prepared prompt, KV-cache dtype, and all other Engine and request settings fixed, MTP-off
+and every MTP draft window from one to five return the same token IDs; the draft window and proposal
+head affect only acceptance and throughput. This is not a bit-identical-logit guarantee and does not
+compare different artifacts or KV dtypes. Under stochastic sampling, MTP preserves the processed
+target distribution rather than fixed-seed token identity because speculative execution may consume
+random values differently.
 
 ## Endpoints
 
@@ -109,6 +116,8 @@ The endpoint supports:
 
 - `system`, `developer`, `user`, `assistant`, and `tool` history;
 - string content and ordered text, `image_url`, and `video_url` parts;
+- tool messages with string content or an array of `text` content parts (the OpenAI
+  contract allows no other part type for tool messages);
 - `max_completion_tokens` and the legacy `max_tokens` spelling;
 - `temperature`, `top_p`, `top_k`, presence/frequency penalties, and a nonnegative `seed`;
 - one stop string or an array of stop strings;
@@ -117,7 +126,8 @@ The endpoint supports:
 - function tools, tool choices, assistant tool-call history, and tool-result messages;
 - the top-level `reasoning_effort` field;
 - the `enable_thinking` extension;
-- `chat_template_kwargs.preserve_thinking` and the top-level `preserve_thinking` alias.
+- `chat_template_kwargs.preserve_thinking` and the top-level `preserve_thinking` alias;
+- the top-level `response_format` field with types `text`, `json_object`, and `json_schema`.
 
 The request `model` must equal the public model ID: the artifact `identity.model_id` by default, or
 the explicit `--model-id` override. Reasoning is returned separately as `reasoning_content`; answer
@@ -145,6 +155,16 @@ select the corresponding template effort when available. The other OpenAI protoc
 prompts. It defaults to the server setting, which is off unless `--preserve-thinking` is used. If
 both OpenAI spellings are present they must carry the same boolean value. Unknown non-null
 `chat_template_kwargs` are rejected.
+
+`response_format` accepts `{"type":"text"}`, `{"type":"json_object"}`, and
+`{"type":"json_schema","json_schema":{"name":...,"strict":...,"schema":{...}}}`. The engine has
+no token-level constraint, so the JSON types are enforced by injecting an instruction into the
+prompt: `json_object` requests a single JSON object and nothing else; `json_schema` additionally
+embeds the client `schema` object. The instruction is appended to a leading system turn when one
+is present, otherwise a system turn is prepended. The `name` and `strict` fields of `json_schema`
+are carried for wire compatibility only. Any other `response_format` type, a non-object
+`response_format`, or a `json_schema` entry without an object `schema` returns HTTP 400 with code
+`response_format_not_supported`.
 
 Streaming begins with an assistant-role chunk, sends separate reasoning and content deltas, then a
 finish-reason chunk and `[DONE]`. When `stream_options.include_usage` is true, a final empty
@@ -186,6 +206,25 @@ single-flight build. `--media-cache-mib` bounds LRU-retained payloads, while
 not invalidate a request reference, and live bytes are returned only when the final reference is
 released. A request-level preparation gate derived from the live limit prevents concurrent partial
 builds from deadlocking the memory account.
+
+`preprocessor_config.json` ships the model's *capability* ceiling: `size.longest_edge` there is
+large enough that a full-resolution screen capture is never resized, so a single image can occupy
+thousands of prompt tokens. An agent client resends every screenshot it has read on every turn,
+so that number decides how many turns fit the context at all. `--image-token-budget N` applies a
+serving *policy* ceiling on top of the capability one, counted in Vision tokens, one Vision token
+being a 32x32 pixel square: an image above the budget is scaled to fit rather than rejected, and
+`0` keeps the artifact's own number. It is a per-image ceiling and deliberately does not depend on
+how many images a request carries, because waterfilling a shared budget across items would move
+the prompt prefix as a conversation grows and invalidate prefix reuse on every turn. Videos are
+unaffected.
+
+On the Qwen3.8-27B NVFP4 artifact served with `--vision --max-context 32768`, a one-image chat
+request reports these `usage.prompt_tokens`; the same request without an image reports 53:
+
+| image | default | `--image-token-budget 1280` | `--image-token-budget 256` |
+| --- | ---: | ---: | ---: |
+| 2880x1800 | 5,095 | 1,315 | 295 |
+| 1600x1200 | 1,955 | 1,285 | 289 |
 
 An expanded prompt beyond `--max-context` returns HTTP 400 `context_length_exceeded`, including
 the prepared token count and configured context ceiling. A media preprocessing resource rejection
@@ -443,6 +482,10 @@ curl http://127.0.0.1:8080/v1/messages \
 The endpoint supports top-level system text, ordered mid-conversation system messages,
 user/assistant history, text and image blocks, thinking blocks, tool-use history, tool results,
 client-defined tools, non-streaming responses, and Anthropic SSE events.
+`tool_result` blocks remain in request order, including nested text and image blocks; their order
+does not need to match the preceding assistant `tool_use` blocks. Literal Qwen Vision control-token
+spellings in text, reasoning, tool definitions, or tool arguments remain text and do not create
+media placeholders.
 Mid-conversation system messages remain at their `messages` array position and are not merged into
 the top-level system instruction. A system section must follow a user/tool-result message and be
 final or immediately precede an assistant message; it cannot interrupt a tool-use/tool-result pair.
@@ -503,16 +546,19 @@ curl http://127.0.0.1:8080/v1/models \
 | `--media-cache-mib N` | LRU-retained prepared BF16 media payloads; `0` disables retention | `1024` |
 | `--media-live-mib N` | all live prepared BF16 media payloads | `2048` |
 | `--media-preprocess-threads N` | bounded media preprocessing workers; `0` selects at most 16 from host concurrency | `0` |
+| `--image-token-budget N` | per-image serving ceiling in Vision tokens; `0` keeps the artifact ceiling | `0` |
 | `--request-log-jsonl FILE` | append full-precision server/request records | disabled |
 | `--response-store-max-records N` | maximum locally retained Responses objects | `1024` |
 | `--response-store-max-mib N` | total local Response envelope/Item/context budget | `256` |
 | `--kv-dtype bf16\|int8` | KV-cache storage | `bf16` |
+| `--host-kv-cache-mib N` | park evicted sequences in a pinned host-RAM budget of N MiB instead of discarding them; each parked sequence takes only its real size, and a session larger than the budget falls back to re-prefill; not supported with `--spec dflash` or `--no-prefix-reuse` (startup error) | `0` (off) |
 | `--spec mtp\|dflash` | speculative backend | off |
 | `--draft-tokens N` | MTP `1..5`; DFlash `1..15` | unset |
 | `--lm-head-draft` | optimized proposal head | off |
 | `--default-max-tokens N` | output limit when omitted by a request | `8192` |
 | `--vision` | enable media input and load Vision GPU allocations | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
+| `--kv-host-cache-mib N` | pinned-host content cache for computed context: previously computed prefixes restore through PCIe instead of re-prefilling, and branches sharing a prefix deduplicate against the same stored pages; conflicts with `--no-prefix-reuse` and `--spec dflash`; the budget shares process pinned host RAM with the vision pinned block and overlay mirrors, carved pinned chunks are retained until shutdown (RSS follows the high-water mark), and a failed pinned allocation degrades to skipping the save, never to an error | `0` (off) |
 | `--no-prefix-reuse` | disable compatible-prefix caching | prefix reuse on |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |
@@ -642,13 +688,14 @@ The shared family runtime distinguishes `full_reset`, `append_frontier`,
 `restore_turn_checkpoint`, and `restore_response_checkpoint`. Both checkpoint kinds include the
 recurrent, hidden, and selected speculative-backend continuation state required to recompute a
 rewritten suffix; matching KV tokens alone never authorize a partial hit. With stable
-`preserve_thinking=true`, the auxiliary checkpoint rolls to the prompt frontier after the current
-response's complete deterministic generation prologue. For thinking generation this includes
-`<think>\n`; for non-thinking generation it includes the complete empty thinking block. Capturing
-that frontier does not split a tiny trailing prologue into a separate prefill unit, and a normalized
-response which no longer matches the raw generated tokens replays only that response and its
-suffix. Stable `false` keeps the first assistant opener in the open turn so a newly closed turn can
-be recomputed without its reasoning.
+`preserve_thinking=true`, the auxiliary checkpoint rolls to the current response's deterministic
+generation prologue. For thinking generation this is the `<think>` opener, excluding the trailing
+newline: that newline is not a BPE-stable prefix of a later closed empty think block
+(`<think>\n\n</think>`), which is how a tool-call turn is reconstructed when the client omits
+`reasoning_content`. For non-thinking generation the checkpoint is the complete empty thinking
+block at the prompt frontier. A normalized response which no longer matches the raw generated
+tokens then replays only that response and its suffix. Stable `false` keeps the first assistant
+opener in the open turn so a newly closed turn can be recomputed without its reasoning.
 
 `preserve_thinking` selects where the next checkpoint should live; it is not a cache-compatibility
 bit. An exact current frontier or matching complete checkpoint remains reusable across a mode
@@ -663,6 +710,23 @@ An appended mid-conversation system message is an ordinary prompt suffix, so an 
 history remains eligible for `append_frontier`. If the client modifies, removes, or moves a
 historical system message, the token prefix genuinely differs and a miss/reset is correct.
 
+### Determinism
+
+Greedy decoding is reproducible for an identical execution schedule: the same prompt served on an
+otherwise idle server produces the same tokens on every run. It is not bitwise-reproducible across
+different batch compositions. Decode-phase projection kernels are selected by the number of tokens
+in the step (the sum over active lanes of one plus the accepted speculative drafts), and the
+variants differ in reduction order; the resulting sub-ulp logit differences flip the argmax only on
+near-ties, but over a long greedy continuation such flips accumulate into divergent text. A request
+therefore yields distribution-equivalent, not byte-equivalent, output when other requests share its
+decode steps, with the cache on or off. Short answers are stable in practice; treat long greedy
+continuations under concurrent load as equivalent rather than identical, and compare them against a
+solo run of the same prompt when bitwise reproduction matters (`tools/smoke/determinism_fingerprint.py`).
+
+An appended mid-conversation system message is an ordinary prompt suffix, so an unchanged prior
+history remains eligible for `append_frontier`. If the client modifies, removes, or moves a
+historical system message, the token prefix genuinely differs and a miss/reset is correct.
+
 Speculative decoding is an engine option and does not change protocol output shapes, stop behavior,
 or usage accounting. If a stop truncates a multi-token MTP or DFlash round, the Engine commits the
 exact accepted target prefix so a following compatible turn can still reuse it. Output-limit and
@@ -670,8 +734,19 @@ context-capacity finishes map to `length`/ `max_tokens`; ordinary model or strin
 `stop`/ `end_turn`.
 
 Function tools are rendered into the model prompt and generated calls are parsed into protocol
-responses. NInfer does not execute tools and does not enforce client JSON Schema through constrained
-decoding.
+responses. NInfer does not execute tools and does not validate tool arguments against the full
+client JSON Schema through constrained decoding; that remains the client's responsibility. When
+parsing a generated call, NInfer does consult the top-level parameter `"type"` declared in each
+tool's schema to decide whether a parameter value that is valid JSON may be deserialized into the
+corresponding JSON type (number, boolean, array, object, null): only parameters whose declared
+type(s) are all valid non-string JSON Schema types are deserialized. Parameters typed as `"string"`
+(or declared via a type array that includes `"string"`), parameters with an unknown or misspelled
+`"type"`, and parameters absent from the schema preserve the model's raw text so the string
+contract reaches the client intact. Full JSON Schema validation (constraints, required sets,
+formats, nested keywords) is not performed server-side and remains the client's job.
+Duplicate tool names within a single request are rejected with a 400 on all three
+protocol surfaces (OpenAI Chat Completions, OpenAI Responses, Anthropic Messages),
+keeping the per-tool parameter type map unambiguous.
 
 Prompt-token usage includes chat-template and expanded media tokens. Generated-token usage comes
 from accepted output token IDs, including a stop token whose decoded text may be withheld.

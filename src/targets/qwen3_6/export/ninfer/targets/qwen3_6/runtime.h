@@ -154,6 +154,15 @@ public:
     [[nodiscard]] RequestPlan<Variant> plan_request_for_lane(std::uint32_t lane,
                                                              const PreparedPrompt& prompt,
                                                              const RequestBasePlan<Variant>& base);
+    // False when the plan carries a content restore whose anchor the host cache no longer
+    // stores (a concurrent completion's save may evict between planning and admission).
+    [[nodiscard]] bool content_restore_valid(const RequestPlan<Variant>& plan) const noexcept;
+    // Content identity of the plan's full prompt (0 when the host cache is off or the prompt
+    // is below the cache minimum). Equal identities mean identical prefill state.
+    [[nodiscard]] std::uint64_t content_identity(const RequestPlan<Variant>& plan) const noexcept;
+    // Publishes the lane's rewrite-checkpoint anchor into the host cache right after prefill,
+    // so identical queued prompts restore the boundary instead of re-prefilling.
+    [[nodiscard]] bool save_prefill_checkpoint(std::uint32_t lane);
     [[nodiscard]] bool can_admit_lane(std::uint32_t lane,
                                       const RequestPlan<Variant>& plan) const noexcept;
     [[nodiscard]] bool
@@ -176,10 +185,59 @@ public:
     void abort_lane(std::uint32_t lane) noexcept;
     [[nodiscard]] bool has_retained_lane(std::uint32_t lane) const noexcept;
     void evict_retained_lane(std::uint32_t lane) noexcept;
+
+    // Host KV cache (--host-kv-cache-mib). The Program owns it: the parked-sequence
+    // layout is target-specific. Callers only park and restore.
+    void enable_host_kv_cache(std::uint64_t budget_bytes);
+    [[nodiscard]] bool host_kv_cache_enabled() const noexcept;
+
+    // Moves a retained lane's sequence to host RAM, freeing its pages. False if
+    // the lane holds nothing, or no slab could be obtained. `protect_id` keeps
+    // one parked entry from being evicted to make room for the slab.
+    [[nodiscard]] bool park_lane(std::uint32_t lane, std::uint64_t protect_id = 0);
+
+    // Tokens of `prompt` a parked sequence could serve, or 0 for no usable
+    // entry. Lets admission decide before committing a lane.
+    [[nodiscard]] std::uint32_t host_kv_reusable_tokens(const PreparedPrompt& prompt) const;
+
+    // Stable id of the best parked match for `prompt`, or 0 for none. Admission
+    // passes it to park_lane() so the park cannot evict the entry the restore
+    // will consume.
+    [[nodiscard]] std::uint64_t host_kv_match_id(const PreparedPrompt& prompt) const;
+
+    // True when the parked entry with this stable id still exists (it may have
+    // been LRU-evicted since the probe recorded it). The evicting-restore
+    // transaction revalidates by id, not by best match: parking another lane
+    // can insert a better match mid-transaction, and the transaction must keep
+    // addressing the exact entry it deferred.
+    [[nodiscard]] bool host_kv_entry_exists(std::uint64_t entry_id) const;
+
+    // Restores the parked entry with this stable id onto `lane`, which must own
+    // no KV. The reuse is computed for that exact entry (not the current best
+    // match). False when the entry is gone or no longer matches `prompt`.
+    [[nodiscard]] bool restore_lane(std::uint32_t lane, std::uint64_t entry_id,
+                                    const PreparedPrompt& prompt);
+
+    // True when the parked entry with this stable id would fit on `lane` once
+    // the lane's resident (if any) is parked: the entry's entitlement must fit
+    // in the pages the park frees. Lets the probe decide whether to park the
+    // resident and restore, or defer to the admission's evicting-restore and
+    // keep the pool saturated so the admission's evict_retained loop can park
+    // the other retained lanes.
+    [[nodiscard]] bool can_restore_lane(std::uint32_t lane, std::uint64_t entry_id) const;
+    // The evicting-restore transaction's "can it ever fit" pre-check: true when
+    // BOTH the parked entry `entry_id` and the request `plan` fit after
+    // reclaiming every retained lane except `lane`. Lets the transaction decide,
+    // before mutating any lane, whether the target can ever restore - so an
+    // impossible restore does not destroy unrelated retained state.
+    [[nodiscard]] bool can_evicting_restore_fit(std::uint32_t lane, std::uint64_t entry_id,
+                                                const RequestPlan<Variant>& plan) const noexcept;
     [[nodiscard]] GenerationTimings generation_timings_lane(std::uint32_t lane) const noexcept;
     [[nodiscard]] SpeculativeStats speculative_stats_lane(std::uint32_t lane) const noexcept;
 
     [[nodiscard]] MemorySummary memory_summary() const noexcept;
+    [[nodiscard]] KvHostCacheStats host_cache_stats() const noexcept;
+    [[nodiscard]] std::uint64_t host_cache_epoch() const noexcept;
     void reset_memory_peaks() noexcept;
 
 private:

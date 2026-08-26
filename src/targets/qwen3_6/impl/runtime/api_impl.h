@@ -164,6 +164,21 @@ RequestPlan<Variant> Program<Variant>::plan_request_for_lane(std::uint32_t lane,
 }
 
 template <>
+bool Program<Variant>::content_restore_valid(const RequestPlan<Variant>& plan) const noexcept {
+    return impl_->content_restore_valid(plan);
+}
+
+template <>
+std::uint64_t Program<Variant>::content_identity(const RequestPlan<Variant>& plan) const noexcept {
+    return impl_->content_identity(plan);
+}
+
+template <>
+bool Program<Variant>::save_prefill_checkpoint(std::uint32_t lane) {
+    return impl_->save_prefill_checkpoint(lane);
+}
+
+template <>
 bool Program<Variant>::can_admit_lane(std::uint32_t lane,
                                       const RequestPlan<Variant>& plan) const noexcept {
     return impl_->can_admit_lane(lane, plan);
@@ -225,6 +240,53 @@ bool Program<Variant>::has_retained_lane(std::uint32_t lane) const noexcept {
 }
 
 template <>
+void Program<Variant>::enable_host_kv_cache(std::uint64_t budget_bytes) {
+    impl_->enable_host_kv_cache(budget_bytes);
+}
+
+template <>
+bool Program<Variant>::host_kv_cache_enabled() const noexcept {
+    return impl_->host_kv_cache_enabled();
+}
+
+template <>
+bool Program<Variant>::park_lane(std::uint32_t lane, std::uint64_t protect_id) {
+    return impl_->park_lane(lane, protect_id);
+}
+
+template <>
+std::uint32_t Program<Variant>::host_kv_reusable_tokens(const PreparedPrompt& prompt) const {
+    return impl_->host_kv_reusable_tokens(PreparedPromptAccess::view(prompt));
+}
+
+template <>
+std::uint64_t Program<Variant>::host_kv_match_id(const PreparedPrompt& prompt) const {
+    return impl_->host_kv_match_id(PreparedPromptAccess::view(prompt));
+}
+
+template <>
+bool Program<Variant>::host_kv_entry_exists(std::uint64_t entry_id) const {
+    return impl_->host_kv_entry_exists(entry_id);
+}
+
+template <>
+bool Program<Variant>::restore_lane(std::uint32_t lane, std::uint64_t entry_id,
+                                    const PreparedPrompt& prompt) {
+    return impl_->restore_lane(lane, entry_id, PreparedPromptAccess::view(prompt));
+}
+
+template <>
+bool Program<Variant>::can_restore_lane(std::uint32_t lane, std::uint64_t entry_id) const {
+    return impl_->can_restore_lane(lane, entry_id);
+}
+
+template <>
+bool Program<Variant>::can_evicting_restore_fit(std::uint32_t lane, std::uint64_t entry_id,
+                                                const RequestPlan<Variant>& plan) const noexcept {
+    return impl_->can_evicting_restore_fit(lane, entry_id, plan);
+}
+
+template <>
 void Program<Variant>::evict_retained_lane(std::uint32_t lane) noexcept {
     impl_->evict_retained_lane(lane);
 }
@@ -237,6 +299,16 @@ GenerationTimings Program<Variant>::generation_timings_lane(std::uint32_t lane) 
 template <>
 SpeculativeStats Program<Variant>::speculative_stats_lane(std::uint32_t lane) const noexcept {
     return impl_->speculative_stats_lane(lane);
+}
+
+template <>
+KvHostCacheStats Program<Variant>::host_cache_stats() const noexcept {
+    return impl_->host_cache_stats();
+}
+
+template <>
+std::uint64_t Program<Variant>::host_cache_epoch() const noexcept {
+    return impl_->host_cache_epoch();
 }
 
 template <>

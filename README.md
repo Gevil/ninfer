@@ -1,5 +1,12 @@
 # NInfer-windows
 
+> **Personal fork — [adoption record](ADOPTION.md).** This is a personal fork of
+[Neroued/ninfer](https://github.com/Neroued/ninfer) that merges multiple open PRs from
+different community forks and cherry-picks improvements and features for a single-GPU
+NVFP4 lane (Qwen3.8-27B-nvfp4full on an RTX 5090). Every adopted PR lands as a
+separately tagged merge commit — see [ADOPTION.md](ADOPTION.md) for what is in, where it
+came from, and how it is verified.
+
 > Selected checkpoints. Maximum single-GPU inference performance.
 
 NInfer-windows is a Windows 11 port of [Neroued/ninfer](https://github.com/Neroued/ninfer), a from-scratch C++/CUDA inference 
@@ -421,7 +428,16 @@ from one to fifteen.
   Decode-ready requests are compacted at round boundaries and executed in one batched model
   traversal.
 - NInfer does not provide large-scale or preemptive continuous batching, priority/QoS scheduling,
-  multi-GPU execution, CPU/GPU offload, or distributed serving.
+  multi-GPU execution, general-purpose CPU/GPU offload, or distributed serving. The opt-in
+  `--host-kv-cache-mib N` parks evicted sequences in a pinned host-RAM budget of N MiB so a
+  matching session restores instead of re-prefilling; it is a cache, not a general offload path.
+  Each parked sequence takes only the bytes it needs (its real page count), so a small session no
+  longer occupies a full max-size allocation; a session larger than the budget falls back to
+  re-prefill.
+  It is not supported with the DFlash speculative backend (`--spec dflash`): DFlash's lane-affine
+  draft caches are not captured by a parked entry, so the server refuses to start with both. It
+  also requires prefix reuse (`--no-prefix-reuse` is rejected): with prefix reuse off, no
+  parked entry can ever be restored, so the combination is write-only.
 - `--max-context` is the logical ceiling of each sequence and is configurable up to the registered
   models' native 262,144-token limit. `--kv-capacity N` explicitly sizes the shared Main Text KV
   pool for all active and retained sequences, while `--kv-capacity auto` selects the largest usable
