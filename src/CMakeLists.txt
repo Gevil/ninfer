@@ -13,10 +13,7 @@ function(ninfer_cuda_archive target)
   if(WIN32)
     set_target_properties(${target} PROPERTIES CUDA_RUNTIME_LIBRARY Static)
   endif()
-  # -lineinfo is for RelWithDebInfo / Debug (and benches). Release production
-  # builds (Dockerfile, hot-patch) omit it to avoid extra device debug metadata.
-  target_compile_options(${target} PRIVATE
-    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<NOT:$<CONFIG:Release>>>:-lineinfo>)
+  target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
 endfunction()
 
 # Device/tensor/layout/graph primitives and the model-independent request runtime.
@@ -27,11 +24,7 @@ add_library(ninfer_core STATIC
   core/host_worker_pool.cpp
   core/gdn_replay_records.cpp
   core/cyclic_kv_cache.cpp
-  core/kv_host_cache.cu
   core/paged_kv_cache.cpp
-  core/host_kv_budget.cpp
-  core/host_kv_park.cpp
-  core/paged_kv_hostpack.cu
   core/linear_attention_state.cpp
   core/layout.cpp
   core/tensor.cpp
@@ -68,14 +61,12 @@ set_target_properties(ninfer_nvfp4_tma PROPERTIES
 if(WIN32)
   set_target_properties(ninfer_nvfp4_tma PROPERTIES CUDA_RUNTIME_LIBRARY Static)
 endif()
-target_compile_options(ninfer_nvfp4_tma PRIVATE
-  $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<NOT:$<CONFIG:Release>>>:-lineinfo>)
+target_compile_options(ninfer_nvfp4_tma PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
 target_link_libraries(ninfer_nvfp4_tma PRIVATE ninfer_core ${NINFER_CUDART_TARGET} CUDA::cuda_driver)
 
 # Shared mathematical Ops. The list is intentionally explicit: adding a
 # source is a build-boundary decision, not an accidental recursive-glob side effect.
 add_library(ninfer_ops STATIC
-  ops/common/device_info.cu
   ops/launcher/add_bias.cu
   ops/launcher/argmax.cu
   ops/launcher/cast.cu
@@ -98,7 +89,6 @@ add_library(ninfer_ops STATIC
   ops/launcher/prepare_masked_block.cu
   ops/launcher/residual_add.cu
   ops/launcher/rmsnorm.cu
-  ops/launcher/residual_rmsnorm.cu
   ops/launcher/rope.cu
   ops/launcher/sampling.cu
   ops/launcher/scalar.cu
@@ -164,7 +154,6 @@ add_library(ninfer_ops STATIC
   ops/linear/bf16/bf16_gemm_mma.cu
   ops/linear/bf16/bf16_small_t.cu
   ops/linear/bf16/bf16_dispatch.cpp
-  ops/common/memory_evict.cu
   ops/linear/fp8/fp8_format.cpp
   ops/linear/fp8/fp8_gemv.cu
   ops/linear/fp8/fp8_small_t.cu
@@ -268,7 +257,6 @@ add_library(ninfer_ops STATIC
   ops/wrapper/prepare_masked_block.cpp
   ops/wrapper/residual_add.cpp
   ops/wrapper/rmsnorm.cpp
-  ops/wrapper/residual_rmsnorm.cpp
   ops/wrapper/rope.cpp
   ops/wrapper/sampling.cpp
   ops/wrapper/scalar.cpp

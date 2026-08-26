@@ -20,7 +20,7 @@ namespace ninfer::serve {
 // OpenAI and Anthropic schema layers.
 
 // Parse an already-decoded JSON body into a GenerationRequest. Throws ApiException
-// on malformed or unsupported requests (n>1, tools, unsupported response_format, ...).
+// on malformed or unsupported requests (n>1, tools, non-text response_format, ...).
 // `default_model_id` fills in when the request omits `model` (clients such as the
 // llama.cpp webui run a single loaded model and do not send it).
 GenerationRequest parse_chat_completion_request(const nlohmann::json& body,
@@ -36,11 +36,6 @@ void parse_openai_chat_thinking(const nlohmann::json& body,
                                 std::optional<RequestedReasoningEffort>* reasoning_effort,
                                 std::string* reasoning_effort_param,
                                 const std::string& conflict_param);
-
-// Parse a message's `content` field (string or content-part array) into `turn.content`.
-// A non-empty `allowed_types` rejects parts whose `type` is not listed.
-void parse_content_parts(const nlohmann::json& content, ChatTurn& turn, std::size_t index,
-                         std::vector<std::string> allowed_types = {});
 
 std::optional<bool> parse_openai_preserve_thinking(const nlohmann::json& body);
 

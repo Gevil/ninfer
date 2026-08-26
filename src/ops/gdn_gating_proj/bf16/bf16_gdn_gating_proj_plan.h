@@ -14,7 +14,6 @@ namespace ninfer::ops::detail {
 enum class Bf16GdnGatingScheduleId {
     GemvPairedRows,
     SmallTSplit10,
-    SmallTFusedCooperative,
     SimtWarpRowC4,
     SimtWarpRowC8,
     MmaCooperativeSplit32,

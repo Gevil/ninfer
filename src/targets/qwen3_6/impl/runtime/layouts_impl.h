@@ -30,39 +30,6 @@ namespace {
 constexpr std::size_t kMiB        = 1024ULL * 1024ULL;
 constexpr std::size_t kArenaAlign = 256ULL;
 
-// Adaptive graph allowance: graph sizes scale steeply with context beyond ~128k.
-// Measured MTP per-batch: 64k=2MB, 128k=2MB, 224k=74.62MB, 256k=223MB.
-// Linear interpolation between measured points, capped at maximum.
-constexpr std::uint64_t kGraphBaseCtx = 131072; // 128k - transition point
-constexpr std::uint64_t kGraphHighCtx = 262144; // 256k - cap point
-constexpr std::size_t kMtpGraphBase   = 2ULL * kMiB;
-constexpr std::size_t kMtpGraphHigh  = 240ULL * kMiB; // covers 223MB measured
-constexpr std::size_t kMtpGraphCap    = 256ULL * kMiB;
-constexpr std::size_t kDFlashGraphBase = 64ULL * kMiB;
-constexpr std::size_t kDFlashGraphHigh = 128ULL * kMiB;
-constexpr std::size_t kDFlashGraphCap  = 128ULL * kMiB;
-
-static std::size_t adaptive_mtp_graph_allowance(std::uint64_t final_visible) {
-    if (final_visible <= kGraphBaseCtx) return kMtpGraphBase;
-    if (final_visible >= kGraphHighCtx) return kMtpGraphCap;
-    // Linear interpolation: base + (final_visible - base_ctx) / (high_ctx - base_ctx) * (high - base)
-    const std::size_t range = kMtpGraphHigh - kMtpGraphBase;
-    const std::size_t scaled = kMtpGraphBase +
-        (static_cast<std::size_t>(final_visible - kGraphBaseCtx) * range /
-         static_cast<std::size_t>(kGraphHighCtx - kGraphBaseCtx));
-    return std::min(scaled, kMtpGraphCap);
-}
-
-static std::size_t adaptive_dflash_graph_allowance(std::uint64_t final_visible) {
-    if (final_visible <= kGraphBaseCtx) return kDFlashGraphBase;
-    if (final_visible >= kGraphHighCtx) return kDFlashGraphCap;
-    const std::size_t range = kDFlashGraphHigh - kDFlashGraphBase;
-    const std::size_t scaled = kDFlashGraphBase +
-        (static_cast<std::size_t>(final_visible - kGraphBaseCtx) * range /
-         static_cast<std::size_t>(kGraphHighCtx - kGraphBaseCtx));
-    return std::min(scaled, kDFlashGraphCap);
-}
-
 enum class GdnWorkspacePath : std::uint8_t {
     Prefill,
     Snapshot,
@@ -654,7 +621,6 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->features            = inputs.features;
     impl->use_cuda_graph      = inputs.use_cuda_graph;
     impl->device              = inputs.device;
-    impl->kv_host_cache_bytes = inputs.kv_host_cache_bytes;
     impl->kv_dtype            = inputs.kv_dtype;
     impl->kv_quant_group      = inputs.kv_quant_group;
     impl->persistent          = persistent_layout(*impl);
@@ -680,7 +646,7 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
                     const std::uint64_t final_visible = std::min<std::uint64_t>(
                         impl->capacity,
                         static_cast<std::uint64_t>(profile.max) + 2ULL * impl->draft_window);
-                    return adaptive_mtp_graph_allowance(final_visible);
+                    return (final_visible <= 4096 ? 12ULL : 82ULL) * kMiB;
                 },
                 "MTP graph allowance");
             impl->graph_allowance_bytes = checked_mul(per_batch_allowance, impl->max_concurrency,
@@ -695,7 +661,7 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
                         const std::uint64_t final_visible = std::min<std::uint64_t>(
                             impl->capacity,
                             static_cast<std::uint64_t>(profile.max) + impl->draft_window + 1ULL);
-                        return adaptive_dflash_graph_allowance(final_visible);
+                        return (final_visible <= 4096 ? 64ULL : 96ULL) * kMiB;
                     },
                     "DFlash graph allowance");
             };
@@ -735,7 +701,6 @@ make_sequence_planner_impl(DeviceContext& device, const EngineOptions& options,
         .features       = qwen3_6::startup_features(options),
         .use_cuda_graph = options.use_cuda_graph,
         .device         = options.device,
-        .kv_host_cache_bytes = static_cast<std::size_t>(options.kv_host_cache_mib) << 20,
     };
     const std::uint32_t logical_pages = page_count(inputs.capacity);
     const std::uint32_t minimum_pages = std::max(logical_pages, inputs.max_concurrency);

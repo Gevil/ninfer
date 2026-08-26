@@ -14,7 +14,6 @@ ninfer_add_op_bench(ninfer_silu_mul_bench SOURCES ops/silu_mul_bench.cu)
 ninfer_add_op_bench(ninfer_residual_add_bench SOURCES ops/residual_add_bench.cu)
 ninfer_add_op_bench(ninfer_sigmoid_mul_bench SOURCES ops/sigmoid_mul_bench.cu)
 ninfer_add_op_bench(ninfer_rmsnorm_bench SOURCES ops/rmsnorm_bench.cu)
-ninfer_add_op_bench(ninfer_residual_rmsnorm_bench SOURCES ops/residual_rmsnorm_bench.cu)
 ninfer_add_op_bench(ninfer_l2norm_bench SOURCES ops/l2norm_bench.cu)
 ninfer_add_op_bench(ninfer_gdn_gating_bench SOURCES ops/gdn_gating_bench.cu)
 ninfer_add_op_bench(ninfer_gdn_gating_proj_bench SOURCES ops/gdn_gating_proj_bench.cu)
@@ -53,8 +52,6 @@ ninfer_add_op_bench(ninfer_causal_softmax_attention_bench
   SOURCES ops/causal_softmax_attention_bench.cu)
 ninfer_add_op_bench(ninfer_context_softmax_attention_bench
   SOURCES ops/context_softmax_attention_bench.cu)
-ninfer_add_op_bench(ninfer_gqa_attention_decode_nvfp4_bench
-  SOURCES ops/gqa_attention_decode_nvfp4_bench.cu)
 ninfer_add_op_bench(ninfer_sliding_window_attention_bench
   SOURCES ops/sliding_window_attention_bench.cu)
 ninfer_add_op_bench(ninfer_kv_cache_append_bench SOURCES ops/kv_cache_append_bench.cu)

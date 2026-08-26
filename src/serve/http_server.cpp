@@ -252,20 +252,7 @@ void HttpServer::run_stats_reporter() {
         const Clock::time_point now        = Clock::now();
         const ThroughputReport report      = make_throughput_report(
             previous, current, std::chrono::duration<double>(now - previous_time).count());
-        if (report_has_activity(report)) {
-            log_throughput(report);
-            const ninfer::KvHostCacheStats cache = service_->host_cache_stats();
-            if (cache.enabled) {
-                log_line("host-cache stored=" + std::to_string(cache.stored_bytes >> 20) + "/" +
-                         std::to_string(cache.budget_bytes >> 20) + "MiB segments=" +
-                         std::to_string(cache.stored_segments) + " hits=" +
-                         std::to_string(cache.hit_requests) + " (" +
-                         std::to_string(cache.hit_tokens) + " tokens) restored=" +
-                         std::to_string(cache.restored_bytes >> 20) + "MiB writeback=" +
-                         std::to_string(cache.writeback_bytes >> 20) + "MiB evicted=" +
-                         std::to_string(cache.evicted_segments));
-            }
-        }
+        if (report_has_activity(report)) { log_throughput(report); }
         previous      = current;
         previous_time = now;
     }
@@ -657,8 +644,7 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
                 return req.is_connection_alive && !req.is_connection_alive();
             });
             log_request_done(log_context, outcome);
-            const CompletionUsage usage{outcome.prompt_tokens, outcome.completion_tokens,
-                                        static_cast<int>(outcome.metrics.prefix_cache_hit_tokens)};
+            const CompletionUsage usage{outcome.prompt_tokens, outcome.completion_tokens};
             std::string response_body;
             if (!outcome.tool_calls.empty()) {
                 response_body = make_chat_completion_tool_response(
@@ -743,9 +729,7 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
                                               include_usage));
                 }
                 if (include_usage) {
-                    const CompletionUsage usage{
-                        outcome.prompt_tokens, outcome.completion_tokens,
-                        static_cast<int>(outcome.metrics.prefix_cache_hit_tokens)};
+                    const CompletionUsage usage{outcome.prompt_tokens, outcome.completion_tokens};
                     write_stream_item(sink, *stream,
                                       make_chat_chunk_usage(id, model, created, usage));
                 }
@@ -873,8 +857,7 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
                 return req.is_connection_alive && !req.is_connection_alive();
             });
             log_request_done(log_context, outcome);
-            const CompletionUsage usage{outcome.prompt_tokens, outcome.completion_tokens,
-                                        static_cast<int>(outcome.metrics.prefix_cache_hit_tokens)};
+            const CompletionUsage usage{outcome.prompt_tokens, outcome.completion_tokens};
             const char* stop_reason =
                 messages_stop_reason(outcome.finish_reason, !outcome.tool_calls.empty());
             set_owned_content(res,

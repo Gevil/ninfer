@@ -16,7 +16,7 @@
 namespace ninfer::ops {
 
 template <typename Geometry, int TokenTile, int WarpsPerCta, bool MultiBatch, bool Masked,
-          bool CanonicalColumns, typename CacheInput>
+          typename CacheInput>
 __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_kernel(
     const __nv_bfloat16* q, CacheInput input, const std::int32_t* pos, __nv_bfloat16* cache_k,
     __nv_bfloat16* cache_v, const std::int32_t* block_tables, const std::int32_t* valid_columns,
@@ -51,35 +51,25 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
 
     const int kv_head     = static_cast<int>(blockIdx.x);
     const int split       = static_cast<int>(blockIdx.y);
-    const int flat_column = static_cast<int>(blockIdx.z);
-    const int batch       = MultiBatch ? (CanonicalColumns ? flat_column / tokens : flat_column) : 0;
-    const int column      = CanonicalColumns ? flat_column - batch * tokens : 0;
+    const int batch       = MultiBatch ? static_cast<int>(blockIdx.z) : 0;
     const int split_count = static_cast<int>(gridDim.y);
     const int tid         = static_cast<int>(threadIdx.x);
     const int warp        = tid >> 5;
     const int lane        = tid & 31;
-    const int active_tokens = CanonicalColumns ? 1 : tokens;
-    int valid_tokens        = active_tokens;
+    int valid_tokens      = tokens;
     if constexpr (Masked) {
-        const int remaining = valid_columns[batch] - column_begin - column;
-        valid_tokens = remaining <= 0 ? 0 : (remaining < active_tokens ? remaining : active_tokens);
+        const int remaining = valid_columns[batch] - column_begin;
+        valid_tokens        = remaining <= 0 ? 0 : (remaining < tokens ? remaining : tokens);
     }
-    const int row_count = active_tokens * Geometry::GroupSize;
+    const int row_count = tokens * Geometry::GroupSize;
 
-    std::int64_t current_base = column_begin;
-    if constexpr (MultiBatch) { current_base += static_cast<std::int64_t>(batch) * full_width; }
-    const std::int32_t* current_pos = pos + current_base;
-    const int current_remaining = Masked ? valid_columns[batch] - column_begin : tokens;
-    const int current_tokens = current_remaining <= 0
-                                   ? 0
-                                   : (current_remaining < tokens ? current_remaining : tokens);
-    const std::int32_t current_first_pos = current_tokens > 0 ? current_pos[0] : -1;
-    const std::int64_t column_base       = current_base + column;
+    std::int64_t column_base = column_begin;
+    if constexpr (MultiBatch) { column_base += static_cast<std::int64_t>(batch) * full_width; }
     q += static_cast<std::int64_t>(kGqaHeadDim) * Geometry::QHeads * column_base;
     pos += column_base;
     if constexpr (CacheInput::writes_cache) {
-        input.k += static_cast<std::int64_t>(kGqaHeadDim) * Geometry::KVHeads * current_base;
-        input.v += static_cast<std::int64_t>(kGqaHeadDim) * Geometry::KVHeads * current_base;
+        input.k += static_cast<std::int64_t>(kGqaHeadDim) * Geometry::KVHeads * column_base;
+        input.v += static_cast<std::int64_t>(kGqaHeadDim) * Geometry::KVHeads * column_base;
     }
     const int table_row = table_rows == nullptr ? 0 : table_rows[batch];
     const std::int32_t* block_table =
@@ -95,13 +85,11 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
         for (int row = tid; row < row_count; row += Threads) {
             int q_head = 0;
             int token  = 0;
-            gqa_small_t_tc_row_to_qt<Geometry>(row, active_tokens, kv_head, q_head, token);
-            const int output_token = column + token;
+            gqa_small_t_tc_row_to_qt<Geometry>(row, tokens, kv_head, q_head, token);
             if (gqa_valid_q_head<Geometry>(kv_head, q_head)) {
-                partial_m[gqa_partial_stat_index<Geometry>(q_head, output_token, split, tokens)] =
+                partial_m[gqa_partial_stat_index<Geometry>(q_head, token, split, tokens)] =
                     -CUDART_INF_F;
-                partial_l[gqa_partial_stat_index<Geometry>(q_head, output_token, split, tokens)] =
-                    0.0f;
+                partial_l[gqa_partial_stat_index<Geometry>(q_head, token, split, tokens)] = 0.0f;
             }
         }
         for (int idx = tid; idx < row_count * D; idx += Threads) {
@@ -109,18 +97,15 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
             const int d   = idx - row * D;
             int q_head    = 0;
             int token     = 0;
-            gqa_small_t_tc_row_to_qt<Geometry>(row, active_tokens, kv_head, q_head, token);
-            const int output_token = column + token;
+            gqa_small_t_tc_row_to_qt<Geometry>(row, tokens, kv_head, q_head, token);
             if (gqa_valid_q_head<Geometry>(kv_head, q_head)) {
-                partial_acc[
-                    gqa_partial_acc_index<Geometry>(q_head, d, output_token, split, tokens)] =
+                partial_acc[gqa_partial_acc_index<Geometry>(q_head, d, token, split, tokens)] =
                     __float2bfloat16(0.0f);
             }
         }
     };
 
-    if (kv_head < 0 || kv_head >= Geometry::KVHeads || active_tokens < 1 ||
-        active_tokens > TokenTile || column < 0 || column >= tokens ||
+    if (kv_head < 0 || kv_head >= Geometry::KVHeads || tokens < 1 || tokens > TokenTile ||
         row_count > Br || split_count <= 0) {
         return;
     }
@@ -130,7 +115,7 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
     }
 
     const std::int32_t first_pos = pos[0];
-    const std::int32_t last_pos  = pos[active_tokens - 1];
+    const std::int32_t last_pos  = pos[tokens - 1];
     if (first_pos < 0 || last_pos < 0 || last_pos >= logical_capacity) {
         write_neutral();
         return;
@@ -169,9 +154,7 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
             const int p_tok = pos[token];
             if (p_tok >= split_start && p_tok < split_end && p_tok >= 0 &&
                 p_tok < logical_capacity) {
-                const int input_token = CanonicalColumns ? column + token : token;
-                const std::int64_t new_off =
-                    gqa_kv_new_index<Geometry>(kv_head, d, input_token);
+                const std::int64_t new_off = gqa_kv_new_index<Geometry>(kv_head, d, token);
                 const int lane             = tid & 31;
                 int physical_page = lane == 0 ? paged_kv_physical_page(block_table, p_tok) : 0;
                 physical_page     = __shfl_sync(FullMask, physical_page, 0);
@@ -189,7 +172,7 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
         const int d   = idx - row * D;
         int q_head    = 0;
         int token     = 0;
-        gqa_small_t_tc_row_to_qt<Geometry>(row, active_tokens, kv_head, q_head, token);
+        gqa_small_t_tc_row_to_qt<Geometry>(row, tokens, kv_head, q_head, token);
         __nv_bfloat16 value = __float2bfloat16(0.0f);
         if (row < row_count && gqa_valid_q_head<Geometry>(kv_head, q_head)) {
             value = q[gqa_q_index<Geometry>(q_head, d, token)];
@@ -245,8 +228,9 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
             __nv_bfloat16* v_dst = &v_s[key_l * D + gqa_small_t_tc_swz(key_l, d)];
             if (key >= split_start && key < split_end) {
                 if constexpr (CacheInput::writes_cache) {
-                    const int new_token = key - current_first_pos;
-                    const bool from_new = new_token >= 0 && new_token < current_tokens;
+                    const int new_token = key - first_pos;
+                    const bool from_new =
+                        new_token >= 0 && new_token < valid_tokens && key >= first_pos;
                     if (from_new) {
                         const std::int64_t off = gqa_kv_new_index<Geometry>(kv_head, d, new_token);
                         ninfer::ops::cp_async<16>(k_dst, &input.k[off]);
@@ -291,8 +275,8 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
         const int row0 = warp_row0 + gid;
         const int row1 = row0 + 8;
         int q_head0 = 0, token0 = 0, q_head1 = 0, token1 = 0;
-        gqa_small_t_tc_row_to_qt<Geometry>(row0, active_tokens, kv_head, q_head0, token0);
-        gqa_small_t_tc_row_to_qt<Geometry>(row1, active_tokens, kv_head, q_head1, token1);
+        gqa_small_t_tc_row_to_qt<Geometry>(row0, tokens, kv_head, q_head0, token0);
+        gqa_small_t_tc_row_to_qt<Geometry>(row1, tokens, kv_head, q_head1, token1);
         const int qabs0 = (row0 < row_count) ? pos[token0] : -1;
         const int qabs1 = (row1 < row_count) ? pos[token1] : -1;
 
@@ -396,18 +380,16 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
         if (row0 < row_count) {
             int q_head = 0;
             int token  = 0;
-            gqa_small_t_tc_row_to_qt<Geometry>(row0, active_tokens, kv_head, q_head, token);
-            const int output_token = column + token;
-            partial_m[gqa_partial_stat_index<Geometry>(q_head, output_token, split, tokens)] = m0;
-            partial_l[gqa_partial_stat_index<Geometry>(q_head, output_token, split, tokens)] = l0;
+            gqa_small_t_tc_row_to_qt<Geometry>(row0, tokens, kv_head, q_head, token);
+            partial_m[gqa_partial_stat_index<Geometry>(q_head, token, split, tokens)] = m0;
+            partial_l[gqa_partial_stat_index<Geometry>(q_head, token, split, tokens)] = l0;
         }
         if (row1 < row_count) {
             int q_head = 0;
             int token  = 0;
-            gqa_small_t_tc_row_to_qt<Geometry>(row1, active_tokens, kv_head, q_head, token);
-            const int output_token = column + token;
-            partial_m[gqa_partial_stat_index<Geometry>(q_head, output_token, split, tokens)] = m1;
-            partial_l[gqa_partial_stat_index<Geometry>(q_head, output_token, split, tokens)] = l1;
+            gqa_small_t_tc_row_to_qt<Geometry>(row1, tokens, kv_head, q_head, token);
+            partial_m[gqa_partial_stat_index<Geometry>(q_head, token, split, tokens)] = m1;
+            partial_l[gqa_partial_stat_index<Geometry>(q_head, token, split, tokens)] = l1;
         }
     }
 
@@ -435,11 +417,10 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
         const int d   = (chunk - row * (D / 8)) * 8;
         int q_head    = 0;
         int token     = 0;
-        gqa_small_t_tc_row_to_qt<Geometry>(row, active_tokens, kv_head, q_head, token);
-        const int output_token = column + token;
+        gqa_small_t_tc_row_to_qt<Geometry>(row, tokens, kv_head, q_head, token);
         if (gqa_valid_q_head<Geometry>(kv_head, q_head)) {
             const std::int64_t dst =
-                gqa_partial_acc_index<Geometry>(q_head, d, output_token, split, tokens);
+                gqa_partial_acc_index<Geometry>(q_head, d, token, split, tokens);
             store_vec(&partial_acc[dst], load_vec<int4>(&qkv_s[row * D + d]));
         }
     }

@@ -44,10 +44,6 @@ constexpr double kVideoFps             = 2.0;
 constexpr int kVideoMinFrames          = 4;
 constexpr int kVideoMaxFrames          = 768;
 
-// validate_pixel_pipeline() pins patch_size to 16 and merge_size to 2, so one Vision token
-// always covers a 32x32 pixel square.
-constexpr std::uint64_t kPixelsPerVisionToken = (16ULL * 2ULL) * (16ULL * 2ULL);
-
 constexpr std::array<std::pair<std::string_view, TokenId>, 4> kVisionSpecialTokens = {{
     {"<|vision_start|>", 248053},
     {"<|vision_end|>", 248054},
@@ -147,8 +143,7 @@ void validate_pixel_pipeline(const Json& config, std::string_view resource) {
     }
 }
 
-fi::ProcessorOptions processor_options(const FrontendResources& resources,
-                                       std::uint32_t image_token_budget) {
+fi::ProcessorOptions processor_options(const FrontendResources& resources) {
     const Json image =
         parse_resource_json(resources.preprocessor_config_json, "preprocessor_config.json");
     const Json video = parse_resource_json(resources.video_preprocessor_config_json,
@@ -166,19 +161,6 @@ fi::ProcessorOptions processor_options(const FrontendResources& resources,
     options.image_max_pixels =
         positive_u64(require_integer(image_size, "longest_edge", "preprocessor_config.json.size"),
                      "image longest_edge");
-    if (image_token_budget != 0) {
-        // preprocessor_config.json ships the model's *capability* ceiling: longest_edge there is
-        // large enough that a full-resolution screen capture is never resized, so a single image
-        // occupies thousands of prompt tokens. An agent conversation resends every screenshot it
-        // has read on every turn, so a serving endpoint wants a *policy* ceiling on top, the way
-        // every hosted API applies one: fit-and-scale rather than reject. The budget is per image
-        // and deliberately does not depend on how many images a request carries; waterfilling
-        // across items would move the prompt prefix as a conversation grows and invalidate prefix
-        // reuse on every turn. Nothing else in the pipeline reads image_max_pixels.
-        options.image_max_pixels =
-            std::min(options.image_max_pixels,
-                     static_cast<std::uint64_t>(image_token_budget) * kPixelsPerVisionToken);
-    }
     options.video_min_pixels = positive_u64(
         require_integer(video_size, "shortest_edge", "video_preprocessor_config.json.size"),
         "video shortest_edge");
@@ -320,7 +302,6 @@ fi::ChatRenderOptions render_options(const PromptOptions& options) {
                                  .enable_thinking       = options.enable_thinking,
                                  .reasoning_effort      = options.reasoning_effort,
                                  .preserve_thinking     = options.preserve_thinking,
-                                 .terse                 = options.terse,
                                  .add_vision_id         = options.add_vision_id,
                                  .tool_jsons            = options.tool_jsons};
 }
@@ -470,7 +451,6 @@ struct DecoderState {
     std::array<std::string, 2> stop_pending;
     bool in_reasoning              = false;
     bool strip_content_leading     = false;
-    bool raw_output                = false;
     bool terminal                  = false;
     std::uint64_t decoded_bytes    = 0;
     std::uint32_t reasoning_tokens = 0;
@@ -562,39 +542,8 @@ void feed_content(DecoderState& state, std::string text, const StopPolicy& polic
 void feed_decoded_text(DecoderState& state, std::string_view text, const StopPolicy& policy,
                        PublishedOutput& emitted, std::uint32_t committed_tokens,
                        StopMatch* best_match) {
-    if (state.raw_output) {
-        // Raw sessions expose the decoded stream byte-exactly on the content channel;
-        // reasoning splitting and the stray-marker cleanup must never touch them.
-        feed_content(state, std::string(text), policy, emitted, committed_tokens, best_match);
-        return;
-    }
     if (!state.in_reasoning) {
-        // With preserve_special_tokens enabled (tool-capable requests), a model-emitted
-        // think-close token decodes to literal text. Once reasoning has closed - or never
-        // opened (thinking disabled) - that tag can never be meaningful content, so drop
-        // it instead of leaking the raw marker into client-visible text. The first close
-        // while reasoning is still open is handled above; this guards every subsequent one.
-        // A marker split across decoded tokens is handled by holding the ambiguous tail in
-        // think_marker_pending until it resolves. Raw sessions returned above and are never
-        // cleaned up.
-        state.think_marker_pending.append(text);
-        const std::size_t hit = state.think_marker_pending.find(kThinkClose);
-        const std::size_t hold =
-            longest_suffix_prefix(state.think_marker_pending, kThinkClose, true);
-        const std::size_t resolved_end = state.think_marker_pending.size() - hold;
-        std::string cleaned;
-        cleaned.reserve(resolved_end);
-        std::size_t begin = 0;
-        for (;;) {
-            const std::size_t found = state.think_marker_pending.find(kThinkClose, begin);
-            if (found == std::string::npos || found >= resolved_end) { break; }
-            cleaned.append(state.think_marker_pending.substr(begin, found - begin));
-            begin = found + kThinkClose.size();
-        }
-        cleaned.append(state.think_marker_pending.substr(begin, resolved_end - begin));
-        state.think_marker_pending.erase(0, resolved_end);
-        if (!cleaned.empty()) { feed_content(state, std::move(cleaned), policy, emitted,
-                                             committed_tokens, best_match); }
+        feed_content(state, std::string(text), policy, emitted, committed_tokens, best_match);
         return;
     }
 
@@ -647,23 +596,6 @@ void terminalize(DecoderState& state, const StopPolicy& policy, PublishedOutput&
         state.think_marker_pending.clear();
         close_channel(state, OutputChannel::Reasoning, emitted);
     } else {
-        // Whatever is held here is a suffix of </think> (or bytes containing one). No
-        // further tokens can resolve it: publish ordinary generated bytes as content but
-        // never a close marker itself - terminating on one must match what decoding would
-        // have done with it (dropped), not leak it into content.
-        if (!state.think_marker_pending.empty()) {
-            std::string held = std::move(state.think_marker_pending);
-            state.think_marker_pending.clear();
-            // A complete trailing close marker would be dropped during decoding, so
-            // terminating on one must not publish it either; anything ahead of it is
-            // ordinary generated bytes and is flushed as content.
-            if (const std::size_t marker = held.find(kThinkClose); marker != std::string::npos) {
-                held.resize(marker);
-            }
-            if (!held.empty()) {
-                feed_content(state, std::move(held), policy, emitted, committed_tokens, nullptr);
-            }
-        }
         close_channel(state, OutputChannel::Content, emitted);
     }
     state.stop_pending = {};
@@ -688,8 +620,7 @@ public:
               fi::TokenizerResources{.tokenizer_json         = resources.tokenizer_json,
                                      .tokenizer_config_json  = resources.tokenizer_config_json,
                                      .generation_config_json = resources.generation_config_json})),
-          processor(processor_options(resources, options.image_token_budget)),
-          vision_enabled(options.vision_enabled) {
+          processor(processor_options(resources)), vision_enabled(options.vision_enabled) {
         if (options.max_context == 0) {
             throw std::invalid_argument("frontend max_context must be nonzero");
         }
@@ -733,13 +664,11 @@ public:
         : tokenizer(std::move(tokenizer_)), policy(std::move(policy_)),
           preserve_special(output.raw || output.preserve_special_tokens) {
         state.in_reasoning = starts_in_reasoning && !output.raw;
-        state.raw_output   = output.raw;
     }
 
     std::shared_ptr<const fi::Tokenizer> tokenizer;
     StopPolicy policy;
     bool preserve_special = false;
-    bool raw_output       = false;
     DecoderState state;
     DecoderState preview_state;
     PublishedOutput preview_output;

@@ -75,20 +75,11 @@ void gated_delta_net(const Tensor& q, const Tensor& k, const Tensor& v, const Te
  * overwriting another row's initial slot; a row may overwrite its own initial slot after loading
  * it. This form uses no arena allocation and `ssm_states` is the only persistent state mutated.
  */
-// Registration for the post-mixer gated RMS-norm folded into the mixer tail. Set immediately
-// before the mixer call; the launcher consumes and clears it, and ignores it when unset.
-struct GdnPostNormSpan {
-    const void* gate_z = nullptr;
-    const void* weight = nullptr;
-    void* out          = nullptr;
-    float eps          = 0.0F;
-};
-
 void gated_delta_net_snapshot(const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& g,
                               const Tensor& beta, float scale, bool normalize_qk,
                               Tensor& ssm_states, const Tensor& valid_columns,
                               const Tensor& initial_state_slots, const Tensor& snapshot_base_slots,
-                              Tensor& out, cudaStream_t stream, GdnPostNormSpan post_norm = {});
+                              Tensor& out, cudaStream_t stream);
 
 /**
  * Op: gated_delta_net_replay_record
@@ -110,6 +101,6 @@ void gated_delta_net_replay_record(const Tensor& q, const Tensor& k, const Tenso
                                    const Tensor& ssm_states, const Tensor& valid_columns,
                                    const Tensor& initial_state_slots, Tensor& key_record,
                                    Tensor& value_record, Tensor& gate_record, Tensor& out,
-                                   cudaStream_t stream, GdnPostNormSpan post_norm = {});
+                                   cudaStream_t stream);
 
 } // namespace ninfer::ops

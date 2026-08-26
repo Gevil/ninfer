@@ -1,7 +1,4 @@
 #include "targets/qwen3_6/impl/runtime/instance.h"
-#include "core/host_kv_log.h"
-#include "targets/qwen3_6/impl/runtime/host_kv_cache.h"
-#include "targets/qwen3_6/impl/runtime/content_kv_cache_impl.h"
 #include "targets/qwen3_6/impl/runtime/program.h"
 
 #include "targets/qwen3_6/impl/runtime/schedule.h"
@@ -305,22 +302,6 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
     CUDA_CHECK(cudaMemsetAsync(token_counts.data, 0, token_counts.bytes(), device.stream));
     CUDA_CHECK(cudaMemsetAsync(sampling_config.data, 0, sampling_config.bytes(), device.stream));
     device.synchronize();
-    if (plan.kv_host_cache_bytes != 0 && speculative_backend == SpeculativeBackend::DFlash) {
-        throw std::invalid_argument(
-            "the KV host cache is not supported with the DFlash backend yet: content anchors "
-            "do not carry the DFlash drafter context");
-    }
-    if (plan.kv_host_cache_bytes != 0) {
-        std::uint64_t salt = content_chain::fold(0x6b76636163686531ULL,
-                                                 static_cast<std::uint64_t>(kv_dtype));
-        salt               = content_chain::fold(salt, static_cast<std::uint64_t>(kv_quant_group));
-        salt = content_chain::fold(salt, static_cast<std::uint64_t>(speculative_backend));
-        salt = content_chain::fold(salt, draft_window);
-        content_cache = std::make_unique<ContentKvCache>(
-            plan.kv_host_cache_bytes, salt, decoder->text_kv.pool(),
-            backend_kv_cache() != nullptr ? &backend_kv_cache()->pool() : nullptr,
-            decoder->linear_attention, max_concurrency);
-    }
     prepare_graphs();
     work.reset();
     work.reset_peak();
@@ -329,22 +310,6 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
 
 ProgramImplCore::~ProgramImplCore() noexcept {
     if (device.stream != nullptr) { (void)cudaStreamSynchronize(device.stream); }
-}
-
-bool ProgramImplCore::content_restore_valid(const RequestPlan& plan) const noexcept {
-    if (plan.impl_ == nullptr) { return false; }
-    if (plan.impl_->reuse != ReusePath::ContentRestore) { return true; }
-    return content_cache && plan.impl_->content_restore &&
-           content_cache->plan_valid(*plan.impl_->content_restore);
-}
-
-std::uint64_t ProgramImplCore::content_identity(const RequestPlan& plan) const noexcept {
-    return plan.impl_ == nullptr ? 0 : plan.impl_->content_identity;
-}
-
-bool ProgramImplCore::save_prefill_checkpoint(std::uint32_t lane) {
-    if (!content_cache || lane >= max_concurrency) { return false; }
-    return content_cache->save_prompt_anchor(sequences[lane], work, device);
 }
 
 bool ProgramImplCore::can_admit_lane(std::uint32_t lane, const RequestPlan& plan) const noexcept {
@@ -416,69 +381,6 @@ bool ProgramImplCore::can_admit_lane_after_retained_eviction(
                        plan.impl_->backend_kv_page_entitlement);
 }
 
-// The evicting-restore transaction's "can it ever fit" pre-check: true when,
-// after hypothetically reclaiming every retained lane except `lane` (the
-// selected resident is freed, the other retained lanes are parked), BOTH the
-// parked entry `entry_id` and the request `plan` fit. Active lanes keep their
-// pages (they are not retained), so the reclaimable set is exactly the lanes
-// the transaction can park. If this is false, parking (and possibly evicting)
-// the other lanes would only destroy unrelated retained state for a restore
-// that can never succeed, so the transaction returns KeptResident without
-// touching any lane.
-bool ProgramImplCore::can_evicting_restore_fit(std::uint32_t lane, std::uint64_t entry_id,
-                                               const RequestPlan& plan) const noexcept {
-    if (lane >= max_concurrency || plan.impl_ == nullptr) { return false; }
-    const RequestControl& request = requests[lane];
-    if (request.lifecycle == Lifecycle::Prefilling || request.lifecycle == Lifecycle::Active ||
-        request.lifecycle == Lifecycle::Pending) {
-        return false;
-    }
-    const auto entry_index = host_kv_ ? host_kv_->find_by_id(entry_id) : std::nullopt;
-    if (!entry_index) { return false; }
-    const HostKvEntry& entry = host_kv_->entry(*entry_index);
-
-    std::uint32_t reclaimable_text    = 0;
-    std::uint32_t reclaimable_backend = 0;
-    for (std::uint32_t other = 0; other < max_concurrency; ++other) {
-        if (other == lane || !sequences[other].retained || !sequences[other].kv) { continue; }
-        reclaimable_text += sequences[other].kv->text.page_entitlement();
-        if (sequences[other].kv->backend) {
-            reclaimable_backend += sequences[other].kv->backend->page_entitlement();
-        }
-    }
-
-    const auto fits_after_reclaim = [](const PagedKVPool& pool, std::uint32_t old_pages,
-                                       std::uint32_t reclaimable_pages, std::uint32_t new_pages) {
-        if (old_pages > pool.entitled_pages() ||
-            reclaimable_pages > pool.entitled_pages() - old_pages ||
-            new_pages > pool.logical_page_capacity()) {
-            return false;
-        }
-        const std::uint32_t committed = pool.entitled_pages() - old_pages - reclaimable_pages;
-        return new_pages <= pool.page_group_count() - committed;
-    };
-
-    const SequenceState& sequence = sequences[lane];
-    const std::uint32_t old_text  = sequence.kv ? sequence.kv->text.page_entitlement() : 0;
-    if (!fits_after_reclaim(decoder->text_kv.pool(), old_text, reclaimable_text,
-                            entry.meta.text_page_entitlement) ||
-        !fits_after_reclaim(decoder->text_kv.pool(), old_text, reclaimable_text,
-                            plan.impl_->text_kv_page_entitlement)) {
-        return false;
-    }
-    const qwen3_6::PagedKVCache* backend = backend_kv_cache();
-    if (backend == nullptr) {
-        return entry.meta.backend_page_entitlement == 0 &&
-               plan.impl_->backend_kv_page_entitlement == 0;
-    }
-    const std::uint32_t old_backend =
-        sequence.kv && sequence.kv->backend ? sequence.kv->backend->page_entitlement() : 0;
-    return fits_after_reclaim(backend->pool(), old_backend, reclaimable_backend,
-                              entry.meta.backend_page_entitlement) &&
-           fits_after_reclaim(backend->pool(), old_backend, reclaimable_backend,
-                              plan.impl_->backend_kv_page_entitlement);
-}
-
 runtime::AdmissionResources ProgramImplCore::admission_capacity() const noexcept {
     const qwen3_6::PagedKVCache* backend = backend_kv_cache();
     return runtime::AdmissionResources{
@@ -524,7 +426,6 @@ runtime::PrefillStepResult ProgramImplCore::start_prefill_lane(std::uint32_t lan
         throw std::invalid_argument("request transient region does not satisfy the plan");
     }
     if (request_plan.reuse != ReusePath::FullReset &&
-        request_plan.reuse != ReusePath::ContentRestore &&
         (!sequence.retained ||
          !qwen3_6::detail::prefix_matches(prompt, sequence.ledger, sequence.prefix_identity,
                                           request_plan.reuse_base))) {
@@ -617,39 +518,6 @@ runtime::PrefillStepResult ProgramImplCore::start_prefill_lane(std::uint32_t lan
                                            request_plan.backend_kv_page_entitlement);
             sequence.text_kv_valid = base;
             sequence.ledger.resize(base);
-        } else if (request_plan.reuse == ReusePath::ContentRestore) {
-            if (!content_cache || !request_plan.content_restore) {
-                throw std::logic_error("content restore was planned without a host cache");
-            }
-            // The store may have evicted the planned anchor between planning and execution
-            // (a completed request's save can trigger eviction). Fail before any lane
-            // mutation so the caller can replan; the engine's executor invalidates cached
-            // plans on every completion, which keeps this path unreachable there.
-            if (!content_cache->plan_valid(*request_plan.content_restore)) {
-                throw std::runtime_error(
-                    "content restore plan is stale: the planned anchor was evicted; replan "
-                    "the request");
-            }
-            sequence.kv.reset();
-            ordered_reset(sequence);
-            sequence.ledger.clear();
-            sequence.text_kv_valid = 0;
-            sequence.mtp_kv_valid  = 0;
-            reserve_sequence_kv(sequence, request_plan.text_kv_page_entitlement,
-                                request_plan.backend_kv_page_entitlement);
-            sequence.kv->text.materialize_tokens(base);
-            if (sequence.kv->backend) {
-                sequence.kv->backend->materialize_tokens(request_plan.content_restore->backend_tokens);
-            }
-            sequence.text_kv_valid = base;
-            if (speculative_backend == SpeculativeBackend::Mtp) {
-                const std::uint32_t mtp_base = base == 0 ? 0 : base - 1;
-                if (!request_plan.prepare_mtp ||
-                    request_plan.content_restore->backend_tokens < mtp_base) {
-                    throw std::logic_error("content restore lacks the MTP bridge frontier");
-                }
-                sequence.mtp_kv_valid = mtp_base;
-            }
         } else if (is_rewrite_checkpoint_restore(request_plan.reuse)) {
             if (!sequence.kv || sequence.text_kv_valid < base) {
                 throw std::logic_error("resident rewrite checkpoint has no complete KV allocation");
@@ -692,39 +560,6 @@ runtime::PrefillStepResult ProgramImplCore::start_prefill_lane(std::uint32_t lan
             : speculative_backend == SpeculativeBackend::DFlash ? prompt_tokens
                                                                 : 0U;
         materialize_sequence_kv(sequence, prompt_tokens, backend_materialized);
-        if (request_plan.reuse == ReusePath::ContentRestore) {
-            content_cache->restore(sequence, *request_plan.content_restore, prompt, work, device);
-            // The lane's rewrite checkpoint belongs to its previous occupant. Unless the planner
-            // proved prefix identity up to the retained frontier (Keep/Reclassify), that slot
-            // holds another trajectory's state: retaining it poisons the next checkpoint restore
-            // AND the checkpoint anchor this request saves at completion. Rebuild it from the
-            // restored state when the desired boundary is exactly the restore frontier (the
-            // anchor state IS the boundary state); otherwise invalidate it.
-            const bool planner_kept =
-                request_plan.rewrite_checkpoint_action == RewriteCheckpointAction::KeepExisting ||
-                request_plan.rewrite_checkpoint_action ==
-                    RewriteCheckpointAction::ReclassifyExisting;
-            if (!planner_kept) {
-                const auto& desired = prompt.identity.rewrite_checkpoint;
-                if (desired && desired->frontier == base) {
-                    decoder->linear_attention.copy_slot(
-                        LinearStateSlots::current_state_slot(sequence.lane, max_concurrency),
-                        LinearStateSlots::rewrite_checkpoint_state_slot(sequence.lane,
-                                                                        max_concurrency),
-                        device.stream);
-                    sequence.rewrite_checkpoint =
-                        RewriteCheckpoint{true, desired->kind, desired->frontier};
-                } else {
-                    sequence.rewrite_checkpoint = {};
-                }
-            } else if (sequence.rewrite_checkpoint.frontier != base) {
-                // The restore just overwrote rewrite_checkpoint_hidden with the anchor's
-                // boundary hidden at `base`; a kept checkpoint at a different frontier would
-                // pair its (valid) linear slot with that foreign hidden, and save() would
-                // seal the torn pair into the host store. Drop it instead.
-                sequence.rewrite_checkpoint = {};
-            }
-        }
         install_sampling(sequence, request, request_plan.sampling);
         sequence.rope_delta = prompt.rope_delta;
         set_device_i32(io.rope_delta, sequence.rope_delta);
@@ -844,18 +679,6 @@ void ProgramImplCore::resolve_pending_batch(std::span<const std::uint32_t> lanes
     if (!replay_records) {
         throw std::logic_error("speculative pending batch has no ReplaySSM records");
     }
-    MtpWindowRig* resolve_rig = nullptr;
-    if (adaptive_spec && lanes.size() == 1 && lanes[0] < max_concurrency) {
-        const std::uint32_t pw = sequences[lanes[0]].adaptive.pending_window;
-        if (pw != 0) {
-            for (MtpWindowRig& rig : mtp_window_rigs) {
-                if (rig.window == pw) { resolve_rig = &rig; }
-            }
-            if (resolve_rig == nullptr) {
-                throw std::logic_error("adaptive pending window has no rig");
-            }
-        }
-    }
 
     std::array<ops::GdnReplayFoldRow, kMaximumConcurrency> fold_rows{};
     std::array<std::int32_t, kMaximumConcurrency> hidden_selectors{};
@@ -898,8 +721,7 @@ void ProgramImplCore::resolve_pending_batch(std::span<const std::uint32_t> lanes
 
     const auto tail_started = Clock::now();
     try {
-        ops::gdn_replay_fold(resolve_rig ? *resolve_rig->records : *replay_records,
-                             decoder->linear_attention.all_layers_view(),
+        ops::gdn_replay_fold(*replay_records, decoder->linear_attention.all_layers_view(),
                              std::span<const ops::GdnReplayFoldRow>(fold_rows.data(), lanes.size()),
                              device.stream);
 
@@ -910,8 +732,7 @@ void ProgramImplCore::resolve_pending_batch(std::span<const std::uint32_t> lanes
             Tensor selected;
             Tensor destinations;
             if (speculative_backend == SpeculativeBackend::Mtp && io.mtp_decode) {
-                qwen3_6::MtpDecodeState& frame =
-                    resolve_rig ? *resolve_rig->frame : *io.mtp_decode;
+                qwen3_6::MtpDecodeState& frame = *io.mtp_decode;
                 selector_tensor                = frame.current_extents.slice(0, 0, batch);
                 hidden                         = frame.target_hidden.slice(2, 0, batch);
                 selected     = frame.target_continuation_hidden.slice(1, 0, batch);
@@ -1013,7 +834,6 @@ void ProgramImplCore::resolve_pending_batch(std::span<const std::uint32_t> lanes
                 release_sequence_growth_entitlement(sequence);
                 unbind_sequence_kv(sequence);
                 sequence.retained = true;
-                if (content_cache) { content_cache->save(sequence, work, device); }
                 request.lifecycle = Lifecycle::Complete;
             } else {
                 request.lifecycle = Lifecycle::Active;
@@ -1036,383 +856,6 @@ void ProgramImplCore::abort_lane(std::uint32_t lane) noexcept {
 
 bool ProgramImplCore::has_retained_lane(std::uint32_t lane) const noexcept {
     return lane < max_concurrency && sequences[lane].retained;
-}
-
-void ProgramImplCore::enable_host_kv_cache(std::uint64_t budget_bytes) {
-    if (budget_bytes == 0 || host_kv_) { return; }
-    // The parked entry captures the paged KV, the hidden tensors and the GDN
-    // state, but not the DFlash lane-affine caches (local and
-    // rewrite-checkpoint-local cyclic KV) or the DFlash context frontier.
-    // Restoring a DFlash sequence from host would therefore be incomplete, so
-    // refuse to enable the cache for that backend rather than park a state
-    // that cannot be fully reinstated.
-    if (speculative_backend == SpeculativeBackend::DFlash) {
-        throw std::logic_error(
-            "host KV cache is not supported with the DFlash speculative backend: "
-            "the lane-affine DFlash caches are not captured by a parked entry");
-    }
-    // Compute the max-sequence park size before the (multi-GB) allocation, so a
-    // degenerate config fails cheaply and the divisor below is never zero.
-    const std::size_t max_seq = max_parked_sequence_bytes();
-    if (max_seq == 0) {
-        throw std::logic_error("host KV cache: the max-sequence park size is zero");
-    }
-    host_kv_ = std::make_unique<HostKvCache>(budget_bytes);
-    host_kv_log("host KV cache enabled: budget_bytes=" + std::to_string(budget_bytes) +
-                " max_parked_sequence_bytes=" + std::to_string(max_seq) +
-                " (holds " + std::to_string(budget_bytes / max_seq) +
-                " max-size sequences)");
-    if (budget_bytes < max_seq) {
-        host_kv_log("WARNING: host KV budget is smaller than the max-sequence park size; "
-                    "sessions larger than the budget are unparkable and fall back to "
-                    "re-prefill");
-    }
-}
-
-bool ProgramImplCore::park_lane(std::uint32_t lane, std::uint64_t protect_id) {
-    if (!host_kv_ || !has_retained_lane(lane)) { return false; }
-    // Size the region from the lane's actual page count before asking the
-    // budget for it, so the entry takes only the bytes it needs.
-    const std::size_t needed = parked_lane_bytes(lane);
-    HostKvSlab* slab = host_kv_->acquire_slab(protect_id, needed);
-    if (slab == nullptr) {
-        // The one park failure that can happen in production: the budget could
-        // not make room (a session larger than the budget, or a fragmented free
-        // set). Log it so the operator can tell whether the budget was sized
-        // right - this is the line that says "29645 MiB was too small for this
-        // session". The resident is then discarded by the caller.
-        host_kv_log("park lane " + std::to_string(lane) +
-                    " FAILED: no budget room for " + std::to_string(needed) +
-                    " bytes (largest free range " +
-                    std::to_string(host_kv_->largest_free_range()) + " bytes)");
-        return false;
-    }
-    // The slab is owned by the park until the entry is committed; a throw in
-    // between (allocation, metadata) must not leak it.
-    struct SlabLease {
-        HostKvProvider* provider;
-        HostKvSlab* slab;
-        bool committed = false;
-        ~SlabLease() {
-            if (!committed && slab != nullptr) { provider->release_slab(slab); }
-        }
-    } lease{host_kv_.get(), slab};
-
-    auto entry  = std::make_unique<HostKvEntry>();
-    entry->slab = slab;
-    if (!park_lane_to_host(lane, *entry, needed, device.stream)) {
-        host_kv_log("park lane " + std::to_string(lane) + " FAILED (needed more than slab)");
-        return false;  // the lease releases the slab; the lane is untouched
-    }
-    host_kv_log("parked lane " + std::to_string(lane) + " to host: " +
-                std::to_string(entry->meta.text_bytes) + "B text + " +
-                std::to_string(entry->meta.backend_bytes) + "B backend + " +
-                std::to_string(entry->meta.hidden_bytes) + "B hidden + " +
-                std::to_string(entry->meta.gdn_bytes) + "B gdn, " +
-                std::to_string(entry->execution_frontier) + " tokens, entries=" +
-                std::to_string(host_kv_->size()));
-    // Commit the entry before clearing the lane: if the insert throws, the lane
-    // still owns its state and the lease releases the slab, so the continuation
-    // is lost nowhere.
-    host_kv_->insert(std::move(entry));
-    lease.committed = true;
-    clear_lane(sequences[lane], requests[lane]);
-    return true;
-}
-
-std::uint32_t ProgramImplCore::host_kv_reusable_tokens(const PreparedPromptData& prompt) const {
-    if (!host_kv_ || !prompt.identity.reusable) { return 0; }
-    const auto match = host_kv_->find(prompt);
-    return match ? match->reuse_tokens : 0;
-}
-
-std::uint64_t ProgramImplCore::host_kv_match_id(const PreparedPromptData& prompt) const {
-    if (!host_kv_) { return 0; }
-    const auto match = host_kv_->find(prompt);
-    return match ? match->entry_id : 0;
-}
-
-bool ProgramImplCore::restore_lane(std::uint32_t lane, std::uint64_t entry_id,
-                                   const PreparedPromptData& prompt) {
-    if (!host_kv_ || entry_id == 0) { return false; }
-    const auto index = host_kv_->find_by_id(entry_id);
-    if (!index) { return false; }
-    const HostKvEntry& entry = host_kv_->entry(*index);
-    // The reuse is computed for THIS entry, not the current best match: the
-    // evicting-restore transaction is bound to the exact entry the probe
-    // deferred, and parking another lane can insert a better match mid-
-    // transaction. If this entry no longer matches the prompt (0), the restore
-    // is a no-op rather than a wrong-prefix restore.
-    const std::uint32_t reuse = host_kv_entry_reuse(entry, prompt);
-    if (reuse == 0) { return false; }
-    // A transient pool shortage must not destroy the entry: if the parked
-    // entitlement cannot be reserved right now, keep the entry and let a later
-    // request (after the active lanes drain) restore it. Mirrors the reservation
-    // reserve_sequence_kv() makes, so the preflight and the reserve agree.
-    if (!decoder->text_kv.pool().can_reserve(entry.meta.text_page_entitlement) ||
-        (backend_kv_cache() != nullptr &&
-         !backend_kv_cache()->pool().can_reserve(entry.meta.backend_page_entitlement))) {
-        host_kv_log("restore lane " + std::to_string(lane) +
-                    " deferred: the pool cannot reserve the parked entitlement yet");
-        // The entry survives, so refresh its recency: without this it keeps
-        // insertion order and acquire_slab() evicts it first under the
-        // multi-lane workload, forcing the session it served to re-prefill.
-        host_kv_->touch(*index);
-        return false;
-    }
-    try {
-        restore_lane_from_host(lane, entry, reuse, device.stream);
-    } catch (...) {
-        // A C++ failure after the reservation is an invariant violation or a
-        // corrupt entry: restore_lane_from_host rolled the lane back, so drop
-        // the entry to keep it from being restored again. Report failure rather
-        // than propagate: the host-KV path must stay non-throwing for C++
-        // exceptions (like park_lane) so the executor's admission catch-all can
-        // keep its pre-host-KV `throw;` for genuine prefill invariants instead
-        // of swallowing them. (A CUDA error in the restore aborts via
-        // CUDA_CHECK, the executor's established policy, before reaching this
-        // catch.)
-        host_kv_log("restore lane " + std::to_string(lane) +
-                    " FAILED after reservation; dropping the entry");
-        host_kv_->drop(*index);
-        return false;
-    }
-    host_kv_log("restored lane " + std::to_string(lane) + " from host: " +
-                std::to_string(reuse) + " tokens (entry " +
-                std::to_string(entry_id) + ")");
-    // The entry is now resident again; its slab returns to the arena.
-    host_kv_->drop(*index);
-    return true;
-}
-
-bool ProgramImplCore::can_restore_lane(std::uint32_t lane, std::uint64_t entry_id) const {
-    if (lane >= max_concurrency) { return false; }
-    if (!host_kv_ || entry_id == 0) { return false; }
-    const auto index = host_kv_->find_by_id(entry_id);
-    if (!index) { return false; }
-    const HostKvEntry& entry = host_kv_->entry(*index);
-    // The probe parks the lane's resident before restoring, so the restore's
-    // can_reserve must account for the resident's entitlement being freed.
-    // Mirror restore_lane's check with the resident's pages hypothetically
-    // released: the entry fits if its entitlement is no more than the pages
-    // the park frees plus the pages already free.
-    const std::uint32_t resident_text =
-        sequences[lane].kv ? sequences[lane].kv->text.page_entitlement() : 0;
-    const PagedKVPool& text_pool = decoder->text_kv.pool();
-    if (entry.meta.text_page_entitlement >
-        text_pool.page_group_count() - (text_pool.entitled_pages() - resident_text)) {
-        return false;
-    }
-    if (backend_kv_cache() != nullptr) {
-        const std::uint32_t resident_backend =
-            (sequences[lane].kv && sequences[lane].kv->backend)
-                ? sequences[lane].kv->backend->page_entitlement()
-                : 0;
-        const PagedKVPool& backend_pool = backend_kv_cache()->pool();
-        if (entry.meta.backend_page_entitlement >
-            backend_pool.page_group_count() - (backend_pool.entitled_pages() - resident_backend)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool ProgramImplCore::host_kv_entry_exists(std::uint64_t entry_id) const {
-    if (!host_kv_ || entry_id == 0) { return false; }
-    return host_kv_->find_by_id(entry_id).has_value();
-}
-
-std::size_t ProgramImplCore::max_parked_sequence_bytes() const {
-    const PagedKVPool& text_pool = decoder->text_kv.pool();
-    const qwen3_6::PagedKVCache* backend = backend_kv_cache();
-    // A single sequence is capped by the logical page capacity (one sequence
-    // cannot span the whole shared physical pool), so size the pages for that
-    // cap, not the pool. The non-paged tail rides along in the slab: the two
-    // per-lane hidden tensors and the GDN conv+recurrent state for both the
-    // current and the rewrite-checkpoint slot.
-    const std::size_t hidden =
-        sequences[0].tail_hidden.bytes() + sequences[0].rewrite_checkpoint_hidden.bytes();
-    const std::size_t gdn = 2 * decoder->linear_attention.slot_bytes();
-    return parked_sequence_bytes(text_pool, backend ? &backend->pool() : nullptr,
-                                 text_pool.logical_page_capacity(),
-                                 backend ? backend->pool().logical_page_capacity() : 0,
-                                 hidden + gdn);
-}
-
-// Bytes to park `lane`'s current sequence: its actual mapped page count (not
-// the entitlement ceiling) plus the hidden + GDN tail. This is what the budget
-// must hand the park, so a small session takes a small region.
-std::size_t ProgramImplCore::parked_lane_bytes(std::uint32_t lane) const {
-    const SequenceState& sequence = sequences[lane];
-    if (!sequence.kv) { return 0; }
-    const std::span<const std::int32_t> text_ids = sequence.kv->text.page_ids();
-    const bool has_backend                        = sequence.kv->backend.has_value();
-    const std::span<const std::int32_t> backend_ids =
-        has_backend ? sequence.kv->backend->page_ids() : std::span<const std::int32_t>{};
-    const PagedKVPool& text_pool = decoder->text_kv.pool();
-    const qwen3_6::PagedKVCache* backend_cache = backend_kv_cache();
-    return parked_sequence_bytes(
-        text_pool, has_backend ? &backend_cache->pool() : nullptr,
-        static_cast<std::uint32_t>(text_ids.size()),
-        static_cast<std::uint32_t>(backend_ids.size()),
-        sequence.tail_hidden.bytes() + sequence.rewrite_checkpoint_hidden.bytes() +
-            2 * decoder->linear_attention.slot_bytes());
-}
-
-bool ProgramImplCore::park_lane_to_host(std::uint32_t lane, HostKvEntry& entry, std::size_t needed,
-                                        cudaStream_t stream) {
-    if (!has_retained_lane(lane) || !sequences[lane].kv || entry.slab == nullptr) { return false; }
-    SequenceState& sequence = sequences[lane];
-
-    // page_ids() is the mapped pages, which is the data; entitlement is only a
-    // ceiling, so parking it would copy pages that hold nothing.
-    const std::span<const std::int32_t> text_ids = sequence.kv->text.page_ids();
-    const bool has_backend                       = sequence.kv->backend.has_value();
-    const std::span<const std::int32_t> backend_ids =
-        has_backend ? sequence.kv->backend->page_ids() : std::span<const std::int32_t>{};
-
-    PagedKVPool& text_pool = decoder->text_kv.pool();
-    qwen3_6::PagedKVCache* backend_cache = backend_kv_cache();
-    // `needed` was sized by the caller (parked_lane_bytes) to exactly this
-    // lane's page count, so the region it was handed fits; keep the check as a
-    // guard against a mis-sized region.
-    if (needed > entry.slab->bytes()) {
-        return false;
-    }
-
-    entry.meta.text_bytes = text_pool.park_pages(text_ids, *entry.slab, stream);
-    if (has_backend) {
-        // park_pages() rewrites filled(); accumulate across both pools by hand.
-        HostKvSlab tail_view(static_cast<unsigned char*>(entry.slab->base()) + entry.meta.text_bytes,
-                             entry.slab->bytes() - entry.meta.text_bytes);
-        tail_view.set_filled(entry.slab->bytes() - entry.meta.text_bytes);
-        entry.meta.backend_bytes = backend_cache->pool().park_pages(backend_ids, tail_view, stream);
-    }
-    entry.meta.hidden_bytes =
-        park_hidden(sequence.tail_hidden, sequence.rewrite_checkpoint_hidden, *entry.slab,
-                    entry.meta.text_bytes + entry.meta.backend_bytes, stream);
-    // The GDN conv+recurrent state is lane-affine and is NOT in the KV pages:
-    // a side request that runs in this lane zeroes the current slot, so it must
-    // ride in the slab or the restored sequence continues from a zeroed state.
-    // Both the current and the rewrite-checkpoint slot are parked.
-    const std::size_t gdn_offset = entry.meta.text_bytes + entry.meta.backend_bytes +
-                                   entry.meta.hidden_bytes;
-    entry.meta.gdn_bytes = park_gdn_slot(
-        decoder->linear_attention,
-        LinearStateSlots::current_state_slot(lane, max_concurrency), *entry.slab, gdn_offset,
-        stream);
-    entry.meta.gdn_bytes += park_gdn_slot(
-        decoder->linear_attention,
-        LinearStateSlots::rewrite_checkpoint_state_slot(lane, max_concurrency), *entry.slab,
-        gdn_offset + entry.meta.gdn_bytes, stream);
-    entry.slab->set_filled(gdn_offset + entry.meta.gdn_bytes);
-
-    entry.meta.text_page_ids.assign(text_ids.begin(), text_ids.end());
-    entry.meta.backend_page_ids.assign(backend_ids.begin(), backend_ids.end());
-    entry.meta.text_page_entitlement    = sequence.kv->text.page_entitlement();
-    entry.meta.backend_page_entitlement =
-        has_backend ? sequence.kv->backend->page_entitlement() : 0;
-    entry.meta.has_backend = has_backend;
-
-    // clear_lane() drops all of this along with the KV, and the planner reads
-    // exactly these fields to choose append over rewind.
-    entry.ledger              = sequence.ledger;
-    entry.prefix_identity     = sequence.prefix_identity;
-    entry.execution_frontier  = sequence.execution_frontier;
-    entry.ledger_frontier     = sequence.ledger_frontier;
-    entry.rope_delta          = sequence.rope_delta;
-    entry.tail_hidden_valid   = sequence.tail_hidden_valid;
-    entry.checkpoint_valid    = sequence.rewrite_checkpoint.valid;
-    entry.checkpoint_kind     = sequence.rewrite_checkpoint.kind;
-    entry.checkpoint_frontier = sequence.rewrite_checkpoint.frontier;
-
-    // The copies are async on `stream`; sync so they are complete before the
-    // caller clears the lane and the pages are reused. The lane itself is
-    // cleared by the caller, after committing the entry, so a failed insert
-    // cannot leave the lane cleared with the continuation lost.
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-    return true;
-}
-
-void ProgramImplCore::restore_lane_from_host(std::uint32_t lane, const HostKvEntry& entry,
-                                             std::uint32_t reuse_tokens, cudaStream_t stream) {
-    if (lane >= max_concurrency) { throw std::out_of_range("request lane is out of range"); }
-    SequenceState& sequence = sequences[lane];
-    if (sequence.kv) { throw std::logic_error("cannot restore onto a lane that owns KV"); }
-
-    // A rewind needs only the pages up to its checkpoint, so restore the prefix
-    // covering reuse_tokens rather than everything that was parked.
-    const std::uint32_t text_pages = pages_for_tokens(reuse_tokens);
-    if (text_pages > entry.meta.text_page_ids.size()) {
-        throw std::logic_error("host KV entry is shorter than the requested reuse");
-    }
-
-    try {
-        reserve_sequence_kv(sequence, entry.meta.text_page_entitlement,
-                            entry.meta.backend_page_entitlement);
-        sequence.kv->text.materialize_pages(text_pages, stream);
-        const std::span<const std::int32_t> text_ids = sequence.kv->text.page_ids();
-        decoder->text_kv.pool().restore_pages(text_ids, entry.meta.text_page_ids.size(),
-                                              *entry.slab, stream);
-
-        if (entry.meta.has_backend && sequence.kv->backend) {
-            const std::uint32_t backend_pages =
-                static_cast<std::uint32_t>(entry.meta.backend_page_ids.size());
-            sequence.kv->backend->materialize_pages(backend_pages, stream);
-            HostKvSlab tail_view(
-                static_cast<unsigned char*>(entry.slab->base()) + entry.meta.text_bytes,
-                entry.meta.backend_bytes);
-            tail_view.set_filled(entry.meta.backend_bytes);
-            backend_kv_cache()->pool().restore_pages(sequence.kv->backend->page_ids(),
-                                                     entry.meta.backend_page_ids.size(), tail_view,
-                                                     stream);
-        }
-
-        restore_hidden(sequence.tail_hidden, sequence.rewrite_checkpoint_hidden, *entry.slab,
-                       entry.meta.text_bytes + entry.meta.backend_bytes, stream);
-
-        // The GDN conv+recurrent state was zeroed by any side request that ran
-        // in this lane, so it must be reinstated from the slab or the restored
-        // sequence continues from a zeroed recurrent state. Both the current and
-        // the rewrite-checkpoint slot are restored; the planner's existing
-        // checkpoint-restore path copies the checkpoint slot into the current
-        // one when a rewind is selected.
-        const std::size_t gdn_offset = entry.meta.text_bytes + entry.meta.backend_bytes +
-                                       entry.meta.hidden_bytes;
-        const std::size_t gdn_slot   = decoder->linear_attention.slot_bytes();
-        restore_gdn_slot(decoder->linear_attention,
-                         LinearStateSlots::current_state_slot(lane, max_concurrency), *entry.slab,
-                         gdn_offset, stream);
-        restore_gdn_slot(decoder->linear_attention,
-                         LinearStateSlots::rewrite_checkpoint_state_slot(lane, max_concurrency),
-                         *entry.slab, gdn_offset + gdn_slot, stream);
-
-        sequence.ledger                    = entry.ledger;
-        sequence.prefix_identity           = entry.prefix_identity;
-        sequence.execution_frontier        = entry.execution_frontier;
-        sequence.ledger_frontier           = entry.ledger_frontier;
-        // A rewind restores only the text prefix (reuse_tokens), so the valid-KV
-        // extent is that prefix, not the full parked extent: the MTP gate keys on
-        // mtp_kv_valid >= reuse_base - 1, and overstating it would let the planner
-        // read KV past the restored prefix (stale for a rewound path).
-        sequence.text_kv_valid             = reuse_tokens;
-        sequence.mtp_kv_valid              = reuse_tokens;
-        sequence.rope_delta                = entry.rope_delta;
-        sequence.tail_hidden_valid         = entry.tail_hidden_valid;
-        sequence.rewrite_checkpoint.valid  = entry.checkpoint_valid;
-        sequence.rewrite_checkpoint.kind   = entry.checkpoint_kind;
-        sequence.rewrite_checkpoint.frontier = entry.checkpoint_frontier;
-        sequence.retained                  = true;
-
-        CUDA_CHECK(cudaStreamSynchronize(stream));
-    } catch (...) {
-        // A failure after the reservation leaves the lane with a half-built KV
-        // bundle that would poison later restores and leak the entitlement.
-        // Tear it down so the lane is empty again.
-        sequence.kv.reset();
-        sequence.retained = false;
-        throw;
-    }
 }
 
 void ProgramImplCore::evict_retained_lane(std::uint32_t lane) noexcept {
@@ -1855,71 +1298,6 @@ void ProgramImplCore::prepare_graphs() {
                     mtp_gqa_envelopes(planned.max, draft_window, capacity), profile.definition);
             }
         }
-
-        const char* adaptive_env = std::getenv("NINFER_SPEC_ADAPTIVE");
-        adaptive_spec            = adaptive_env != nullptr && adaptive_env[0] == '1';
-        if (adaptive_spec) {
-            for (std::uint32_t w = 1; w <= draft_window; ++w) {
-                if (w == draft_window) { continue; }
-                mtp_window_rigs.emplace_back();
-                MtpWindowRig& rig = mtp_window_rigs.back();
-                rig.window        = w;
-
-                ninfer::LayoutBuilder rig_builder;
-                qwen3_6::RoundStateLayout rig_round = qwen3_6::begin_round_state_layout(
-                    rig_builder,
-                    qwen3_6::RoundStateSpec{.hidden         = TextConfig::hidden,
-                                            .output_rows    = TextConfig::output_rows,
-                                            .batch_capacity = 1,
-                                            .draft_window   = w,
-                                            .enable_mtp     = true,
-                                            .enable_dflash  = false});
-                qwen3_6::complete_round_state_layout(rig_builder, rig_round);
-                const GdnReplayRecordLayout rig_records_layout = plan_gdn_replay_records(
-                    rig_builder, GdnReplayRecordSpec{
-                                     .layers          = TextConfig::gdn_layers(),
-                                     .record_capacity = static_cast<std::int32_t>(max_concurrency),
-                                     .width           = static_cast<std::int32_t>(w + 1U),
-                                     .conv_channels   = TextConfig::convolution_dim,
-                                     .qk_heads        = TextConfig::gdn_key_heads,
-                                     .value_heads     = TextConfig::gdn_value_heads,
-                                     .key_dim         = TextConfig::gdn_key_head_dim,
-                                     .value_dim       = TextConfig::gdn_value_head_dim,
-                                 });
-                rig.bytes = rig_builder.finish(kArenaAlign, "adaptive MTP rig");
-                CUDA_CHECK(cudaMalloc(&rig.backing, rig.bytes));
-                CUDA_CHECK(cudaMemset(rig.backing, 0, rig.bytes));
-                if (!rig_round.mtp_decode) {
-                    throw std::logic_error("adaptive rig layout lacks MTP decode state");
-                }
-                rig.frame.emplace(DeviceSpan{rig.backing, rig.bytes}, *rig_round.mtp_decode, 1, w);
-                rig.records.emplace(DeviceSpan{rig.backing, rig.bytes}, rig_records_layout);
-
-                schedule::ExecutionCore rig_core = execution_core();
-                rig_core.replay_records = &*rig.records;
-                schedule::MtpBatchContext rig_state{
-                    rig_core,          decoder->text_kv, *decoder->mtp_cache(), *rig.frame,
-                    *mtp_host_ingress, *mtp_host_egress, tail_hidden_store};
-                prepare_representative(code_warm.min, 1);
-                device.synchronize();
-                schedule::mtp_decode_batch(rig_state, 1, w,
-                                           mtp_gqa_envelopes(code_warm.max, w, capacity), nullptr);
-                device.synchronize();
-
-                rig.graphs.profiles.reserve(planned_profiles.size());
-                for (const GraphExecutionProfile planned : planned_profiles) {
-                    rig.graphs.profiles.emplace_back();
-                    DecodeGraphProfile& profile    = rig.graphs.profiles.back();
-                    profile.batch_size             = 1;
-                    profile.min_execution_frontier = planned.min;
-                    profile.max_execution_frontier = planned.max;
-                    profile.topology_class         = planned.topology_class;
-                    schedule::capture_mtp_decode_batch(rig_state, 1, w,
-                                                       mtp_gqa_envelopes(planned.max, w, capacity),
-                                                       profile.definition);
-                }
-            }
-        }
     }
     if (speculative_backend == SpeculativeBackend::DFlash) {
         const auto batch_one_profiles = dflash_graph_profiles(capacity, draft_window, 1);
@@ -1970,10 +1348,6 @@ void ProgramImplCore::prepare_graphs() {
     }
     if (speculative_backend == SpeculativeBackend::Mtp) {
         instantiate_graph_family(mtp_graphs, "MTP", device, prepare_representative);
-        for (MtpWindowRig& rig : mtp_window_rigs) {
-            instantiate_graph_family(rig.graphs, "MTP adaptive rig", device,
-                                     prepare_representative);
-        }
     }
     if (speculative_backend == SpeculativeBackend::DFlash) {
         instantiate_graph_family(dflash_graphs, "DFlash", device, prepare_representative);
@@ -2175,8 +1549,7 @@ runtime::PrefillStepResult ProgramImplCore::advance_prefill(SequenceState& seque
                 throw std::logic_error("staged MTP bridge is outside the reusable suffix");
             }
             mark_workspace_usage(workspace_plan.mtp_prefill);
-            const Tensor& previous_hidden = is_rewrite_checkpoint_restore(staged.reuse) ||
-                                                    staged.reuse == ReusePath::ContentRestore
+            const Tensor& previous_hidden = is_rewrite_checkpoint_restore(staged.reuse)
                                                 ? sequence.rewrite_checkpoint_hidden
                                                 : sequence.tail_hidden;
             const schedule::MtpBridgeInput bridge{
@@ -2470,62 +1843,7 @@ ProgramImplCore::decode_mtp_batch(std::span<const std::uint32_t> lanes,
         throw std::invalid_argument("MTP batch membership is invalid");
     }
 
-    // Adaptive window selection (single-lane batches): an EMA bandit over the per-window
-    // rigs, seeded by a round-robin cold start and epsilon exploration. Speculative decoding
-    // is lossless, so the committed token sequence is identical under any window policy;
-    // only the tokens-per-second changes.
-    std::uint32_t window     = draft_window;
-    MtpWindowRig* window_rig = nullptr;
-    if (adaptive_spec && lanes.size() == 1 && lanes[0] < max_concurrency) {
-        AdaptiveSpecState& ad = sequences[lanes[0]].adaptive;
-        const std::uint32_t n = draft_window;
-        std::uint32_t pick    = 0;
-        static const char* force_env      = std::getenv("NINFER_SPEC_FORCE_W");
-        static const std::uint32_t forced = force_env ? std::atoi(force_env) : 0;
-        if (forced >= 1 && forced <= n) {
-            pick = forced;
-        } else {
-            for (std::uint32_t w = 1; w <= n && pick == 0; ++w) {
-                if (window_cost_n[w - 1] < 3) { pick = w; }
-            }
-            if (pick == 0 && ad.current != 0 && ad.hold > 0) {
-                ad.hold -= 1;
-                pick = ad.current;
-            }
-            if (pick == 0) {
-                // alpha-model: throughput(w) = (1 + sum_{k<=w} alpha^k) / C(w)
-                const double a =
-                    static_cast<double>(ad.s_ema) / static_cast<double>(ad.s_ema + ad.f_ema);
-                const std::uint32_t cur = ad.current == 0 ? n : ad.current;
-                double best_value    = 0.0;
-                std::uint32_t best_w = cur;
-                double expected      = 0.0;
-                double ak            = 1.0;
-                for (std::uint32_t w = 1; w <= n; ++w) {
-                    ak *= a;
-                    expected += ak;
-                    const double value = (1.0 + expected) / window_cost_ema[w - 1];
-                    const double bias  = w == cur ? 1.02 : 1.0;  // hysteresis
-                    if (value * bias > best_value) {
-                        best_value = value * bias;
-                        best_w     = w;
-                    }
-                }
-                pick    = best_w;
-                ad.hold = 3;
-            }
-        }
-        ad.current = pick;
-        window     = pick;
-        if (window != draft_window) {
-            for (MtpWindowRig& rig : mtp_window_rigs) {
-                if (rig.window == window) { window_rig = &rig; }
-            }
-            if (window_rig == nullptr) { window = draft_window; }
-        }
-    }
-
-    const std::uint32_t width      = window + 1;
+    const std::uint32_t width      = draft_window + 1;
     std::uint32_t maximum_frontier = 0;
     for (std::size_t row = 0; row < lanes.size(); ++row) {
         const std::uint32_t lane = lanes[row];
@@ -2553,15 +1871,14 @@ ProgramImplCore::decode_mtp_batch(std::span<const std::uint32_t> lanes,
     const auto started = Clock::now();
     try {
         DecodeGraphExecutable* executable = nullptr;
-        DecodeGraphFamily& family         = window_rig ? window_rig->graphs : mtp_graphs;
         schedule::MtpGqaEnvelopes envelopes =
-            mtp_gqa_envelopes(maximum_frontier, window, capacity);
+            mtp_gqa_envelopes(maximum_frontier, draft_window, capacity);
         if (use_cuda_graph) {
             DecodeGraphProfile& profile =
-                select_graph_profile(family, static_cast<std::uint32_t>(lanes.size()),
+                select_graph_profile(mtp_graphs, static_cast<std::uint32_t>(lanes.size()),
                                      maximum_frontier, "MTP batch");
-            executable = &install_graph_profile(family, profile, "MTP batch");
-            envelopes  = mtp_gqa_envelopes(profile.max_execution_frontier, window, capacity);
+            executable = &install_graph_profile(mtp_graphs, profile, "MTP batch");
+            envelopes  = mtp_gqa_envelopes(profile.max_execution_frontier, draft_window, capacity);
         }
 
         for (std::size_t row = 0; row < lanes.size(); ++row) {
@@ -2572,7 +1889,7 @@ ProgramImplCore::decode_mtp_batch(std::span<const std::uint32_t> lanes,
                                                     ? budgets[row].generated_tokens_remaining - 1
                                                     : 0;
             const std::uint32_t extent =
-                std::min({sequence.mtp_draft_count, window, max_by_budget,
+                std::min({sequence.mtp_draft_count, draft_window, max_by_budget,
                           capacity - sequence.execution_frontier - 1});
             mtp_host_ingress->anchors[row]        = sequence.ledger.back();
             mtp_host_ingress->base_frontiers[row] = checked_i32(frontier, "MTP batch frontier");
@@ -2580,8 +1897,8 @@ ProgramImplCore::decode_mtp_batch(std::span<const std::uint32_t> lanes,
                 checked_i32(budgets[row].generated_tokens_remaining, "MTP batch remaining budget");
             mtp_host_ingress->current_extents[row]      = static_cast<std::int32_t>(extent);
             mtp_host_ingress->target_valid_columns[row] = static_cast<std::int32_t>(extent + 1);
-            for (std::uint32_t j = 0; j < window; ++j) {
-                mtp_host_ingress->current_drafts[row * window + j] =
+            for (std::uint32_t j = 0; j < draft_window; ++j) {
+                mtp_host_ingress->current_drafts[row * draft_window + j] =
                     j < extent ? sequence.mtp_drafts[j] : sequence.ledger.back();
             }
             for (std::uint32_t j = 0; j < width; ++j) {
@@ -2595,24 +1912,22 @@ ProgramImplCore::decode_mtp_batch(std::span<const std::uint32_t> lanes,
             mtp_host_ingress->rope_deltas[row]        = sequence.rope_delta;
             mtp_host_ingress->sampling[row]           = request.sampling_host;
             materialize_sequence_kv(sequence, frontier + extent + 1,
-                                    std::min(capacity, frontier + extent + window));
+                                    std::min(capacity, frontier + extent + draft_window));
         }
 
-        GdnReplayRecords* round_records =
-            window_rig ? &*window_rig->records : (replay_records ? &*replay_records : nullptr);
         schedule::MtpBatchContext schedule_state{{device, model, work, decoder->linear_attention,
-                                                  round_records, io, prefill_hidden, prefill_chunk,
-                                                  proposal_head},
+                                                  replay_records ? &*replay_records : nullptr, io,
+                                                  prefill_hidden, prefill_chunk, proposal_head},
                                                  decoder->text_kv,
                                                  *decoder->mtp_cache(),
-                                                 window_rig ? *window_rig->frame : *io.mtp_decode,
+                                                 *io.mtp_decode,
                                                  *mtp_host_ingress,
                                                  *mtp_host_egress,
                                                  tail_hidden_store};
 
         mark_workspace_usage(workspace_plan.mtp_round);
         schedule::mtp_decode_batch(schedule_state, static_cast<std::int32_t>(lanes.size()),
-                                   window, envelopes, executable);
+                                   draft_window, envelopes, executable);
         device.synchronize();
 
         const double seconds = std::chrono::duration<double>(Clock::now() - started).count();
@@ -2626,7 +1941,7 @@ ProgramImplCore::decode_mtp_batch(std::span<const std::uint32_t> lanes,
             const std::int32_t next_i     = mtp_host_egress->next_extents[row];
             if (count_i <= 0 || count_i > static_cast<std::int32_t>(width) || accepted_i < 0 ||
                 accepted_i + 1 != count_i || next_i < 0 ||
-                next_i > static_cast<std::int32_t>(window) ||
+                next_i > static_cast<std::int32_t>(draft_window) ||
                 static_cast<std::uint32_t>(count_i) > budgets[row].generated_tokens_remaining ||
                 static_cast<std::uint64_t>(base_E) + static_cast<std::uint32_t>(count_i) >
                     capacity) {
@@ -2648,24 +1963,6 @@ ProgramImplCore::decode_mtp_batch(std::span<const std::uint32_t> lanes,
                     request.speculative_stats.accepted_per_position[static_cast<std::size_t>(i)] +=
                         1;
                 }
-            }
-            if (adaptive_spec && lanes.size() == 1) {
-                AdaptiveSpecState& ad = sequence.adaptive;
-                if (pcur > 0) {
-                    const auto acc = static_cast<std::uint32_t>(accepted_i);
-                    ad.s_ema = 0.95f * ad.s_ema + static_cast<float>(acc);
-                    ad.f_ema = 0.95f * ad.f_ema + (acc < pcur ? 1.0f : 0.0f);
-                    if (window - 1 < ad.window_histogram.size()) {
-                        ad.window_histogram[window - 1] += 1;
-                    }
-                }
-                const std::size_t slot = window - 1;
-                window_cost_ema[slot]  = window_cost_n[slot] == 0
-                                             ? seconds
-                                             : 0.9 * window_cost_ema[slot] + 0.1 * seconds;
-                window_cost_n[slot] += 1;
-                ad.rounds += 1;
-                ad.pending_window = window_rig ? window : 0;
             }
             request.pending = PendingCandidate{
                 .kind          = PendingKind::Speculative,
@@ -2902,31 +2199,9 @@ void ProgramImplCore::resolve_non_speculative_pending(SequenceState& sequence,
         release_sequence_growth_entitlement(sequence);
         unbind_sequence_kv(sequence);
         sequence.retained = true;
-        if (content_cache) { content_cache->save(sequence, work, device); }
     }
     request.lifecycle = terminal ? Lifecycle::Complete : Lifecycle::Active;
     request.pending   = {};
-}
-
-std::uint64_t ProgramImplCore::host_cache_epoch() const noexcept {
-    return content_cache ? content_cache->mutation_epoch() : 0;
-}
-
-KvHostCacheStats ProgramImplCore::host_cache_stats() const noexcept {
-    KvHostCacheStats out;
-    if (!content_cache) { return out; }
-    const KvHostCache::Stats& stats = content_cache->stats();
-    out.enabled          = true;
-    out.budget_bytes     = content_cache->budget_bytes();
-    out.stored_bytes     = stats.stored_bytes;
-    out.stored_segments  = stats.stored_segments;
-    out.stored_pages     = stats.stored_pages;
-    out.hit_requests     = stats.hit_requests;
-    out.hit_tokens       = stats.hit_tokens;
-    out.restored_bytes   = stats.restored_bytes;
-    out.writeback_bytes  = stats.writeback_bytes;
-    out.evicted_segments = stats.evicted_segments;
-    return out;
 }
 
 MemorySummary ProgramImplCore::memory_summary() const noexcept {

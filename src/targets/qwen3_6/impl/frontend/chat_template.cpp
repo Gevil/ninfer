@@ -11,7 +11,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <utility>
 
 namespace ninfer::targets::qwen3_6::frontend_internal {
 namespace {
@@ -36,24 +35,6 @@ constexpr std::string_view kXHighReasoningInstructions =
     "Reasoning effort is set to xhigh. Please think carefully through the task, validate key "
     "assumptions, consider plausible alternatives, and prioritize correctness, consistency, and "
     "clarity in the final answer.";
-
-constexpr std::array<std::string_view, 4> kVisionControlTokens = {
-    "<|vision_start|>", "<|vision_end|>", "<|image_pad|>", "<|video_pad|>"};
-constexpr std::string_view kControlTokenBreak = "\xE2\x81\xA0"; // U+2060 WORD JOINER
-
-// Text content can legitimately quote the chat template or one of its Vision
-// control tokens. Keep those strings readable, but break their exact added-token
-// spelling so that only structured Image/Video parts can create media slots.
-std::string escape_literal_vision_tokens(std::string text) {
-    for (const std::string_view token : kVisionControlTokens) {
-        std::size_t search = 0;
-        while ((search = text.find(token, search)) != std::string::npos) {
-            text.insert(search + 2, kControlTokenBreak);
-            search += token.size() + kControlTokenBreak.size();
-        }
-    }
-    return text;
-}
 
 bool is_instruction_role(ChatRole role) noexcept {
     return role == ChatRole::System || role == ChatRole::Developer;
@@ -235,7 +216,7 @@ std::string render_tools_system_block(const std::vector<std::string>& tool_jsons
     rendered += "# Tools\n\nYou have access to the following functions:\n\n<tools>";
     for (const std::string& tool : tool_jsons) {
         rendered += "\n";
-        rendered += escape_literal_vision_tokens(tojson_text(OrderedJson::parse(tool)));
+        rendered += tojson_text(OrderedJson::parse(tool));
     }
     rendered += "\n</tools>";
     rendered += std::string(kToolInstructions);
@@ -379,9 +360,6 @@ minja::Value jinja_context(const std::vector<ChatMessage>& messages,
         values["preserve_thinking"] = *options.preserve_thinking;
         values["chat_template_kwargs"]["preserve_thinking"] = *options.preserve_thinking;
     }
-    if (options.terse) {
-        values["terse"] = *options.terse;
-    }
     return minja::Value(values);
 }
 
@@ -391,8 +369,7 @@ class CompiledChatTemplate::JinjaTemplate {
 public:
     JinjaTemplate(std::string source, std::string source_name)
         : source_name_(std::move(source_name)),
-          supports_reasoning_effort_(source.find("reasoning_effort") != std::string::npos),
-          supports_terse_(source.find("terse") != std::string::npos) {
+          supports_reasoning_effort_(source.find("reasoning_effort") != std::string::npos) {
         try {
             template_ = minja::Parser::parse(source, minja::Options{.trim_blocks           = true,
                                                                       .lstrip_blocks         = true,
@@ -408,9 +385,6 @@ public:
         if (options.reasoning_effort && !supports_reasoning_effort_) {
             throw std::invalid_argument(
             "custom Jinja chat template does not reference reasoning_effort");
-        }
-        if (options.terse && !supports_terse_) {
-            throw std::invalid_argument("custom Jinja chat template does not reference terse");
         }
         try {
             return RenderedChat{.text = template_->render(
@@ -437,7 +411,6 @@ public:
 private:
     std::string source_name_;
     bool supports_reasoning_effort_ = false;
-    bool supports_terse_ = false;
     std::shared_ptr<minja::TemplateNode> template_;
 };
 
@@ -455,34 +428,23 @@ std::string ChatMessage::rendered_content(bool add_vision_id, int* image_count,
     int& images      = image_count == nullptr ? local_images : *image_count;
     int& videos      = video_count == nullptr ? local_videos : *video_count;
     std::string out;
-    std::string text_run;
-    const auto flush_text_run = [&] {
-        if (text_run.empty()) { return; }
-        out += escape_literal_vision_tokens(std::move(text_run));
-        text_run.clear();
-    };
     for (const ChatPart& part : parts) {
         switch (part.kind) {
         case ChatPartKind::Text:
-            // Consecutive text parts are one semantic text run. Escape after
-            // coalescing so part boundaries cannot reconstruct a control token.
-            text_run += part.text;
+            out += part.text;
             break;
         case ChatPartKind::Image:
-            flush_text_run();
             ++images;
             if (add_vision_id) { out += "Picture " + std::to_string(images) + ": "; }
             out += "<|vision_start|><|image_pad|><|vision_end|>";
             break;
         case ChatPartKind::Video:
-            flush_text_run();
             ++videos;
             if (add_vision_id) { out += "Video " + std::to_string(videos) + ": "; }
             out += "<|vision_start|><|video_pad|><|vision_end|>";
             break;
         }
     }
-    flush_text_run();
     return out;
 }
 
@@ -602,7 +564,7 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         std::string reasoning;
         std::string body = content;
         if (!message.reasoning_content.empty()) {
-            reasoning = escape_literal_vision_tokens(message.reasoning_content);
+            reasoning = message.reasoning_content;
         } else if (!effort_template) {
             ThinkParts parts = derive_think_parts(content);
             reasoning        = std::move(parts.reasoning);
@@ -616,10 +578,7 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
             rewrite_checkpoint = RewriteCheckpointByteSpec{
                 .kind = RewriteCheckpointKind::TurnClosure, .offset = rendered.size()};
         }
-        // Official Qwen3.8 Jinja still wraps whenever keep_thinking. The C++ clone
-        // omits an empty reasoning wrapper so history does not inject the
-        // no-thinking cue `<think>\n\n</think>\n\n`.
-        if (keep_thinking && !(effort_template && reasoning.empty())) {
+        if (keep_thinking) {
             rendered += "<think>\n";
             rendered += reasoning;
             rendered += "\n</think>\n\n";
@@ -633,8 +592,7 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
                 } else {
                     rendered += "\n";
                 }
-                rendered += escape_literal_vision_tokens(
-                    render_tool_call(message.tool_calls[call_index], effort_template));
+                rendered += render_tool_call(message.tool_calls[call_index], effort_template);
             }
         }
         rendered += "<|im_end|>\n";
@@ -647,21 +605,16 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
                 .kind = RewriteCheckpointKind::TurnClosure, .offset = rendered.size()};
         }
         if (options.enable_thinking) {
-            rendered += "<think>";
-            if (preserve_thinking) {
-                // After `<think>`, not after the trailing newline. `<think>\n` is not a BPE-stable
-                // prefix of a closed empty think block (`<think>\n\n</think>`): `\n` is token 198
-                // and `\n\n` is token 271, so a later reconstructed tool-call turn would miss.
-                rewrite_checkpoint = RewriteCheckpointByteSpec{
-                    .kind = RewriteCheckpointKind::ResponseReplay, .offset = rendered.size()};
-            }
-            rendered += "\n";
+            rendered += "<think>\n";
         } else {
             rendered += "<think>\n\n</think>\n\n";
-            if (preserve_thinking) {
-                rewrite_checkpoint = RewriteCheckpointByteSpec{
-                    .kind = RewriteCheckpointKind::ResponseReplay, .offset = rendered.size()};
-            }
+        }
+        if (preserve_thinking) {
+            // Response replay retains the deterministic generation prologue. This is the prompt
+            // frontier for both thinking modes, so capturing it does not split off a tiny final
+            // prefill unit. The complete rendered prefix is tokenized independently below.
+            rewrite_checkpoint = RewriteCheckpointByteSpec{
+                .kind = RewriteCheckpointKind::ResponseReplay, .offset = rendered.size()};
         }
     }
     return RenderedChat{.text = std::move(rendered), .rewrite_checkpoint = rewrite_checkpoint};

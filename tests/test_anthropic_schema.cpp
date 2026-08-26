@@ -417,23 +417,6 @@ int test_tools_and_choice() {
     return failures;
 }
 
-int test_duplicate_tool_name_rejected() {
-    int failures = 0;
-    const Json tool =
-        Json{{"name", "get_weather"},
-             {"input_schema", Json{{"type", "object"},
-                                   {"properties", Json{{"city", Json{{"type", "string"}}}}},
-                                   {"required", Json::array({"city"})}}}};
-    Json body = {
-        {"model", "m"},
-        {"max_tokens", 8},
-        {"tools", Json::array({tool, tool})},
-        {"messages", Json::array({Json{{"role", "user"}, {"content", "weather in Paris?"}}})}};
-    failures += check(throws_api([&] { (void)parse_messages_request(body, default_limits()); }),
-                      "duplicate tool names rejected");
-    return failures;
-}
-
 int test_tool_use_result_roundtrip() {
     int failures    = 0;
     const Json tool = Json{{"name", "get_weather"}, {"input_schema", Json{{"type", "object"}}}};
@@ -483,78 +466,6 @@ int test_tool_use_result_roundtrip() {
                           prompt.messages[2].parts[1].media.kind == ninfer::MediaKind::Image,
                       "tool_result image translated to structured chat");
     failures += check(req.has_tool_history(), "tool history detected");
-    return failures;
-}
-
-int test_parallel_tool_result_media_order() {
-    const Json image = Json{{"type", "image"},
-                            {"source", Json{{"type", "base64"},
-                                            {"media_type", "image/png"},
-                                            {"data", "AA=="}}}};
-    const auto tool_use = [](const char* id) {
-        return Json{{"type", "tool_use"},
-                    {"id", id},
-                    {"name", "read"},
-                    {"input", Json{{"path", std::string(id) + ".png"}}}};
-    };
-    const auto tool_result = [](const char* id, Json content) {
-        return Json{{"type", "tool_result"}, {"tool_use_id", id}, {"content", content}};
-    };
-
-    const Json body = {
-        {"model", "m"},
-        {"max_tokens", 8},
-        {"tools", Json::array({Json{{"name", "read"},
-                                    {"input_schema", Json{{"type", "object"}}}}})},
-        {"messages",
-         Json::array(
-             {Json{{"role", "user"}, {"content", "inspect"}},
-              Json{{"role", "assistant"},
-                   {"content", Json::array(
-                                   {tool_use("call_A"), tool_use("call_B"), tool_use("call_C")})}},
-              Json{{"role", "user"},
-                   {"content",
-                    Json::array(
-                        {tool_result("call_C", Json::array({Json{{"type", "text"},
-                                                                  {"text", "text only"}}})),
-                         tool_result("call_B", Json::array({image})),
-                         tool_result("call_A",
-                                     Json::array({Json{{"type", "text"}, {"text", "first"}},
-                                                  image,
-                                                  Json{{"type", "text"}, {"text", "second"}},
-                                                  image}))})}}})}};
-
-    const GenerationRequest req = parse_messages_request(body, default_limits());
-    int failures = check(req.messages.size() == 5, "parallel tool results did not expand in place");
-    failures += check(req.messages[1].tool_calls.size() == 3 &&
-                          req.messages[1].tool_calls[0].id == "call_A" &&
-                          req.messages[1].tool_calls[1].id == "call_B" &&
-                          req.messages[1].tool_calls[2].id == "call_C",
-                      "assistant tool_use array order changed");
-    failures += check(req.messages[2].tool_call_id == "call_C" &&
-                          req.messages[3].tool_call_id == "call_B" &&
-                          req.messages[4].tool_call_id == "call_A",
-                      "tool_result blocks were reordered to tool_use order");
-    failures += check(req.messages[2].content.size() == 1 &&
-                          req.messages[2].content[0].kind == ContentKind::Text &&
-                          req.messages[3].content.size() == 1 &&
-                          req.messages[3].content[0].kind == ContentKind::Image &&
-                          req.messages[4].content.size() == 4 &&
-                          req.messages[4].content[0].kind == ContentKind::Text &&
-                          req.messages[4].content[1].kind == ContentKind::Image &&
-                          req.messages[4].content[2].kind == ContentKind::Text &&
-                          req.messages[4].content[3].kind == ContentKind::Image,
-                      "nested tool_result content order changed");
-
-    const ninfer::PromptInput prompt = translate(req);
-    failures += check(prompt.messages.size() == 5 &&
-                          prompt.messages[2].tool_call_id == "call_C" &&
-                          prompt.messages[3].tool_call_id == "call_B" &&
-                          prompt.messages[4].tool_call_id == "call_A" &&
-                          prompt.messages[4].parts.size() == 4 &&
-                          prompt.messages[4].parts[1].kind == ninfer::MessagePartKind::Media &&
-                          prompt.messages[4].parts[3].kind == ninfer::MessagePartKind::Media,
-                      "translation changed tool-result or nested media order");
     return failures;
 }
 
@@ -733,31 +644,6 @@ int test_response_serialization() {
     return failures;
 }
 
-// Regression: a string-typed tool argument (e.g. taskId="1") must survive the
-// Anthropic render path as a JSON string, not be coerced to a number. The
-// parser preserves the raw text into arguments_json; make_messages_response
-// forwards it verbatim into the tool_use.input object.
-int test_string_typed_argument_survives_render() {
-    int failures = 0;
-    const CompletionUsage usage{3, 1};
-    // arguments_json carries taskId as a string, exactly as the schema-aware
-    // parser emits it for a string-typed parameter with a numeric-looking value.
-    const std::vector<ToolCall> calls = {
-        ToolCall{"toolu_1", "TaskUpdate", R"({"taskId":"1"})"}};
-    const Json resp = Json::parse(
-        make_messages_response("msg_s", "claude-x", "", "", calls, "tool_use", usage));
-    const Json& content = resp.at("content");
-    failures += check(content.size() == 1 && content.at(0).at("type") == "tool_use",
-                      "render produced a single tool_use block");
-    const Json& input = content.at(0).at("input");
-    failures += check(input.at("taskId").is_string(),
-                      "string-typed taskId rendered as a JSON string, not a number");
-    failures += check(input.at("taskId") == "1", "string-typed taskId value preserved on the wire");
-    failures += check(!input.at("taskId").is_number(),
-                      "string-typed taskId is not a JSON number on the wire");
-    return failures;
-}
-
 int test_streaming_events() {
     int failures = 0;
     std::string type;
@@ -864,14 +750,11 @@ int main() {
     failures += test_missing_and_bad_fields();
     failures += test_parse_image();
     failures += test_tools_and_choice();
-    failures += test_duplicate_tool_name_rejected();
     failures += test_tool_use_result_roundtrip();
-    failures += test_parallel_tool_result_media_order();
     failures += test_thinking_and_sampling();
     failures += test_reasoning_effort();
     failures += test_stop_reason_mapping();
     failures += test_response_serialization();
-    failures += test_string_typed_argument_survives_render();
     failures += test_streaming_events();
     failures += test_count_tokens_and_error();
     if (failures == 0) { std::cout << "ok\n"; }

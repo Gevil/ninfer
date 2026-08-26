@@ -1,6 +1,5 @@
 #include "serve/openai_schema.h"
 
-#include <algorithm>
 #include <array>
 #include <cctype>
 #include <chrono>
@@ -9,7 +8,6 @@
 #include <limits>
 #include <random>
 #include <string>
-#include <unordered_set>
 
 namespace ninfer::serve {
 namespace {
@@ -138,6 +136,48 @@ ninfer::product::media_acquire::Source parse_media_url(const Json& part, const c
     return source;
 }
 
+void parse_content_parts(const Json& content, ChatTurn& turn, std::size_t index) {
+    if (content.is_string()) {
+        turn.content.push_back(ContentPart{ContentKind::Text, content.get<std::string>(), "text"});
+        return;
+    }
+    if (!content.is_array()) {
+        bad_request("message " + std::to_string(index) + " content must be a string or array",
+                    "messages");
+    }
+    for (const Json& part : content) {
+        if (!part.is_object() || !part.contains("type") || !part.at("type").is_string()) {
+            bad_request("message " + std::to_string(index) +
+                            " content parts must be objects with a string 'type'",
+                        "messages");
+        }
+        const std::string type = part.at("type").get<std::string>();
+        ContentPart out;
+        out.type_raw = type;
+        if (type == "text") {
+            if (!part.contains("text") || !part.at("text").is_string()) {
+                bad_request("text content part must contain a string 'text'", "messages");
+            }
+            out.kind = ContentKind::Text;
+            out.text = part.at("text").get<std::string>();
+        } else if (type == "image_url") {
+            out.kind   = ContentKind::Image;
+            out.source = parse_media_url(part, "image_url");
+        } else if (type == "video_url") {
+            out.kind   = ContentKind::Video;
+            out.source = parse_media_url(part, "video_url");
+        } else if (type == "input_audio") {
+            out.kind = ContentKind::InputAudio;
+        } else {
+            out.kind = ContentKind::Unsupported;
+        }
+        turn.content.push_back(std::move(out));
+    }
+    if (turn.content.empty()) {
+        bad_request("message " + std::to_string(index) + " content must not be empty", "messages");
+    }
+}
+
 std::vector<ToolCall> parse_assistant_tool_calls(const Json& item, std::size_t index) {
     std::vector<ToolCall> calls;
     if (!item.contains("tool_calls") || item.at("tool_calls").is_null()) { return calls; }
@@ -210,12 +250,12 @@ void parse_messages(const Json& body, GenerationRequest& out) {
                 item.at("tool_call_id").get<std::string>().empty()) {
                 bad_request("tool messages must contain a string tool_call_id", "messages");
             }
-            if (!item.contains("content") || item.at("content").is_null()) {
-                bad_request("tool messages must contain content", "messages");
+            if (!item.contains("content") || !item.at("content").is_string()) {
+                bad_request("tool messages must contain string content", "messages");
             }
             turn.tool_call_id = item.at("tool_call_id").get<std::string>();
-            // Per the OpenAI contract, only text parts are valid in tool messages.
-            parse_content_parts(item.at("content"), turn, i, {"text"});
+            turn.content.push_back(
+                ContentPart{ContentKind::Text, item.at("content").get<std::string>(), "text"});
             out.messages.push_back(std::move(turn));
             continue;
         }
@@ -258,7 +298,6 @@ void parse_tools(const Json& body, GenerationRequest& out) {
     const Json& tools = body.at("tools");
     if (!tools.is_array()) { bad_request("tools must be an array", "tools"); }
     out.tools.reserve(tools.size());
-    std::unordered_set<std::string> names;
     for (std::size_t i = 0; i < tools.size(); ++i) {
         const Json& item = tools.at(i);
         if (!item.is_object()) { bad_request("tools entries must be objects", "tools"); }
@@ -275,9 +314,6 @@ void parse_tools(const Json& body, GenerationRequest& out) {
         Json& fn        = normalized["function"];
         ToolDefinition tool;
         tool.name = require_function_name(fn, "tools");
-        if (!names.insert(tool.name).second) {
-            bad_request("duplicate function tool name: " + tool.name, "tools");
-        }
         if (fn.contains("description") && !fn.at("description").is_null()) {
             if (!fn.at("description").is_string()) {
                 bad_request("function description must be a string", "tools");
@@ -406,54 +442,19 @@ void reject_unsupported_features(const Json& body) {
             throw ApiException(std::move(error));
         }
     }
-}
-
-// Accepts {type:text}, {type:json_object}, and {type:json_schema} (schema and
-// strict are carried; name is ignored). The `strict` flag is parsed for wire
-// compatibility only — there is no token-level constraint in this engine.
-void parse_response_format(const Json& body, GenerationRequest& out) {
-    if (!body.contains("response_format") || body.at("response_format").is_null()) {
-        return;
-    }
-    const Json& fmt = body.at("response_format");
-    if (!fmt.is_object()) {
-        bad_request("response_format must be an object", "response_format",
-                    "response_format_not_supported");
-    }
-    if (!fmt.contains("type") || !fmt.at("type").is_string()) {
-        bad_request("response_format.type must be a string", "response_format",
-                    "response_format_not_supported");
-    }
-    const std::string type = fmt.at("type").get<std::string>();
-    if (type == "text") {
-        out.structured_output = StructuredOutput{StructuredOutputType::Text, {}};
-        return;
-    }
-    if (type == "json_object") {
-        out.structured_output = StructuredOutput{StructuredOutputType::JsonObject, {}};
-        return;
-    }
-    if (type == "json_schema") {
-        if (!fmt.contains("json_schema") || !fmt.at("json_schema").is_object()) {
-            bad_request("response_format.json_schema must be an object", "response_format",
-                        "response_format_not_supported");
+    if (body.contains("response_format") && !body.at("response_format").is_null()) {
+        const Json& fmt  = body.at("response_format");
+        std::string type = fmt.is_object() && fmt.contains("type") && fmt.at("type").is_string()
+                               ? fmt.at("type").get<std::string>()
+                               : std::string();
+        if (type != "text") {
+            ApiError error;
+            error.message = "only response_format {type:text} is supported";
+            error.param   = "response_format";
+            error.code    = "response_format_not_supported";
+            throw ApiException(std::move(error));
         }
-        const Json& js = fmt.at("json_schema");
-        if (!js.contains("schema") || !js.at("schema").is_object()) {
-            bad_request("response_format.json_schema.schema must be an object",
-                        "response_format", "response_format_not_supported");
-        }
-        out.structured_output =
-            StructuredOutput{StructuredOutputType::JsonSchema, js.at("schema").dump()};
-        return;
     }
-    ApiError error;
-    error.status  = 400;
-    error.message = "response_format.type '" + type + "' is not supported; only text, "
-                    "json_object, and json_schema are accepted";
-    error.param   = "response_format";
-    error.code    = "response_format_not_supported";
-    throw ApiException(std::move(error));
 }
 
 Json base_chunk(const std::string& id, const std::string& model, std::int64_t created) {
@@ -478,60 +479,6 @@ std::string sse_event(const Json& payload) { return "data: " + payload.dump() + 
 
 } // namespace
 
-void parse_content_parts(const Json& content, ChatTurn& turn, std::size_t index,
-                         std::vector<std::string> allowed_types) {
-    if (content.is_string()) {
-        turn.content.push_back(ContentPart{ContentKind::Text, content.get<std::string>(), "text"});
-        return;
-    }
-    if (!content.is_array()) {
-        bad_request("message " + std::to_string(index) + " content must be a string or array",
-                    "messages");
-    }
-    std::string allowed_list;
-    for (const std::string& allowed : allowed_types) {
-        if (!allowed_list.empty()) { allowed_list += ", "; }
-        allowed_list += "'" + allowed + "'";
-    }
-    for (const Json& part : content) {
-        if (!part.is_object() || !part.contains("type") || !part.at("type").is_string()) {
-            bad_request("message " + std::to_string(index) +
-                            " content parts must be objects with a string 'type'",
-                        "messages");
-        }
-        const std::string type = part.at("type").get<std::string>();
-        if (!allowed_types.empty() &&
-            std::find(allowed_types.begin(), allowed_types.end(), type) == allowed_types.end()) {
-            bad_request("message " + std::to_string(index) + " content parts must have type " +
-                            allowed_list,
-                        "messages");
-        }
-        ContentPart out;
-        out.type_raw = type;
-        if (type == "text") {
-            if (!part.contains("text") || !part.at("text").is_string()) {
-                bad_request("text content part must contain a string 'text'", "messages");
-            }
-            out.kind = ContentKind::Text;
-            out.text = part.at("text").get<std::string>();
-        } else if (type == "image_url") {
-            out.kind   = ContentKind::Image;
-            out.source = parse_media_url(part, "image_url");
-        } else if (type == "video_url") {
-            out.kind   = ContentKind::Video;
-            out.source = parse_media_url(part, "video_url");
-        } else if (type == "input_audio") {
-            out.kind = ContentKind::InputAudio;
-        } else {
-            out.kind = ContentKind::Unsupported;
-        }
-        turn.content.push_back(std::move(out));
-    }
-    if (turn.content.empty()) {
-        bad_request("message " + std::to_string(index) + " content must not be empty", "messages");
-    }
-}
-
 std::optional<bool> parse_openai_preserve_thinking(const Json& body) {
     std::optional<bool> top_level;
     if (body.contains("preserve_thinking") && !body.at("preserve_thinking").is_null()) {
@@ -549,7 +496,7 @@ std::optional<bool> parse_openai_preserve_thinking(const Json& body) {
         }
         for (auto it = kwargs.begin(); it != kwargs.end(); ++it) {
             if (it.key() != "preserve_thinking" && it.key() != "enable_thinking" &&
-                it.key() != "reasoning_effort" && it.key() != "terse" && !it.value().is_null()) {
+                !it.value().is_null()) {
                 bad_request("chat_template_kwargs." + it.key() + " is not supported",
                             "chat_template_kwargs", "chat_template_option_not_supported");
             }
@@ -568,23 +515,6 @@ std::optional<bool> parse_openai_preserve_thinking(const Json& body) {
                     "conflicting_template_option");
     }
     return template_value ? template_value : top_level;
-}
-
-std::optional<bool> parse_openai_terse(const Json& body) {
-    // Sharp template per-request terseness toggle (kwargs channel only; the
-    // template defaults to on when absent). The kwargs whitelist above has
-    // already validated the key; nulls stay unset (template default wins).
-    if (body.contains("chat_template_kwargs") && body.at("chat_template_kwargs").is_object()) {
-        const Json& kwargs = body.at("chat_template_kwargs");
-        if (kwargs.contains("terse") && !kwargs.at("terse").is_null()) {
-            if (!kwargs.at("terse").is_boolean()) {
-                bad_request("chat_template_kwargs.terse must be a boolean or null",
-                            "chat_template_kwargs");
-            }
-            return kwargs.at("terse").get<bool>();
-        }
-    }
-    return std::nullopt;
 }
 
 std::optional<bool> parse_chat_enable_thinking(const Json& body) {
@@ -621,11 +551,7 @@ void parse_openai_chat_thinking(const Json& body, std::optional<bool>* enable_th
                                 const std::string& conflict_param) {
     *enable_thinking = parse_chat_enable_thinking(body);
 
-    // Two spellings, one value: the protocol's top-level `reasoning_effort` field, or
-    // the Sharp template's kwargs channel (`chat_template_kwargs.reasoning_effort`).
-    // Top-level wins; an explicit disagreement is a conflict, not a silent override.
     std::optional<RequestedReasoningEffort> effort;
-    std::string param = "reasoning_effort";
     if (body.contains("reasoning_effort") && !body.at("reasoning_effort").is_null()) {
         if (!body.at("reasoning_effort").is_string()) {
             bad_request("reasoning_effort must be a string or null", "reasoning_effort");
@@ -639,40 +565,14 @@ void parse_openai_chat_thinking(const Json& body, std::optional<bool>* enable_th
         }
         effort = *parsed;
     }
-    if (body.contains("chat_template_kwargs") && body.at("chat_template_kwargs").is_object()) {
-        const Json& kwargs = body.at("chat_template_kwargs");
-        if (kwargs.contains("reasoning_effort") && !kwargs.at("reasoning_effort").is_null()) {
-            if (!kwargs.at("reasoning_effort").is_string()) {
-                bad_request("chat_template_kwargs.reasoning_effort must be a string or null",
-                            "chat_template_kwargs");
-            }
-            const std::string value = kwargs.at("reasoning_effort").get<std::string>();
-            const std::optional<RequestedReasoningEffort> parsed =
-                parse_requested_reasoning_effort(value);
-            if (!parsed) {
-                bad_request("chat_template_kwargs.reasoning_effort must be one of none, minimal, "
-                            "low, medium, high, xhigh, or max",
-                            "chat_template_kwargs");
-            }
-            if (effort) {
-                if (*effort != *parsed) {
-                    bad_request("conflicting reasoning_effort values", "reasoning_effort",
-                                "conflicting_template_option");
-                }
-            } else {
-                effort = *parsed;
-                param = "chat_template_kwargs";
-            }
-        }
-    }
 
     if (effort) {
         *reasoning_effort = *effort;
-        *reasoning_effort_param = param;
+        *reasoning_effort_param = "reasoning_effort";
         if (enable_thinking->has_value() &&
             *enable_thinking != (*effort != RequestedReasoningEffort::None)) {
-            bad_request("reasoning effort conflicts with " + conflict_param, param,
-                        "conflicting_template_option");
+            bad_request("reasoning effort conflicts with " + conflict_param,
+                        "reasoning_effort", "conflicting_template_option");
         }
     }
 }
@@ -700,7 +600,6 @@ GenerationRequest parse_chat_completion_request(const Json& body, const RequestL
     parse_messages(body, out);
     parse_stop(body, out);
     parse_sampling(body, out);
-    parse_response_format(body, out);
 
     out.stream = get_bool(body, "stream", false);
     if (body.contains("stream_options") && body.at("stream_options").is_object()) {
@@ -709,7 +608,6 @@ GenerationRequest parse_chat_completion_request(const Json& body, const RequestL
     parse_openai_chat_thinking(body, &out.enable_thinking, &out.reasoning_effort,
                                &out.reasoning_effort_param, "enable_thinking");
     out.preserve_thinking = parse_openai_preserve_thinking(body);
-    out.terse = parse_openai_terse(body);
 
     std::optional<int> max_tokens = get_int(body, "max_completion_tokens");
     if (!max_tokens) { max_tokens = get_int(body, "max_tokens"); }
@@ -730,23 +628,6 @@ GenerationRequest parse_chat_completion_request(const Json& body, const RequestL
     return out;
 }
 
-namespace {
-
-// prompt_tokens_details.cached_tokens is how a client learns the prefix cache
-// worked: without it a harness computing a hit rate reports a flat zero on a
-// conversation the Engine is in fact reusing almost entirely. It is a subset of
-// prompt_tokens, never an addend -- clients subtract it to get the billed input.
-Json usage_json(const CompletionUsage& usage) {
-    return Json{
-        {"prompt_tokens", usage.prompt_tokens},
-        {"completion_tokens", usage.completion_tokens},
-        {"total_tokens", usage.prompt_tokens + usage.completion_tokens},
-        {"prompt_tokens_details",
-         Json{{"cached_tokens", std::clamp(usage.cached_prompt_tokens, 0, usage.prompt_tokens)}}}};
-}
-
-} // namespace
-
 std::string make_chat_completion_response(const std::string& id, const std::string& model,
                                           std::int64_t created, const std::string& content,
                                           const std::string& reasoning, const char* finish_reason,
@@ -761,7 +642,9 @@ std::string make_chat_completion_response(const std::string& id, const std::stri
         {"choices",
          Json::array({Json{
              {"index", 0}, {"message", std::move(message)}, {"finish_reason", finish_reason}}})},
-        {"usage", usage_json(usage)}};
+        {"usage", Json{{"prompt_tokens", usage.prompt_tokens},
+                       {"completion_tokens", usage.completion_tokens},
+                       {"total_tokens", usage.prompt_tokens + usage.completion_tokens}}}};
     return payload.dump();
 }
 
@@ -782,7 +665,9 @@ std::string make_chat_completion_tool_response(const std::string& id, const std:
         {"choices",
          Json::array({Json{
              {"index", 0}, {"message", std::move(message)}, {"finish_reason", "tool_calls"}}})},
-        {"usage", usage_json(usage)}};
+        {"usage", Json{{"prompt_tokens", usage.prompt_tokens},
+                       {"completion_tokens", usage.completion_tokens},
+                       {"total_tokens", usage.prompt_tokens + usage.completion_tokens}}}};
     return payload.dump();
 }
 
@@ -844,7 +729,9 @@ std::string make_chat_chunk_usage(const std::string& id, const std::string& mode
                                   std::int64_t created, const CompletionUsage& usage) {
     Json payload       = base_chunk(id, model, created);
     payload["choices"] = Json::array();
-    payload["usage"]   = usage_json(usage);
+    payload["usage"]   = Json{{"prompt_tokens", usage.prompt_tokens},
+                              {"completion_tokens", usage.completion_tokens},
+                              {"total_tokens", usage.prompt_tokens + usage.completion_tokens}};
     return sse_event(payload);
 }
 

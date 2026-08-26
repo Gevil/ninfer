@@ -58,9 +58,6 @@ enum class MtpBridgeMode : std::uint8_t {
 
 namespace ninfer::targets::qwen3_6::detail {
 
-struct HostKvEntry;
-class HostKvProvider;
-
 template <>
 struct RequestBasePlanImpl<NINFER_QWEN36_VARIANT> {
     runtime::RequestPlanSummary summary;
@@ -71,12 +68,6 @@ struct RequestBasePlanImpl<NINFER_QWEN36_VARIANT> {
     std::size_t vision_transient_bytes = 0;
     std::optional<qwen3_6::RewriteCheckpointSpec> rewrite_checkpoint;
     bool allow_prefix_reuse = false;
-};
-
-struct ContentRestorePlan {
-    std::uint32_t frontier       = 0;
-    std::uint32_t backend_tokens = 0;
-    std::uint64_t anchor_key     = 0;
 };
 
 template <>
@@ -94,8 +85,6 @@ struct RequestPlanImpl<NINFER_QWEN36_VARIANT> {
     ops::SamplingConfig sampling;
     std::uint32_t text_kv_page_entitlement    = 0;
     std::uint32_t backend_kv_page_entitlement = 0;
-    std::optional<qwen3_6::detail::ContentRestorePlan> content_restore;
-    std::uint64_t content_identity = 0;
 };
 
 } // namespace ninfer::targets::qwen3_6::detail
@@ -161,21 +150,7 @@ struct DecodeGraphFamily {
 // Target model continuation for one logical sequence. This state remains meaningful after the
 // request which produced it has finished, so it is deliberately separate from request lifecycle,
 // output, sampling, and round-control state.
-struct AdaptiveSpecState {
-    // Censored-geometric acceptance model: alpha = s_ema / (s_ema + f_ema). Every accepted
-    // draft position is a success; a round that stopped short of its window adds one failure.
-    // The ratio of decayed counters stays unbiased under any mix of windows.
-    float s_ema                  = 6.0f;
-    float f_ema                  = 2.0f;
-    std::uint32_t rounds         = 0;
-    std::uint32_t current        = 0;
-    std::uint32_t hold           = 0;
-    std::uint32_t pending_window = 0;  // window of the round awaiting resolution; 0 = main path
-    std::array<std::uint16_t, 16> window_histogram{};
-};
-
 struct SequenceState {
-    AdaptiveSpecState adaptive{};
     std::optional<SequenceKVBundle> kv;
     Tensor tail_hidden;
     Tensor rewrite_checkpoint_hidden;
@@ -236,9 +211,6 @@ public:
     [[nodiscard]] RequestPlan plan_request_for_lane(std::uint32_t lane,
                                                     const PreparedPromptData& prompt,
                                                     const RequestBasePlan& base);
-    [[nodiscard]] bool content_restore_valid(const RequestPlan& plan) const noexcept;
-    [[nodiscard]] std::uint64_t content_identity(const RequestPlan& plan) const noexcept;
-    [[nodiscard]] bool save_prefill_checkpoint(std::uint32_t lane);
     [[nodiscard]] bool can_admit_lane(std::uint32_t lane, const RequestPlan& plan) const noexcept;
     [[nodiscard]] bool
     can_admit_lane_after_retained_eviction(std::uint32_t lane,
@@ -259,54 +231,11 @@ public:
                                std::span<const std::uint8_t> cancelled);
     void abort_lane(std::uint32_t lane) noexcept;
     [[nodiscard]] bool has_retained_lane(std::uint32_t lane) const noexcept;
-
-    void enable_host_kv_cache(std::uint64_t budget_bytes);
-    [[nodiscard]] bool host_kv_cache_enabled() const noexcept { return host_kv_ != nullptr; }
-    // `protect_id` keeps one parked entry from being LRU-evicted to make room
-    // for the slab; admission passes the entry it is about to restore so the
-    // park that precedes it cannot evict the very entry the restore needs.
-    [[nodiscard]] bool park_lane(std::uint32_t lane, std::uint64_t protect_id = 0);
-    [[nodiscard]] std::uint32_t host_kv_reusable_tokens(const PreparedPromptData& prompt) const;
-    // Stable id of the best parked match for `prompt`, or 0 for none.
-    [[nodiscard]] std::uint64_t host_kv_match_id(const PreparedPromptData& prompt) const;
-    // True when the parked entry with this stable id still exists (it may have
-    // been LRU-evicted since the probe recorded it). The evicting-restore
-    // transaction revalidates by id, not by best match: parking another lane
-    // can insert a better match mid-transaction, and the transaction must keep
-    // addressing the exact entry it deferred.
-    [[nodiscard]] bool host_kv_entry_exists(std::uint64_t entry_id) const;
-    // Restores the parked entry with this stable id onto `lane`, which must own
-    // no KV. The reuse is computed for that exact entry (not the current best
-    // match). False when the entry is gone or no longer matches `prompt`.
-    [[nodiscard]] bool restore_lane(std::uint32_t lane, std::uint64_t entry_id,
-                                    const PreparedPromptData& prompt);
-    // True when the parked entry with this stable id would fit on `lane` once
-    // the lane's resident (if any) is parked. Lets the probe defer (keeping the
-    // pool saturated) instead of parking cumulatively and restoring directly.
-    [[nodiscard]] bool can_restore_lane(std::uint32_t lane, std::uint64_t entry_id) const;
-    // The evicting-restore transaction's "can it ever fit" pre-check: true when
-    // BOTH the parked entry `entry_id` and the request `plan` fit after
-    // reclaiming every retained lane except `lane`. Lets the transaction decide,
-    // before mutating any lane, whether the target can ever restore - so an
-    // impossible restore does not destroy unrelated retained state.
-    [[nodiscard]] bool can_evicting_restore_fit(std::uint32_t lane, std::uint64_t entry_id,
-                                                const RequestPlan& plan) const noexcept;
-
-    // Host KV cache (--host-kv-cache). park lifts a retained lane's pages and
-    // planner-visible state into `entry` (the copies are complete on return;
-    // the caller clears the lane after committing the entry); restore is the
-    // inverse into a possibly different lane. Both are no-ops without a cache.
-    [[nodiscard]] bool park_lane_to_host(std::uint32_t lane, HostKvEntry& entry, std::size_t needed,
-                                         cudaStream_t stream);
-    void restore_lane_from_host(std::uint32_t lane, const HostKvEntry& entry,
-                                std::uint32_t reuse_tokens, cudaStream_t stream);
     void evict_retained_lane(std::uint32_t lane) noexcept;
     [[nodiscard]] GenerationTimings generation_timings_lane(std::uint32_t lane) const noexcept;
     [[nodiscard]] SpeculativeStats speculative_stats_lane(std::uint32_t lane) const noexcept;
 
     [[nodiscard]] MemorySummary memory_summary() const noexcept;
-    [[nodiscard]] KvHostCacheStats host_cache_stats() const noexcept;
-    [[nodiscard]] std::uint64_t host_cache_epoch() const noexcept;
 
     void reset_memory_peaks() noexcept;
 
@@ -331,9 +260,7 @@ public:
     DeviceArena persistent;
     DeviceArena workspace_storage;
     WorkspaceArena work;
-    std::unique_ptr<class ContentKvCache> content_cache;
     std::unique_ptr<qwen3_6::DecoderState> decoder;
-    std::unique_ptr<HostKvProvider> host_kv_;
     std::optional<GdnReplayRecords> replay_records;
     std::optional<DFlashPersistentState> dflash;
     qwen3_6::RoundState io;
@@ -349,22 +276,6 @@ public:
     DecodeGraphFamily ordinary_graphs;
     DecodeGraphFamily mtp_graphs;
     DecodeGraphFamily dflash_graphs;
-
-    // Adaptive speculation: one rig per alternative MTP draft window (single-lane batches).
-    // Each rig owns a batch-capacity-1 round-state arena and a graph family captured at that
-    // window; the configured draft_window keeps using the main state and mtp_graphs.
-    struct MtpWindowRig {
-        std::uint32_t window = 0;
-        void* backing        = nullptr;
-        std::size_t bytes    = 0;
-        std::optional<qwen3_6::MtpDecodeState> frame;
-        std::optional<GdnReplayRecords> records;
-        DecodeGraphFamily graphs;
-    };
-    std::vector<MtpWindowRig> mtp_window_rigs;
-    std::array<double, 16> window_cost_ema{};   // seconds per round, by window-1 (global)
-    std::array<std::uint32_t, 16> window_cost_n{};
-    bool adaptive_spec = false;
 
     PinnedHostBuffer round_host;
     TokenId* host_tokens = nullptr;
@@ -420,14 +331,6 @@ private:
     void release_sequence_growth_entitlement(SequenceState& sequence) noexcept;
     [[nodiscard]] qwen3_6::PagedKVCache* backend_kv_cache() noexcept;
     [[nodiscard]] const qwen3_6::PagedKVCache* backend_kv_cache() const noexcept;
-    // Bytes to park the largest sequence this Program can hold (the full
-    // per-sequence page cap plus the hidden + GDN tail). Used only by
-    // enable_host_kv_cache() to size the budget and warn when it is too small;
-    // the executor cannot compute it (bytes-per-page is target-specific).
-    [[nodiscard]] std::size_t max_parked_sequence_bytes() const;
-    // Bytes to park `lane`'s current sequence (its actual mapped page count
-    // plus the hidden + GDN tail). park_lane() sizes the budget region from it.
-    [[nodiscard]] std::size_t parked_lane_bytes(std::uint32_t lane) const;
     [[nodiscard]] std::uint32_t backend_kv_valid(const SequenceState& sequence) const noexcept;
     [[nodiscard]] qwen3_6::PagedKVCacheView text_kv_view(const SequenceState& sequence) const;
     [[nodiscard]] qwen3_6::PagedKVCacheView mtp_kv_view(const SequenceState& sequence) const;
