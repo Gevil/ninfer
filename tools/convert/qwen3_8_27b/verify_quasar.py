@@ -32,7 +32,11 @@ from typing import Mapping, Sequence
 
 import torch
 
-from tools.artifact.container import Artifact
+from tools.artifact.container import (
+    Artifact,
+    ResourceObject,
+    TensorObject,
+)
 from tools.convert.common.safetensors import ShardReader
 from tools.convert.qwen3_8_27b import inventory_nvfp4full as inventory
 from tools.convert.qwen3_8_27b import recipe_quasar as recipe
@@ -69,15 +73,36 @@ def verify_structure(
         divisor_sites = 0
         for obj in artifact.objects:
             ref_obj = reference_index[obj.name]
-            if tuple(obj.shape) != tuple(ref_obj.shape) or obj.format != ref_obj.format:
-                raise ValueError(
-                    f"{obj.name}: ({tuple(obj.shape)}, {obj.format}) != "
-                    f"({tuple(ref_obj.shape)}, {ref_obj.format})"
-                )
-            if obj.format == inventory.FP32 and obj.name.endswith("/input_scale_divisor"):
-                if artifact.payload(obj.name) != reference.payload(ref_obj.name):
-                    raise ValueError(f"{obj.name}: divisor words differ from reference")
-                divisor_sites += 1
+            if isinstance(obj, TensorObject):
+                if not isinstance(ref_obj, TensorObject):
+                    raise ValueError(f"{obj.name}: kind differs from reference")
+                if (
+                    tuple(obj.shape) != tuple(ref_obj.shape)
+                    or obj.format != ref_obj.format
+                    or obj.layout != ref_obj.layout
+                ):
+                    raise ValueError(
+                        f"{obj.name}: ({tuple(obj.shape)}, {obj.format}, {obj.layout}) "
+                        f"!= ({tuple(ref_obj.shape)}, {ref_obj.format}, {ref_obj.layout})"
+                    )
+                if obj.format == inventory.FP32 and obj.name.endswith(
+                    "/input_scale_divisor"
+                ):
+                    if artifact.payload(obj.name) != reference.payload(ref_obj.name):
+                        raise ValueError(
+                            f"{obj.name}: divisor words differ from reference"
+                        )
+                    divisor_sites += 1
+            elif isinstance(obj, ResourceObject):
+                if not isinstance(ref_obj, ResourceObject):
+                    raise ValueError(f"{obj.name}: kind differs from reference")
+                if obj.encoding != ref_obj.encoding or obj.bytes != ref_obj.bytes:
+                    raise ValueError(
+                        f"{obj.name}: resource ({obj.encoding}, {obj.bytes}) != "
+                        f"({ref_obj.encoding}, {ref_obj.bytes})"
+                    )
+            else:  # pragma: no cover
+                raise ValueError(f"{obj.name}: unknown object kind")
         if divisor_sites != len(inventory.INPUT_SCALE_DIVISOR_SPECS):
             raise ValueError(
                 f"{divisor_sites} divisor sites, "
