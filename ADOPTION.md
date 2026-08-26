@@ -422,5 +422,3 @@ Conflict resolution (6 files): attention reduce kernel + launcher taken wholesal
 **Free-GPU ctest (buildstage-tier7, host-KV suites + MTP parity guard):** 100% tests passed, 0 tests failed out of 6
 
 Public review: [Gevil/ninfer PR #8](https://github.com/Gevil/ninfer/pull/8) (`tier7` -> `qwen3.8-nvfp4full`, stacked on PR #7).
-
-**2026-08-26 (master):** tier7 merged to `master` (20798a3b); PR #8 merged to `qwen3.8-nvfp4full`, PR #7 closed (superseded by #8). Tier 8 experiment (staged-smem reduce, width-invariant) **shelved**: parity guard 6/6 pass but decode probe 69.2 tok/s (no recovery toward tier6's ~142.5) — the regression lives in the canonicalized GDN gating / producer / swiglu routes, not the reduce. Full record: `~/.local/share/ninfer/tier8-experiment-record.md`.
