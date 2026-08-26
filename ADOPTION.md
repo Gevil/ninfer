@@ -354,3 +354,10 @@ then the lane is restarted and verified; build/verification logs live in the hos
 serving developer sessions runs on it.
 
 *Record maintained 2026-08-24 — Tier 1 merged + verified (PR #1 open); Tier 2 executed + verified (PR #2 open); Tier 3 Wave A executed + verified (PR #3 open). Update this file at each tier boundary.*
+**2026-08-26 (master):** the Tier 7 merge (20798a3b) was REVERTED on request - the ~50% decode
+regression (142 -> ~55-71 tok/s) was not accepted. Lane rolled back to the Tier 6 image
+(aaff16e226eb, `tier6-156424cd`): probe 146.1 tok/s fresh-context, 175.9 tok/s at 98k context
+with MTP acceptance ~71%. Model mainline `qwen3.8-nvfp4full` restored to the Tier 6 tree
+(1b9aef3b). Tier 7 remains available on the `tier7` branch (MTP width-invariant parity work
+still stands - it just costs the decode fast paths); resuming it requires the fast-path
+recovery work recorded in `~/.local/share/ninfer/tier8-experiment-record.md` (pass 2 design).
