@@ -505,6 +505,8 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, WeightsProfile weights_
         break;
     case WeightsProfile::Qwen38Nvfp4Full:
     case WeightsProfile::Qwen38Quasar:
+        bind_qwen38_nvfp4full_text_layers(binder, out);
+        break;
     default:
         throw std::invalid_argument("qwen3_6_27b: invalid weights profile");
     }
