@@ -636,6 +636,17 @@ void validate_target_options(DeviceContext& device, const EngineOptions& options
             throw std::invalid_argument("DFlash draft window must be in [1,15]");
         }
         break;
+    case SpeculativeBackend::DFlash2:
+        if (options.speculative.draft_tokens == 0 ||
+            options.speculative.draft_tokens > kMaximumDFlash2DraftTokens) {
+            throw std::invalid_argument("DFlash2 draft window must be in [1,7]");
+        }
+        // The artifact module, binder rows, and config facts are landed; the draft
+        // kernels and schedule integration are the next port items. This gate is
+        // the single explicit seam and is removed with them.
+        throw std::invalid_argument(
+            "DFlash2 execution is not yet enabled: the draft kernels land with the "
+            "DFlash2 port's kernel work items");
     }
     if (device.compute_capability() != 120) {
         throw std::invalid_argument("Qwen3.6 family runtime requires compute capability 12.0");

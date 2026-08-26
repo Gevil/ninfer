@@ -295,6 +295,50 @@ int verify_vision_workspace_planning() {
 
 } // namespace
 
+
+static std::size_t validate_only_objects(const ArtifactLoadPlan& plan) {
+    return plan.materialization.object_count - plan.materialization.device_objects.size() -
+           plan.materialization.host_objects.size();
+}
+
+static int verify_nvfp4full_dflash2(const std::filesystem::path& path) {
+    ninfer::artifact::Reader reader(path);
+    if (Package::resolve_weights(reader.identity()) != WeightsProfile::Qwen38Nvfp4Full) {
+        std::cerr << "nvfp4full identity resolved to the wrong profile\n";
+        return 1;
+    }
+    // Module-less startup: the 66 dflash2 objects bind as validate-only rows.
+    ninfer::targets::qwen3_6::StartupFeatures module_less{
+        .vision        = false,
+        .speculative   = ninfer::SpeculativeBackend::None,
+        .proposal_head = ninfer::ProposalHead::Full,
+    };
+    ninfer::artifact::Binder binder(reader);
+    const ArtifactLoadPlan plain =
+        bind_artifact(binder, WeightsProfile::Qwen38Nvfp4Full, module_less);
+    if (plain.materialization.object_count != 1325) {
+        std::cerr << "nvfp4full object inventory changed: "
+                  << plain.materialization.object_count << 0x0A;
+        return 1;
+    }
+    if (validate_only_objects(plain) < 66) {
+        std::cerr << "dflash2 module rows did not bind as validate-only: "
+                  << validate_only_objects(plain) << 0x0A;
+        return 1;
+    }
+    // The dflash2 startup feature claims exactly its 66 module rows.
+    ninfer::targets::qwen3_6::StartupFeatures with_dflash2 = module_less;
+    with_dflash2.speculative = ninfer::SpeculativeBackend::DFlash2;
+    ninfer::artifact::Binder feature_binder(reader);
+    const ArtifactLoadPlan featured =
+        bind_artifact(feature_binder, WeightsProfile::Qwen38Nvfp4Full, with_dflash2);
+    if (validate_only_objects(featured) + 66 != validate_only_objects(plain)) {
+        std::cerr << "dflash2 feature did not claim its module rows\n";
+        return 1;
+    }
+    return 0;
+}
+
 int main() {
     const std::filesystem::path groupwise =
         artifact_path("NINFER_QWEN3_6_27B_WEIGHTS", "qwen3_6_27b.ninfer");
@@ -336,6 +380,11 @@ int main() {
     if (!ran) {
         std::cerr << "skip: no real 27B artifacts available for load-plan validation\n";
         return 77;
+    }
+    const std::filesystem::path nvfp4full = artifact_path(
+        "NINFER_QWEN3_8_27B_NVFP4FULL_WEIGHTS", "qwen3_8_27b_nvfp4full.ninfer");
+    if (std::filesystem::is_regular_file(nvfp4full)) {
+        if (const int result = verify_nvfp4full_dflash2(nvfp4full); result != 0) { return result; }
     }
     if (const int result = verify_vision_workspace_planning(); result != 0) { return result; }
     return 0;
