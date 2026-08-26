@@ -122,6 +122,8 @@ const char* prefix_reuse_path_name(ninfer::PrefixReusePath path) {
         return "restore_turn_checkpoint";
     case ninfer::PrefixReusePath::RestoreResponseCheckpoint:
         return "restore_response_checkpoint";
+    case ninfer::PrefixReusePath::ContentRestore:
+        return "content_restore";
     }
     return "unknown";
 }
@@ -460,6 +462,7 @@ std::string format_server_start_json(
                               {"media_cache_bytes", options.media_cache_bytes},
                               {"media_live_bytes", options.media_live_bytes},
                               {"media_preprocess_threads", options.media_preprocess_threads},
+                              {"image_token_budget", options.image_token_budget},
                               {"request_log_jsonl", options.request_log_jsonl},
                               {"default_output_tokens", options.default_max_tokens},
                               {"default_thinking", options.enable_thinking},

@@ -69,12 +69,13 @@ std::string serve_usage_text(const char* argv0) {
            "[--max-pending-requests N] [--pending-timeout-ms N] "
            "[--prefill-chunk N] [--log-stats-interval-ms N] [--device N] "
            "[--max-request-mib N] [--media-cache-mib N] [--media-live-mib N] "
-           "[--media-preprocess-threads N] "
+           "[--media-preprocess-threads N] [--image-token-budget N] "
            "[--request-log-jsonl FILE] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8] [--spec mtp|dflash --draft-tokens N] "
            "[--default-max-tokens N] "
-           "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
+           "[--vision] [--vision-residency resident|overlay] [--vision-max-merged N] "
+           "[--kv-host-cache-mib N] [--host-kv-cache-mib N] [--no-cuda-graph] [--no-prefix-reuse] "
            "[--lm-head-draft] [--no-thinking] [--preserve-thinking] [--cors] "
            "[--webui | --webui-dir DIR] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
@@ -87,16 +88,29 @@ std::string serve_usage_text(const char* argv0) {
            "       --media-cache-mib defaults to 1024; 0 disables retained media reuse\n"
            "       --media-live-mib defaults to 2048 and bounds all live BF16 patch payloads\n"
            "       --media-preprocess-threads defaults to 0 (auto, at most 16 workers)\n"
+           "       --image-token-budget caps each image in Vision tokens (32x32 pixels each) "
+           "by scaling it to fit; 0 keeps the artifact ceiling\n"
            "       --request-log-jsonl appends full-precision server/request records\n"
            "       --model-id overrides the artifact identity.model_id reported by the server\n"
            "       Responses state is process-local and bounded to 1024 records / 256 MiB by "
            "default\n"
            "       --log-stats-interval-ms defaults to 5000; 0 disables periodic throughput logs\n"
            "       --vision enables media and loads the fixed Vision GPU allocations\n"
+           "       --kv-host-cache-mib N keeps computed context in pinned host RAM: previously\n"
+           "         computed prefixes restore through PCIe instead of re-prefilling, and\n"
+           "         branches sharing a prefix deduplicate against the same pages (0 = off)\n"
+           "       --vision-residency overlay keeps Vision weights in pinned host memory\n"
+           "         and encodes images through device memory temporarily borrowed from\n"
+           "         evicted read-only text weights; resident (default) is the fixed\n"
+           "         device allocation\n"
            "       --kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
-           " MiB of sizing headroom\n"
+           " MiB of sizing headroom (bounded by max-context * max-concurrency)\n"
            "       --no-prefix-reuse disables compatible-prefix caching (enabled by default)\n"
+           "       --host-kv-cache-mib N parks evicted sequences in a pinned N MiB host budget instead of discarding them\n"
+            "       --host-kv-cache-mib sizes each parked sequence to its real page count; sessions larger than the budget fall back to re-prefill\n"
+            "       --host-kv-cache-mib is not supported with --spec dflash (the lane-affine DFlash caches are not captured)\n"
+            "       --host-kv-cache-mib requires prefix reuse (incompatible with --no-prefix-reuse)\n"
            "       --preserve-thinking retains closed-turn assistant reasoning in later prompts\n"
            "       sampler defaults come from the loaded model and resolved thinking mode; "
            "server flags and request fields override individual values.\n"
@@ -199,6 +213,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
                 throw std::invalid_argument("--media-preprocess-threads must be in [0,64]");
             }
             options.media_preprocess_threads = static_cast<std::uint32_t>(threads);
+        } else if (arg == "--image-token-budget") {
+            options.image_token_budget = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value("--image-token-budget"), "image-token-budget"));
         } else if (arg == "--request-log-jsonl") {
             options.request_log_jsonl = require_value("--request-log-jsonl");
             if (options.request_log_jsonl.empty()) {
@@ -234,12 +251,36 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             default_max_tokens_explicit = true;
         } else if (arg == "--vision") {
             options.enable_vision = true;
+        } else if (arg == "--vision-max-merged") {
+            const int value =
+                parse_nonnegative_int(require_value("--vision-max-merged"), "vision-max-merged");
+            if (value < 64 || value > 32768) {
+                throw std::invalid_argument("--vision-max-merged must be in [64, 32768]");
+            }
+            options.vision_max_merged_tokens = static_cast<std::uint32_t>(value);
+        } else if (arg == "--kv-host-cache-mib") {
+            const int value =
+                parse_nonnegative_int(require_value("--kv-host-cache-mib"), "kv-host-cache-mib");
+            options.kv_host_cache_mib = static_cast<std::size_t>(value);
+        } else if (arg == "--vision-residency") {
+            const std::string_view value = require_value("--vision-residency");
+            if (value == "resident") {
+                options.vision_residency = ninfer::VisionResidency::Resident;
+            } else if (value == "overlay") {
+                options.vision_residency = ninfer::VisionResidency::Overlay;
+            } else {
+                throw std::invalid_argument(
+                    "--vision-residency accepts resident or overlay");
+            }
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
         } else if (arg == "--no-prefix-reuse") {
             options.allow_prefix_reuse = false;
         } else if (arg == "--lm-head-draft") {
             options.speculative.proposal_head = ProposalHead::Optimized;
+        } else if (arg == "--host-kv-cache-mib") {
+            options.host_kv_cache_mib =
+                parse_nonnegative_int(require_value("--host-kv-cache-mib"), "host-kv-cache-mib");
         } else if (arg == "--no-thinking") {
             options.enable_thinking = false;
         } else if (arg == "--preserve-thinking") {
@@ -309,10 +350,46 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     if (options.speculative.backend == SpeculativeBackend::DFlash && options.enable_vision) {
         throw std::invalid_argument("--spec dflash cannot be combined with --vision");
     }
+    if (options.kv_host_cache_mib != 0 && !options.allow_prefix_reuse) {
+        throw std::invalid_argument(
+            "--kv-host-cache-mib conflicts with --no-prefix-reuse: the host cache is only "
+            "reachable through prefix reuse; drop one of the two flags");
+    }
+    if (options.kv_host_cache_mib != 0 &&
+        options.speculative.backend == SpeculativeBackend::DFlash) {
+        throw std::invalid_argument(
+            "--kv-host-cache-mib is not supported with --spec dflash yet: content anchors do "
+            "not carry the DFlash drafter context; drop one of the two flags");
+    }
+    if (options.vision_residency == ninfer::VisionResidency::Overlay && !options.enable_vision) {
+        throw std::invalid_argument("--vision-residency overlay requires --vision");
+    }
     if (default_max_tokens_explicit) {
         if (options.default_max_tokens <= 0) {
             throw std::invalid_argument("--default-max-tokens must be positive");
         }
+    }
+    // --host-kv-cache-mib parks evicted sequences for later RESTORE, but
+    // --no-prefix-reuse makes every request cold-prefill and the host-cache
+    // gate to skip restore. The combination is write-only: every resident is
+    // parked on eviction and no parked entry can ever be restored, which is
+    // strictly worse than no cache. Reject it rather than silently waste
+    // pinned RAM and host traffic.
+    if (options.host_kv_cache_mib > 0 && !options.allow_prefix_reuse) {
+        throw std::invalid_argument(
+            "--host-kv-cache-mib requires prefix reuse; --no-prefix-reuse makes every "
+            "parked entry unrestorable (write-only caching)");
+    }
+    // --host-kv-cache-mib and --spec dflash are the same class of "unsupported
+    // combination" as the prefix-reuse check above: DFlash's lane-affine draft
+    // caches are not captured by a parked entry, so a restored DFlash sequence
+    // would be incomplete. Reject at the CLI layer (the engine keeps its own
+    // check as a backstop for programmatic Engine construction).
+    if (options.host_kv_cache_mib > 0 &&
+        options.speculative.backend == SpeculativeBackend::DFlash) {
+        throw std::invalid_argument(
+            "--host-kv-cache-mib is not supported with --spec dflash: the lane-affine "
+            "DFlash caches are not captured by a parked entry");
     }
     return options;
 }

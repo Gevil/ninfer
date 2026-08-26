@@ -238,10 +238,10 @@ void gqa_attention_small_t_launch_for(const Tensor& q, CacheInput input, const T
                                       const GqaSmallTInvocation& invocation,
                                       GqaExecutionEnvelope envelope, Tensor& partial_acc,
                                       Tensor& partial_m, Tensor& partial_l, Tensor& out,
-                                      cudaStream_t stream) {
+                                      cudaStream_t stream, const void* gate) {
     const auto logical_capacity      = static_cast<std::int32_t>(envelope.max_visible_keys);
     const auto implementation_window = static_cast<std::int32_t>(envelope.max_visible_keys);
-    const auto splits =
+    const std::int32_t splits =
         gqa_small_t_launch_capacity<Geometry>(envelope, invocation.width, cache.dtype);
 
     // BF16 keeps its row-tile warp count; INT8 selects its producer/consumer
@@ -298,22 +298,54 @@ void gqa_attention_small_t_launch_for(const Tensor& q, CacheInput input, const T
 #undef NINFER_GQA_SMALL_T_DISPATCH
 
     constexpr int kReduceBlock = 256;
-    constexpr int kDChunk      = 64;
-    const dim3 reduce_grid(Geometry::QHeads, div_up(kGqaHeadDim, kDChunk),
+    // NINFER_SMALL_T_REDUCE_DCHUNK: override the reduce's d-chunk (default 64).
+    // A smaller DChunk spawns QHeads x (256/DChunk) x width blocks (vs 96 at 64)
+    // and widens the in-block quarters to 256/DChunk, raising occupancy so the
+    // long-scoreboard global-load latency is hidden. Numerics are unchanged in
+    // expectation (m/l stats are d-independent; only the acc sum order moves).
+    static const int reduce_dchunk = [] {
+        const char* e = std::getenv("NINFER_SMALL_T_REDUCE_DCHUNK");
+        if (e == nullptr) { return 64; }
+        const int v = std::atoi(e);
+        return (v == 8 || v == 16 || v == 32 || v == 64) ? v : 64;
+    }();
+    const dim3 reduce_grid(Geometry::QHeads, div_up(kGqaHeadDim, reduce_dchunk),
                            invocation.width * invocation.batch_size);
     const auto launch_reduce = [&]<bool Int8, bool MultiBatch, bool Masked, bool Offset>() {
-        gqa_attention_small_t_reduce_output_kernel<Geometry, kDChunk, Int8, MultiBatch, Masked,
-                                                   Offset>
-            <<<reduce_grid, kReduceBlock, 0, stream>>>(
-                static_cast<const __nv_bfloat16*>(partial_acc.data),
-                static_cast<const float*>(partial_m.data),
-                static_cast<const float*>(partial_l.data),
-                static_cast<const std::int32_t*>(pos.data),
-                invocation.valid_columns == nullptr
-                    ? nullptr
-                    : static_cast<const std::int32_t*>(invocation.valid_columns->data),
-                invocation.width, invocation.full_width, invocation.column_begin,
-                invocation.batch_size, splits, static_cast<__nv_bfloat16*>(out.data));
+        const auto launch_for_dchunk = [&]<int DChunk>() {
+            // Staged-reduce dynamic smem: m_s + l_s (4B per split), a 16B pad for
+            // the 16B-aligned acc_s base, and the split-major acc_s (DChunk bf16
+            // per split) sized for the capacity.
+            const std::size_t reduce_smem_bytes =
+                2 * sizeof(float) * splits + 16 + static_cast<std::size_t>(DChunk) * 2 * splits;
+            gqa_attention_small_t_reduce_output_kernel<Geometry, DChunk, Int8, MultiBatch, Masked,
+                                                       Offset>
+                <<<reduce_grid, kReduceBlock, reduce_smem_bytes, stream>>>(
+                    static_cast<const __nv_bfloat16*>(partial_acc.data),
+                    static_cast<const float*>(partial_m.data),
+                    static_cast<const float*>(partial_l.data),
+                    static_cast<const std::int32_t*>(pos.data),
+                    invocation.valid_columns == nullptr
+                        ? nullptr
+                        : static_cast<const std::int32_t*>(invocation.valid_columns->data),
+                    invocation.width, invocation.full_width, invocation.column_begin,
+                    invocation.batch_size, splits, static_cast<__nv_bfloat16*>(out.data),
+                    static_cast<const __nv_bfloat16*>(gate));
+        };
+        switch (reduce_dchunk) {
+        case 8:
+            launch_for_dchunk.template operator()<8>();
+            break;
+        case 16:
+            launch_for_dchunk.template operator()<16>();
+            break;
+        case 32:
+            launch_for_dchunk.template operator()<32>();
+            break;
+        default:
+            launch_for_dchunk.template operator()<64>();
+            break;
+        }
     };
     const bool masked         = invocation.valid_columns != nullptr;
     const auto launch_profile = [&]<bool Int8, bool MultiBatch, bool Masked>() {
@@ -350,7 +382,7 @@ void gqa_attention_small_t_launch(const Tensor& q, const Tensor& k, const Tensor
                                   PagedKVBatchLayerView cache, GqaExecutionEnvelope envelope,
                                   std::int32_t column_begin, std::int32_t width,
                                   Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l,
-                                  Tensor& out, cudaStream_t stream) {
+                                  Tensor& out, cudaStream_t stream, const void* gate) {
     const GqaAppendInput input{static_cast<const __nv_bfloat16*>(k.data),
                                static_cast<const __nv_bfloat16*>(v.data)};
     const GqaSmallTInvocation invocation{
@@ -364,19 +396,19 @@ void gqa_attention_small_t_launch(const Tensor& q, const Tensor& k, const Tensor
     if (q.ne[1] == Gqa27Geometry::QHeads) {
         gqa_attention_small_t_launch_for<Gqa27Geometry>(q, input, pos, scale, cache, invocation,
                                                         envelope, partial_acc, partial_m, partial_l,
-                                                        out, stream);
+                                                        out, stream, gate);
         return;
     }
     gqa_attention_small_t_launch_for<Gqa35Geometry>(q, input, pos, scale, cache, invocation,
                                                     envelope, partial_acc, partial_m, partial_l,
-                                                    out, stream);
+                                                    out, stream, gate);
 }
 
 void gqa_attention_cached_small_t_launch(const Tensor& q, const Tensor& pos, float scale,
                                          const PagedKVLayerView& cache,
                                          GqaExecutionEnvelope envelope, Tensor& partial_acc,
                                          Tensor& partial_m, Tensor& partial_l, Tensor& out,
-                                         cudaStream_t stream) {
+                                         cudaStream_t stream, const void* gate) {
     const GqaCachedInput input{};
     const GqaSmallTInvocation invocation{
         .valid_columns = nullptr,
@@ -390,12 +422,12 @@ void gqa_attention_cached_small_t_launch(const Tensor& q, const Tensor& pos, flo
     if (q.ne[1] == Gqa27Geometry::QHeads) {
         gqa_attention_small_t_launch_for<Gqa27Geometry>(q, input, pos, scale, batch_cache,
                                                         invocation, envelope, partial_acc,
-                                                        partial_m, partial_l, out, stream);
+                                                        partial_m, partial_l, out, stream, gate);
         return;
     }
     gqa_attention_small_t_launch_for<Gqa35Geometry>(q, input, pos, scale, batch_cache, invocation,
                                                     envelope, partial_acc, partial_m, partial_l,
-                                                    out, stream);
+                                                    out, stream, gate);
 }
 
 } // namespace ninfer::ops::detail

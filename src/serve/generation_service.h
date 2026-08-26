@@ -7,12 +7,14 @@
 #include "ninfer/engine.h"
 #include "serve/request.h"
 #include "serve/serve_options.h"
+#include "serve/tool_call_parser.h"
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -74,6 +76,7 @@ struct PreparedRequest {
     bool include_usage                     = false;
     bool tool_capable                      = false;
     std::size_t tool_name_max_length       = 64;
+    ToolParamTypeMap param_types;
     bool enable_thinking                   = true;
     bool preserve_thinking                 = false;
     bool preserve_thinking_semantic_change = false;
@@ -89,6 +92,9 @@ public:
     [[nodiscard]] ninfer::LoadSummary load_summary() const { return engine_->load_summary(); }
 
     [[nodiscard]] ninfer::MemorySummary memory_summary() const { return engine_->memory_summary(); }
+    [[nodiscard]] ninfer::KvHostCacheStats host_cache_stats() const {
+        return engine_->host_cache_stats();
+    }
 
     [[nodiscard]] ninfer::RuntimeStats runtime_stats() const { return engine_->runtime_stats(); }
 
@@ -100,8 +106,9 @@ public:
         return engine_->sampling_defaults();
     }
 
-    [[nodiscard]] PreparedRequest prepare(const GenerationRequest& req,
-                                          std::function<bool()> is_cancelled = {}) const;
+    [[nodiscard]] PreparedRequest prepare(
+        const GenerationRequest& req, std::function<bool()> is_cancelled = {},
+        std::optional<std::chrono::milliseconds> timeout_override = std::nullopt) const;
     [[nodiscard]] int count_prompt_tokens(const GenerationRequest& req,
                                           std::function<bool()> is_cancelled = {}) const;
 
@@ -112,7 +119,8 @@ public:
     void warmup();
 
 private:
-    [[nodiscard]] std::shared_ptr<RequestLifetime> acquire_request_lifetime() const;
+    [[nodiscard]] std::shared_ptr<RequestLifetime> acquire_request_lifetime(
+        std::optional<std::chrono::milliseconds> timeout_override = std::nullopt) const;
 
     ServeOptions options_;
     std::unique_ptr<ninfer::Engine> engine_;
