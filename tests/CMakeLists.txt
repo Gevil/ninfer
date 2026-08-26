@@ -295,6 +295,9 @@ set_tests_properties(
   ninfer_kv_cache_append_nvfp4_test
   ninfer_kv_cache_append_k8v4_test
   PROPERTIES SKIP_RETURN_CODE 77)
+ninfer_add_op_test(ninfer_dflash2_selector_predecessors_test
+  SOURCES ops/test_dflash2_selector_predecessors.cpp
+  LIBRARIES ninfer_ops)
 ninfer_add_op_test(ninfer_prepare_masked_block_test
   SOURCES ops/test_prepare_masked_block.cpp
   LIBRARIES ninfer_ops)

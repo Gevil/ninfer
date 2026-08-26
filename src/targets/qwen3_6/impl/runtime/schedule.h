@@ -10,6 +10,7 @@
 #include "ninfer/ops/sliding_window_attention.h"
 #include "ninfer/ops/softmax_attention.h"
 #include "targets/qwen3_6/impl/runtime/dflash_context.h"
+#include "targets/qwen3_6/impl/runtime/dflash2_context.h"
 #include "targets/qwen3_6/impl/runtime/text_context.h"
 #include "targets/qwen3_6/impl/runtime/vision_context.h"
 #include "targets/qwen3_6/impl/runtime/vision_prefill.h"
@@ -92,6 +93,19 @@ struct DFlashAppendContext {
     DFlashPersistentState& dflash;
 };
 
+struct DFlash2BatchContext {
+    ExecutionCore execution;
+    DFlash2PersistentState& dflash2;
+    const qwen3_6::PagedKVCache& text_cache;
+    const qwen3_6::DFlashDecodeState& decode_state;
+    qwen3_6::DFlashDecodeIngress* ingress = nullptr;
+    qwen3_6::DFlashDecodeEgress* egress = nullptr;
+};
+
+struct DFlash2AppendContext {
+    ExecutionCore execution;
+    DFlash2PersistentState& dflash2;
+};
 struct MtpCausalAttentionEnvelopes {
     ops::CausalAttentionExecutionEnvelope target_verify;
     ops::CausalAttentionExecutionEnvelope batch;
@@ -107,6 +121,11 @@ struct DFlashEnvelopes {
 bool mtp_sampled_draft_enabled();
 bool mtp_nucleus_accept_enabled();
 
+struct DFlash2Envelopes {
+    ops::SwAContextExecutionEnvelope local;
+    ops::KVCacheAppendPrefixExecutionEnvelope append;
+    ops::ContextAttentionExecutionEnvelope full;
+};
 struct TargetVerifyFrameView {
     Tensor ids;
     Tensor cache_positions;

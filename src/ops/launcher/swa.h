@@ -4,7 +4,7 @@
 
 namespace ninfer::ops::detail {
 
-inline constexpr std::int32_t kSwaMaxCandidateSplit = 128;
+inline constexpr std::int32_t kSwaMaxCandidateSplit = 32;
 
 enum class SwaRoute {
     Direct,
@@ -15,17 +15,18 @@ struct SwaPlan {
     SwaRoute route;
     std::int32_t tokens;
     std::int32_t warps;
-    std::int32_t key_block;
     std::int32_t split_capacity;
     std::int32_t max_context;
 };
 
-[[nodiscard]] SwaPlan swa_resolve_plan(std::int32_t tokens, SwaContextExecutionEnvelope envelope);
+[[nodiscard]] SwaPlan swa_resolve_plan(std::int32_t tokens, SwaContextExecutionEnvelope envelope,
+                              std::uint32_t window);
 [[nodiscard]] const char* swa_route_name(SwaRoute route);
 
 void swa_launch(const Tensor& q, const Tensor& query_k, const Tensor& query_v,
-                const Tensor& positions, float scale, const CyclicKVCacheLayerView& context,
-                const SwaPlan& plan, Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l,
-                Tensor& out, cudaStream_t stream);
+                const Tensor& positions, const Tensor& valid_columns, const Tensor& lanes,
+                float scale, const CyclicKVCacheLayerView& context, const SwaPlan& plan,
+                Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out,
+                cudaStream_t stream);
 
 } // namespace ninfer::ops::detail
