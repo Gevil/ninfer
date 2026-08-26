@@ -99,7 +99,9 @@ def _validate_index(model_dir: Path) -> None:
 def preflight_inventory() -> None:
     inventory.validate_inventory()
     recipe.validate_recipe()
-    nvfp4_encode.self_test()
+    # Device-agnostic codec-table check: CPU so preflight works in
+    # GPU-less containers (the conversion itself uses the resolved device).
+    nvfp4_encode.self_test("cpu")
 
 
 def build_object_plan(
