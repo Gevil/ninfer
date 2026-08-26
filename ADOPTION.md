@@ -384,3 +384,10 @@ Re-verified in-tree this window (all on `tier4`/`tier5` + `gevil/master`): #85 `
 **Deferred from this wave (recorded 2026-08-25):** the MirkoCovizzi MTP width-invariant fix (`7d566547`) — deep merge conflict with our perf work (staged-smem GQA reduce, cooperative GDN, T=4 swiglu, fused gate, and a bf16-vs-FP32 Int8-partial divergence). Plan: dedicated wave gated on the MTP greedy-parity test (first confirm our tree has the width-variance bug, then merge).
 
 Public review: [Gevil/ninfer PR #7](https://github.com/Gevil/ninfer/pull/7) (`tier6` -> `qwen3.8-nvfp4full`, stacked on PR #6).
+## Quasar adoption (2026-08-26)
+- Lane live on `quasar-303dbcaa` (image ninfer-nvfp4:latest, QUASAR artifact
+  /home/gevil/.local/share/ninfer/models/qwen3.8-27b-quasar/qwen3_8_27b_quasar.ninfer, quadlet swapped, model-id qwen3.8-27b-quasar).
+- Battery: 9 PASS / 0 FAIL; decode probes within -5% of the pre-ship
+  baseline (/home/gevil/.local/share/ninfer/logs/quasar-baseline-2026-08-26.json).
+- Rollback: restore /home/gevil/.config/containers/systemd/ninfer-nvfp4.container.nvfp4full.bak + retag ninfer-nvfp4:latest from
+  ninfer-nvfp4:tier6-pre-quasar + systemctl --user restart ninfer-nvfp4.service.
