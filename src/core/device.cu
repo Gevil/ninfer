@@ -52,6 +52,16 @@ DeviceContext::DeviceContext(int device_id) : device(device_id) {
     if (count <= 0) { throw std::runtime_error("no CUDA devices available"); }
     if (device_id < 0 || device_id >= count) { throw std::runtime_error("invalid CUDA device id"); }
 
+    // Must run before the context is created. Default Auto/Spin makes every
+    // cudaStreamSynchronize / cudaEventSynchronize busy-wait a host core for
+    // the entire GPU kernel, which is the 100% CPU seen during requests.
+    // Third arg MUST be cudaInitDeviceFlagsAreValid: without that bit the
+    // scheduling flag above is silently ignored and the device stays Auto/Spin.
+    err = cudaInitDevice(device_id, cudaDeviceScheduleBlockingSync, cudaInitDeviceFlagsAreValid);
+    if (err != cudaSuccess) {
+        throw std::runtime_error(cuda_error_message("cudaInitDevice failed", err));
+    }
+
     bind_to_current_thread();
 
     err = cudaGetDeviceProperties(&props, device_id);
@@ -61,6 +71,7 @@ DeviceContext::DeviceContext(int device_id) : device(device_id) {
 
     cudaStream_t compute = nullptr;
     cudaStream_t load    = nullptr;
+    cudaEvent_t wait     = nullptr;
     err                  = cudaStreamCreateWithFlags(&compute, cudaStreamNonBlocking);
     if (err != cudaSuccess) {
         throw std::runtime_error(
@@ -74,27 +85,43 @@ DeviceContext::DeviceContext(int device_id) : device(device_id) {
             cuda_error_message("cudaStreamCreateWithFlags(transfer_stream) failed", err));
     }
 
+    err = cudaEventCreateWithFlags(&wait, cudaEventDisableTiming | cudaEventBlockingSync);
+    if (err != cudaSuccess) {
+        destroy_stream(load);
+        destroy_stream(compute);
+        throw std::runtime_error(
+            cuda_error_message("cudaEventCreateWithFlags(host_wait) failed", err));
+    }
+
     stream          = compute;
     transfer_stream = load;
+    host_wait       = wait;
 }
 
 DeviceContext::~DeviceContext() {
-    if (stream != nullptr || transfer_stream != nullptr) { bind_to_current_thread_noexcept(); }
+    if (stream != nullptr || transfer_stream != nullptr || host_wait != nullptr) {
+        bind_to_current_thread_noexcept();
+    }
+    destroy_event(host_wait);
     destroy_stream(transfer_stream);
     destroy_stream(stream);
 }
 
 DeviceContext::DeviceContext(DeviceContext&& other) noexcept
     : device(other.device), stream(other.stream), transfer_stream(other.transfer_stream),
-      props(other.props) {
+      host_wait(other.host_wait), props(other.props) {
     other.stream          = nullptr;
     other.transfer_stream = nullptr;
+    other.host_wait       = nullptr;
 }
 
 DeviceContext& DeviceContext::operator=(DeviceContext&& other) noexcept {
     if (this == &other) { return *this; }
 
-    if (stream != nullptr || transfer_stream != nullptr) { bind_to_current_thread_noexcept(); }
+    if (stream != nullptr || transfer_stream != nullptr || host_wait != nullptr) {
+        bind_to_current_thread_noexcept();
+    }
+    destroy_event(host_wait);
     destroy_stream(transfer_stream);
     destroy_stream(stream);
 
@@ -102,9 +129,11 @@ DeviceContext& DeviceContext::operator=(DeviceContext&& other) noexcept {
     props           = other.props;
     stream          = other.stream;
     transfer_stream = other.transfer_stream;
+    host_wait       = other.host_wait;
 
     other.stream          = nullptr;
     other.transfer_stream = nullptr;
+    other.host_wait       = nullptr;
     return *this;
 }
 
@@ -129,7 +158,10 @@ DeviceExecutionView DeviceContext::execution_view() const noexcept {
 
 std::size_t DeviceContext::total_vram() const noexcept { return props.totalGlobalMem; }
 
-void DeviceContext::synchronize() const { CUDA_CHECK(cudaStreamSynchronize(stream)); }
+void DeviceContext::synchronize() const {
+    CUDA_CHECK(cudaEventRecord(host_wait, stream));
+    CUDA_CHECK(cudaEventSynchronize(host_wait));
+}
 
 CudaEventTimer::CudaEventTimer(const DeviceContext& ctx) : CudaEventTimer(ctx, ctx.stream) {}
 
