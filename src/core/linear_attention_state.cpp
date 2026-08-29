@@ -175,17 +175,6 @@ LinearAttentionStateSlotView LinearAttentionStatePool::slot_view(std::int32_t sl
     };
 }
 
-std::size_t LinearAttentionStatePool::slot_bytes() const noexcept {
-    const std::size_t conv_per_layer =
-        static_cast<std::size_t>(spec.conv_channels) *
-        static_cast<std::size_t>(spec.conv_width) * dtype_size(spec.conv_dtype);
-    const std::size_t rec_per_layer =
-        static_cast<std::size_t>(spec.key_head_dim) *
-        static_cast<std::size_t>(spec.value_head_dim) *
-        static_cast<std::size_t>(spec.value_heads) * dtype_size(DType::FP32);
-    return (conv_per_layer + rec_per_layer) * layer_count();
-}
-
 LinearAttentionStateAllLayersView LinearAttentionStatePool::all_layers_view() const {
     if (conv_.size() != spec_.layers || recurrent_.size() != spec_.layers || conv_.empty()) {
         throw std::logic_error("LinearAttentionStatePool layer inventory is inconsistent");
