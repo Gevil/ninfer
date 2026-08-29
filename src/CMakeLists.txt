@@ -63,6 +63,7 @@ target_link_libraries(ninfer_nvfp4_tma PRIVATE ninfer_core CUDA::cudart CUDA::cu
 # Shared mathematical Ops. The list is intentionally explicit: adding a
 # source is a build-boundary decision, not an accidental recursive-glob side effect.
 add_library(ninfer_ops STATIC
+  ops/common/device_info.cu
   ops/launcher/add_bias.cu
   ops/launcher/argmax.cu
   ops/launcher/cast.cu
@@ -160,10 +161,6 @@ add_library(ninfer_ops STATIC
   ops/linear/bf16/bf16_small_t.cu
   ops/linear/bf16/bf16_dispatch.cpp
   ops/common/memory_evict.cu
-  ops/common/device_info.cu
-  ops/linear/fp8/fp8_format.cpp
-  ops/linear/fp8/fp8_gemv.cu
-  ops/linear/fp8/fp8_small_t.cu
   ops/linear/fp8/fp8_a16_small_t_mma.cu
   ops/linear/fp8/fp8_a16_gemm_mma.cu
   ops/linear/fp8/fp8_a8.cu
