@@ -548,10 +548,10 @@ int test_template_kwargs() {
 
     body                         = base_request();
     body["chat_template_kwargs"] = Json{{"reasoning_effort", "bogus"}};
-    failures += check(api_error([&] { (void)parse(body); }),
+    failures += check(api_error([&] { (void)parse(body); }).status != 0,
                       "unknown reasoning effort value rejected");
     body["chat_template_kwargs"] = Json{{"terse", "off"}};
-    failures += check(api_error([&] { (void)parse(body); }),
+    failures += check(api_error([&] { (void)parse(body); }).status != 0,
                       "non-boolean terse rejected");
 
     // Nulls stay neutral (server/template defaults win).
