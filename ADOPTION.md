@@ -399,3 +399,78 @@ Public review: [Gevil/ninfer PR #7](https://github.com/Gevil/ninfer/pull/7) (`ti
   baseline (/home/gevil/.local/share/ninfer/logs/quasar-baseline-2026-08-26.json).
 - Rollback: restore /home/gevil/.config/containers/systemd/ninfer-nvfp4.container.nvfp4full.bak + retag ninfer-nvfp4:latest from
   ninfer-nvfp4:tier6-pre-quasar + systemctl --user restart ninfer-nvfp4.service.
+## Audit 2026-08-26 - 24h fork re-audit + Tier 8–10 proposal (MERGES PARKED)
+
+**Decision (2026-08-26, user):** park all further merges until the Tier 8 probe runs. No new tier branches; this section is the standing proposal.
+
+**Fork state (vs `upstream/master` `feaf4dd0`, all remotes fetched 2026-08-26):**
+
+| Fork | ahead/behind | Last-24h activity |
+|---|---|---|
+| eason/master | 0 / 0 | none — **fully upstreamed, dead source** (work already in our tree via master) |
+| md/master | 0 / 0 | none — fully upstreamed, dead source |
+| cometkim/cometkim/dev | 108 / 6 | DFlash2 engine integration (end-to-end, 4 gather bugs fixed), draft ops, eval benches, 768k/786k presets |
+| dylan/experimental | 59 / 34 | 4 XAttention prefill commits (on top of `d8cb420f`) |
+| dylan/perf/rtx5090-qwen38 | 13 / 35 | none in window |
+| upstream/dev (Neroued) | 58 ahead of master | runtime-ownership refactor + cache/serve fixes — **in-flight dev branch, not the default branch** |
+
+**Merged status (verified in-tree, 2026-08-26):** our PRs #1–#8 all MERGED; **#8 (tier7) merged then REVERTED** (50% decode regression at 98k — not accepted; `tier7` branch survives, resume needs the decode fast-path fix). `master` = tier6 + quasar (`37bc977f`); mainline `qwen3.8-nvfp4full` = tier6 (`1b9aef3b`); lane live on `quasar-303dbcaa`. Upstream PRs cherry-picked and in-tree: #54 #55 #57 #61 #65 #67 #69 #79 #85 #86 #87 #88 #89 (`808bd1d1`). Upstream **master fully contained (0 behind)**; **`upstream/dev` NOT contained (58 behind)** — that is the "dev convergence" item below; we miss nothing stable.
+
+### Tier 8 — cometkim DFlash2 — PROBE-GATED (no merge)
+
+DFlash2 = separate draft model (DFlash2DraftModel: 5 layers, hidden 5120, ~1.6B params, ~1 GB+ in NVFP4, from the incoai BF16 checkpoint) that proposes 8-token blocks the target verifies. **nvfp4full v2 = our tier1–6 nvfp4full backbone byte-identical (same inputs, same encode path) + the drafter module embedded as a REQUIRED member** (`DFLASH2_REQUIRED`, config pinned: block_size 8, conv 2/16, selector rank 256/top-16, capture from target layers 5/19/33/47/61). Re-conversion cost ≈ encoding the small module only.
+
+| Pick (oldest→newest, vs `1b9aef3b`) | What | Merge-tree conflict |
+|---|---|---|
+| `71c934e0` | width-8 hq block verify + MTP K≤7 plumbing | 8 hunks — gqa_attention_decode.cu/.h, gqa_attention.cpp, gqa_attention_decode_bf16.cuh |
+| `8ac76cbf` | nvfp4full v2 — DFlash2 module quantized to NVFP4 | 10 — bindings.cpp, convert/inventory/verify nvfp4full scripts, artifact doc |
+| `1375ae93` | draft primitives — two-tap dyn conv + selector scores | clean |
+| `b7bae1bf` | top-k selection + selector path walk (device) | 1 — tests/CMakeLists.txt |
+| `7900c2e1` | engine integration — executes end-to-end | 8 — bindings.h/.cpp, variant.h, config.h, layouts_impl.h, serve_options.cpp, cli/options.cpp, tests/CMakeLists |
+
+Skip `0948f662`/`db3797d8`/`973c5b3c` (add/revert/restore artifact-ride; net-zero — tree diff empty). Series total: 90 files, +4055/−593. Ships 4 new tests (`test_dflash2_{dynamic_conv,selector_predecessors,selector_scores,topk_walk}`) + edits to test_load_plan/test_nvfp4_a16/test_cast.
+
+**Why not merge yet:** tier7 precedent — MTP is the *cheaper* draft (native head) and at 71% acceptance still regressed decode 142→55–71 tok/s at 98k (reverted by user); the root cause (decode fast-path cost) is still open; DFlash2 drafts via a full second-model forward pass with the same context-scaled verify cost — a strictly harder case. Cometkim's "acceptance survives long context" gate was measured on llama.cpp, not this kernel path. Also implies a quasar → nvfp4full-v2 profile switch on the live lane.
+**Why not shelve:** spec decode is the decode lever if net-positive; picks are clean (29 localized hunks); artifact cost low; a decisive A/B is hours, not a project.
+**Gate to merge:** free-GPU buildstage — build stage with the 5 picks + v2 artifact, decode battery at 98k/225k vs tier6 baseline (141.7 tok/s). Merge only if net decode beats baseline. In-house alternative on the same bottleneck: resume tier7 with the fast-path fix (known scope, no fork dep, no artifact change).
+
+### Tier 9 — dylan XAttention prefill — DEFERRED (DFlash2 decision first)
+
+| Pick (vs `1b9aef3b`) | What | Merge-tree conflict |
+|---|---|---|
+| `d8cb420f` (prereq carrier) | dflash2 nvfp4 codebook + sage/sparge + NVFP4 attn kernels (gqa_attention_prefill_nvfp4.cuh, gqa_kv_compact.cuh) + KV-compact path — 108 files, +6410/−736 | 81 — convert_nvfp4.py×9, layouts_impl×6, dflash_impl×6, gqa×8, GDN×6… |
+| `3b730ee8` | exact-NVFP4 XAttention prefill (paper inverse-stride, packed-K) | 82 — test_gqa×20, decoder_state×10, gqa_prefill×7… |
+| `55dde21c` | local-tile keep, min_len dense skip, workspace scratch | 18 |
+| `a56c3a77` | stop per-page K-centering on sage NVFP4 fill | 3 |
+| `1e9c5dda` | paper B=128 keep-set + tensor-core score GEMM | 2 |
+
+Total ~168 files, ~186 conflict hunks. **Not separable:** the xattn kernels + sage KV-compact path exist only in `d8cb420f` (absent from our tree). The 28 "dflash" refs in the xattn diff are the existing upstream `--spec mtp|dflash` plumbing (fine). `d8cb420f` is dylan's **competing DFlash2 variant** — merging it adopts a DFlash2 implementation before the Tier 8 probe decides. Conflict density (82 hunks in one commit) sits in core attention/KV/GDN — exactly the files our tiers edited.
+**Value:** prefill/TTFT — a real orthogonal lever for long-context agent workloads; tensor-core score GEMM fits sm_120a.
+**Revisit when:** DFlash2 implementation decided (if dylan's line wins, xattn rides on it; if cometkim's or neither, re-baseline or drop) + prefill/TTFT measured as an actual bottleneck. Gate if pursued: their +1257-line GQA suite + PPL parity + prefill/TTFT battery + free-GPU ctest.
+
+### Tier 10 — upstream/dev sync — WATCH (converge when dev lands on master)
+
+`upstream/dev` is a **separate non-default development branch** (58 commits ahead of master, 0 behind): runtime-ownership refactor ("program = resource authority", ownership transfer after alias eviction), context-cache scheduling + correctness (retain prefixes across rewritten suffixes, keep warmup out of context cache), serve/vision perf, fp8/int8 KV, paged-KV physical containers, TTFT campaign. We are **0 behind `upstream/master`** — nothing stable is missing; dev is in-flight work not yet on master.
+Conflict surface if merged today (merge-base = `feaf4dd0`): **100 hunks / ~30 files** — program_impl.h(13), text_context_impl.h(7), frontend.cpp(7), program.h/chat_template.cpp/types.h/test_cli_options/test_frontend(4 each), api_impl.h/serve_options.cpp/request_log.cpp/generation_service.h(3 each), ~20 files at 1–2.
+**Why watch, not merge now:** in-flight moving target (5 commits in 48h); the cache-correctness fixes sit on the refactor and cannot be cherry-picked alone; with T8 probe-gated and T9 deferred, the "shrink their conflict surface" argument is secondary; 0 behind master means nothing is lost by waiting.
+**Trigger to execute:** dev merges to upstream master → full `git merge --no-commit --no-ff` (no cherry-pick batch), per-file resolution, build + free-GPU host-KV ctest + full battery re-baseline, `tier10` branch + stacked PR + record here.
+
+### Hold / do-not-merge (2026-08-26)
+
+| Item | What | Why not |
+|---|---|---|
+| upstream #90 (igorls, DRAFT, upd 08-26) | cross-request prefix seeding, content-addressed seed store (31 commits) | competing design vs shipped #73 host content cache; upstream discussion unsettled |
+| cometkim 768k presets + `b18aeab4` (TMA stream) + `b7bf6e97` (gqa U8 workspace) | long-context presets; fixes only bite at 524k–786k | lane runs 225k on 32 GB; latent until a context-extension decision |
+| cometkim eval harness (LBv2/GPQA/campaign8) | quality-validation tooling | not lane code — pull in to validate T8/T9 when they run |
+| eason, md | 0/0 vs master | fully upstreamed — dead sources |
+| cometkim windows-port / 1m-context / hyperquant | off-lane | Windows, 1M context, refuted |
+| knoop fork | deeply divergent | its "program authority" line is upstreaming via dev — arrives with Tier 10 |
+| matpape tool-message array content | OpenAI tool-message array content | redundant with in-tree #57/#65 |
+| dev fp8/int8 KV, paged physical containers | new KV formats | not standalone-adoptable; arrive with the dev→master merge |
+
+### Sequencing (once un-parked)
+
+1. **Tier 8 probe** (free-GPU A/B vs 141.7 tok/s tier6 baseline) — the only decision the plan hinges on.
+2. **tier7 fast-path fix** — in-house fallback on the same spec-decode bottleneck.
+3. **Watch:** dev → master (Tier 10 trigger), #90 settlement, dylan/cometkim DFlash2 evolution.
+4. **Tier 9** only after the DFlash2 decision + prefill-bottleneck evidence.
