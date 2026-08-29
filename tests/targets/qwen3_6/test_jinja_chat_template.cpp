@@ -96,15 +96,14 @@ int main() {
 
     // The Jinja render path must record structured media placeholders: one per
     // media part, in request order, at the exact pad-marker bytes.
-    const std::string jw = "\xE2\x81\xA0";
-    const std::string image_marker = "<|" + jw + "image_pad|>";
-    const std::string video_marker = "<|" + jw + "video_pad|>";
+    const std::string image_marker = "\x3c\x7cimage_pad\x7c\x3e";
+    const std::string video_marker = "\x3c\x7cvideo_pad\x7c\x3e";
     std::string vision_source = std::string(
         "{% for m in messages %}{% for item in m.content %}"
-        "{% if item.type == 'image' %}<|" + jw + "vision_start|>" + image_marker +
-        "<|" + jw + "vision_end|>"
-        "{% elif item.type == 'video' %}<|" + jw + "vision_start|>" + video_marker +
-        "<|" + jw + "vision_end|>"
+        "{% if item.type == 'image' %}<|vision_start|>" + image_marker +
+        "<|vision_end|>"
+        "{% elif item.type == 'video' %}<|vision_start|>" + video_marker +
+        "<|vision_end|>"
         "{% elif item.type == 'text' %}{{ item.text }}"
         "{% endif %}{% endfor %}{% endfor %}");
     const fi::CompiledChatTemplate vision_template =
@@ -144,7 +143,7 @@ int main() {
     literal_user.parts.push_back(fi::ChatPart::image({}));
     const fi::RenderedChat literal_rendered =
         vision_template.render({literal_user}, fi::ChatRenderOptions{});
-    const std::string broken_marker = "<|\xE2\x81\xA0\xE2\x81\xA0image_pad|>";
+    const std::string broken_marker = "<|\xE2\x81\xA0image_pad|>";
     failures += check(literal_rendered.media_placeholders.size() == 1,
                       "literal pad marker in text was not escaped before scanning");
     failures += check(literal_rendered.text.find(broken_marker) != std::string::npos,

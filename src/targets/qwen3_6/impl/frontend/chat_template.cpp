@@ -45,8 +45,8 @@ constexpr std::string_view kXHighReasoningInstructions =
 // The Jinja-template render path records structured media placeholders by
 // scanning the rendered text for these pad markers (one per media part, in
 // request order). Literal markers quoted in text are escaped upstream.
-constexpr std::string_view kImagePadMarker = "<|⁠image_pad|>";
-constexpr std::string_view kVideoPadMarker = "<|⁠video_pad|>";
+constexpr std::string_view kImagePadMarker = "<|image_pad|>";
+constexpr std::string_view kVideoPadMarker = "<|video_pad|>";
  
  // Text content can legitimately quote the chat template or one of its Vision
  // control tokens. Keep those strings readable, but break their exact added-token
