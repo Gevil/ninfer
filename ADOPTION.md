@@ -512,3 +512,53 @@ Conflict surface if merged today (merge-base = `feaf4dd0`): **100 hunks / ~30 fi
   baseline entry ninfer_qwen3_6_27b_score_real_test).
 - Propagated to master via no-ff merge; PR #9 (t11-quasar-merged) closed as
   superseded — its content is fully contained in this merge.
+
+## T11 rollback (2026-08-30) - the "PASS" record above was incomplete
+The t11 image (`t11-02d7b041`, d6735a08) shipped green on the T11 gate
+(9/9 text-only battery verdicts + free-GPU ctest rc=0) but is functionally
+broken for vision requests: any chat completion carrying image parts
+returns `400 chat media count does not match rendered placeholders`.
+The OMP harness re-sends full conversation history including images, so
+every session with image history 400'd on every turn (sessions became
+permanently unusable until rollback).
+
+Root cause (T10 upstream merge, new frontend contract):
+`JinjaTemplate::render` (src/targets/qwen3_6/impl/frontend/chat_template.cpp)
+returns a `RenderedChat` with only `.text` set - `media_placeholders` is
+never recorded for jinja-template renders (the C++ clone path records
+them via `RenderBuilder::append_media_placeholder`). The new
+`expand_placeholders` (processor.cpp:547) enforces
+`rendered.media_placeholders.size() == items.size()` -> 0 != N -> 400 for
+every image/video request on the bind-mounted Sharp template. The marker
+strings match (`<|⁠vision_start|><|⁠image_pad|><|⁠vision_end|>` in the
+template and in `kImagePad`); the jinja path simply never records them.
+The pre-merge tree has no such check (verified: error string absent at
+0f61e1db).
+
+Rollback (executed by the user, verified):
+- Running image restored to `61c74d6b` (previous quasar, tag
+  quasar-303dbcaa); `:quasar` + `:latest` retagged to it; lane active,
+  model `qwen3.8-27b-quasar` loaded.
+- Verified on the old image: vision probe 200 ("Red" for a red square);
+  replay of the exact captured 313-message/5-image failing request:
+  HTTP 200, 51.5s, full reasoning stream.
+
+Fix path (next wave, on top of t11-quasar-merged): make the jinja render
+path record media placeholders from the rendered text (scan
+`<|⁠vision_start|><|⁠image_pad|>` / `<|⁠video_pad|>` runs), gated by a
+vision battery probe. PR #9 (t11-quasar-merged -> quasar-nvfp4) must NOT
+be merged until that fix lands.
+
+Shipping-gate re-evaluation (post-mortem):
+1. Battery was text-only for a `--vision` profile - the failing
+   invariant only fires with `items.size() > 0`; text probes cannot see
+   it.
+2. No serve-level integration coverage of the chat endpoint through the
+   jinja template + media path (ctest is engine-level).
+3. Verdict logic equated "all probes green" with "lane healthy" - no
+   4xx watch, no consumer-shape probes (long history + image in an old
+   message, streaming, tools, chat_template_kwargs).
+4. Session coupling: the ship stopped the lane serving the live OMP
+   sessions and the FAIL path (retag + restart) only triggers when the
+   battery fails - the battery passed, so no automatic recovery existed;
+   rollback was only reachable from a new session.
