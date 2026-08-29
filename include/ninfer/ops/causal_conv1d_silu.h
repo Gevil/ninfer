@@ -30,14 +30,15 @@ void causal_conv1d_silu(const Tensor& x, const Tensor& weight, Tensor& conv_stat
 void causal_conv1d_silu(const Tensor& x, const Tensor& weight, const Tensor& conv_state_in,
                         Tensor& conv_state_out, Tensor& out, cudaStream_t stream);
 
-// Split-output form. Same result as the distinct-state form followed by copying the three
-// leading channel ranges of `out` into out_q/out_k/out_v, without materialising the packed
-// buffer. out_q.ne[0] + out_k.ne[0] + out_v.ne[0] must equal x.ne[0], and every destination
-// shares x's column count. `scratch` is a packed [C,T] buffer used only by the short-sequence
-// fallback, where no split kernel exists.
+// Split-output form. `ideal` is unchanged; its rows are written to three destinations instead of
+// one, partitioned in row order as out0, out1, out2. Every destination is contiguous BF16 with the
+// column count of x, and every operand is four-byte aligned. The supported row profiles are
+// (2048, 2048, 4096) over C = 8192 and (2048, 2048, 6144) over C = 10240; any other profile is
+// rejected. conv_state_in and conv_state_out follow the family rule above: disjoint or exactly the
+// same storage. No destination may overlap another, x, weight, or either state.
 void causal_conv1d_silu_split(const Tensor& x, const Tensor& weight, const Tensor& conv_state_in,
-                              Tensor& conv_state_out, Tensor& out_q, Tensor& out_k, Tensor& out_v,
-                              Tensor& scratch, cudaStream_t stream);
+                              Tensor& conv_state_out, Tensor& out0, Tensor& out1, Tensor& out2,
+                              cudaStream_t stream);
 
 /**
  * Snapshot form for B independent sequences. `x` and `out` are contiguous BF16 [C,W,B],

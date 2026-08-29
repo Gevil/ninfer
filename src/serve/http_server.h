@@ -1,7 +1,8 @@
 #pragma once
 
+#include "serve/anthropic_thinking_signature.h"
 #include "serve/generation_service.h"
-#include "serve/response_store.h"
+#include "serve/openai_responses_store.h"
 #include "serve/request_log.h"
 #include "serve/serve_options.h"
 
@@ -13,9 +14,14 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 
 namespace ninfer::serve {
+
+void write_openai_error(httplib::Response& response, const ApiError& error);
+void write_anthropic_error(httplib::Response& response, const ApiError& error,
+                           const std::string& request_id);
 
 // cpp-httplib invokes the error handler for every application response with status >= 400. Only
 // an empty 413 is its own pre-routing payload-limit rejection; application-authored errors must be
@@ -23,6 +29,9 @@ namespace ninfer::serve {
 httplib::Server::HandlerResponse handle_unrendered_http_error(const ServeOptions& options,
                                                               const httplib::Request& request,
                                                               httplib::Response& response);
+
+[[nodiscard]] bool matches_bearer_credential(std::string_view authorization,
+                                             std::string_view api_key) noexcept;
 
 class HttpServer {
 public:
@@ -39,10 +48,6 @@ public:
 
 private:
     void register_routes();
-    void mount_webui(const std::string& webui_dir);
-    void register_webui_mime();
-    [[nodiscard]] bool webui_spa_path(const std::string& path) const;
-    [[nodiscard]] bool is_api_path(const std::string& path) const;
     void handle_chat_completions(const httplib::Request& req, httplib::Response& res);
     void handle_messages(const httplib::Request& req, httplib::Response& res);
     void handle_count_tokens(const httplib::Request& req, httplib::Response& res);
@@ -55,7 +60,6 @@ private:
     void handle_response_compact(const httplib::Request& req, httplib::Response& res);
     void handle_models(const httplib::Request& req, httplib::Response& res) const;
     void handle_model(const httplib::Request& req, httplib::Response& res) const;
-    void handle_props(const httplib::Request& req, httplib::Response& res) const;
 
     // The process-wide console logger serializes lines from request and reporter threads.
     void log_line(const std::string& line);
@@ -69,10 +73,9 @@ private:
 
     GenerationService* service_ = nullptr;
     ServeOptions options_;
+    AnthropicThinkingSigner anthropic_thinking_signer_;
     std::string public_model_id_;
-    bool webui_serving_ = false;         // true once a static webui dir is mounted
-    std::string webui_index_html_;       // cached index.html for the SPA fallback
-    ResponseStore response_store_;
+    OpenAIResponsesStore openai_responses_store_;
     JsonlRequestLog request_jsonl_;
     httplib::Server server_;
     std::atomic<std::uint64_t> request_seq_{0};

@@ -1,23 +1,18 @@
-#include <string>
 #include "product/load_progress/load_progress.h"
 #include "serve/console_log.h"
 #include "serve/generation_service.h"
 #include "serve/http_server.h"
 #include "serve/serve_options.h"
-#include "serve/webui_update.h"
 
 #include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstddef>
-#include <cstdlib>
 #include <exception>
-#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
-#include <string>
-#include <typeinfo>
+#include <stdexcept>
 #include <utility>
 
 namespace {
@@ -27,27 +22,6 @@ std::atomic<ninfer::serve::HttpServer*> g_server{nullptr};
 void handle_signal(int) {
     ninfer::serve::HttpServer* server = g_server.load();
     if (server != nullptr) { server->stop(); }
-}
-
-// An exception that escapes a request boundary ends the process through
-// std::terminate, and the default handler's message is the only record of which
-// exception it was. That message is worth writing through the server's own log:
-// under a container this process is pid 1, the kernel discards the SIGABRT that
-// abort() raises against itself, glibc falls through to its abort instruction,
-// and all the kernel reports is a bare protection fault inside libc.
-[[noreturn]] void log_terminate() {
-    std::string detail = "terminate called with no active exception";
-    if (std::current_exception() != nullptr) {
-        try {
-            std::rethrow_exception(std::current_exception());
-        } catch (const std::exception& error) {
-            detail = std::string("terminate called after throwing ") + typeid(error).name() + ": " +
-                     error.what();
-        } catch (...) { detail = "terminate called after throwing a non-std exception"; }
-    }
-    ninfer::serve::write_console_log(ninfer::serve::ConsoleLogLevel::Error, detail);
-    std::cerr.flush();
-    std::abort();
 }
 
 std::string format_bytes(std::size_t bytes) {
@@ -66,13 +40,15 @@ std::string format_bytes(std::size_t bytes) {
 } // namespace
 
 int main(int argc, char** argv) {
-    std::set_terminate(log_terminate);
     ninfer::serve::ServeOptions options;
     try {
         options = ninfer::serve::parse_serve_options(argc, argv);
-    } catch (const std::exception& exception) {
+    } catch (const std::invalid_argument& exception) {
         ninfer::serve::write_console_log(ninfer::serve::ConsoleLogLevel::Error, exception.what());
         std::cerr << ninfer::serve::serve_usage_text(argv[0]);
+        return 1;
+    } catch (const std::exception& exception) {
+        ninfer::serve::write_console_log(ninfer::serve::ConsoleLogLevel::Error, exception.what());
         return 1;
     }
     if (options.help_requested) {
@@ -81,22 +57,6 @@ int main(int argc, char** argv) {
     }
 
     try {
-        // Resolve (and, in --webui mode, auto-download) the webui directory before
-        // the port is taken so a failed download aborts startup cleanly. In
-        // --webui-dir mode the directory is trusted to already hold a built UI;
-        // fail early if it does not.
-        if (options.webui_auto) {
-            options.webui_dir =
-                ninfer::serve::ensure_webui_available(ninfer::serve::resolve_webui_dir(options));
-        } else if (!options.webui_dir.empty()) {
-            std::error_code ec;
-            const bool have_index =
-                std::filesystem::exists(std::filesystem::path(options.webui_dir) / "index.html", ec);
-            if (!std::filesystem::is_directory(options.webui_dir, ec) || !have_index) {
-                throw std::invalid_argument(
-                    "--webui-dir must be a directory containing index.html: " + options.webui_dir);
-            }
-        }
         using Clock = std::chrono::steady_clock;
         ninfer::serve::HttpServer server(options);
         if (!server.bind()) {
@@ -106,10 +66,6 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-#ifdef NINFER_BUILD_ID
-        ninfer::serve::write_console_log(ninfer::serve::ConsoleLogLevel::Info,
-                                         std::string("build ") + NINFER_BUILD_ID);
-#endif
         ninfer::serve::write_console_log(ninfer::serve::ConsoleLogLevel::Info, "loading model...");
         auto load_progress_options        = ninfer::product::stderr_load_progress_options();
         load_progress_options.line_prefix = [] {
@@ -119,13 +75,15 @@ int main(int argc, char** argv) {
                                                             std::move(load_progress_options));
         const auto load_start = Clock::now();
         ninfer::serve::GenerationService service(options, load_progress.callback());
-        server.attach(service);
         std::ostringstream loaded;
         loaded << "model loaded in "
                << std::chrono::duration<double>(Clock::now() - load_start).count() << " s";
         ninfer::serve::write_console_log(ninfer::serve::ConsoleLogLevel::Info, loaded.str());
 
-        const ninfer::MemorySummary memory = service.memory_summary();
+        const ninfer::MemorySummary memory            = service.memory_summary();
+        const ninfer::ContextCostSummary context_cost = service.load_summary().context_cost;
+        const ninfer::EngineOptions& engine           = service.engine_options();
+        const ninfer::ContextCacheOptions& cache      = engine.context_cache;
         std::ostringstream capacity;
         capacity << "KV capacity "
                  << (memory.kv_capacity_mode == ninfer::KvCapacityMode::Automatic ? "auto"
@@ -138,8 +96,21 @@ int main(int argc, char** argv) {
                  << " free-after-startup=" << format_bytes(memory.available_after_startup_bytes)
                  << " headroom=" << format_bytes(memory.kv_capacity_headroom_bytes)
                  << " slack=" << format_bytes(memory.planned_slack_bytes)
-                 << " graphs=" << format_bytes(memory.cuda_graph_observed_bytes) << '/'
-                 << format_bytes(memory.cuda_graph_allowance_bytes);
+                 << " graph-allowance=" << format_bytes(memory.cuda_graph_allowance_bytes)
+                 << " context-cache=" << (cache.enabled ? "on" : "root-only")
+                 << " device-state=" << *cache.device_state_slots << "-cache+"
+                 << engine.max_concurrency << "-active" << " host-state=" << cache.host_state_slots
+                 << " host-kv=" << format_bytes(cache.host_kv_capacity_bytes)
+                 << " private=" << *cache.max_private_continuations
+                 << " shared=" << *cache.max_shared_prefixes
+                 << " anchors=" << *cache.max_long_anchors_per_continuation
+                 << " markers=" << *cache.max_cache_markers_per_request;
+        capacity << " context-cost-transfer="
+                 << ninfer::context_cost_preset_source_name(context_cost.transfer_source)
+                 << " context-cost-prefill="
+                 << ninfer::context_cost_preset_source_name(context_cost.prefill_source)
+                 << " cost-profile=" << context_cost.hardware_class << '/' << context_cost.model_id
+                 << '/' << context_cost.weights_id;
         if (options.enable_vision) {
             const ninfer::MediaCacheSummary media = service.media_cache_summary();
             capacity << " media-workers=" << media.preprocess_threads
@@ -150,6 +121,7 @@ int main(int argc, char** argv) {
 
         ninfer::serve::write_console_log(ninfer::serve::ConsoleLogLevel::Info, "warming up...");
         service.warmup();
+        server.attach(service);
 
         g_server.store(&server);
         std::signal(SIGINT, handle_signal);

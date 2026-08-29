@@ -49,6 +49,7 @@ KvCacheStorage parse_kv_dtype(const char* text) {
     const std::string value(text);
     if (value == "bf16") { return KvCacheStorage::BFloat16; }
     if (value == "int8") { return KvCacheStorage::Int8Group64; }
+    if (value == "fp8") { return KvCacheStorage::Fp8E4M3Row256; }
     throw std::invalid_argument("invalid kv-dtype: " + value);
 }
 
@@ -64,20 +65,21 @@ KvCapacityPolicy parse_kv_capacity(const char* text) {
 std::string serve_usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
            " <model.ninfer> [--host H] [--port N] [--api-key KEY] "
-            "[--model-id ID] [--chat-template-file PATH] [--max-context N] [--kv-capacity N|auto] "
-            "[--max-concurrency N] "
+           "[--model-id ID] [--max-context N] [--kv-capacity N|auto] [--max-concurrency N] "
            "[--max-pending-requests N] [--pending-timeout-ms N] "
            "[--prefill-chunk N] [--log-stats-interval-ms N] [--device N] "
+           "[--context-cost-presets FILE] "
            "[--max-request-mib N] [--media-cache-mib N] [--media-live-mib N] "
-           "[--media-preprocess-threads N] [--image-token-budget N] "
+           "[--media-preprocess-threads N] "
+           "[--device-state-slots N] [--host-state-slots N] [--host-kv-mib N] "
+           "[--max-private-continuations N] [--max-shared-prefixes N] "
+           "[--max-long-anchors-per-continuation N] [--max-cache-markers-per-request N] "
            "[--request-log-jsonl FILE] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
-           "[--kv-dtype bf16|int8] [--spec mtp|dflash --draft-tokens N] "
-           "[--default-max-tokens N] "
-           "[--vision] [--vision-residency resident|overlay] [--vision-max-merged N] "
-           "[--kv-host-cache-mib N] [--host-kv-cache-mib N] [--no-cuda-graph] [--no-prefix-reuse] "
+           "[--kv-dtype bf16|int8|fp8] [--spec mtp|dflash --draft-tokens N] "
+           "[--default-max-tokens N] [--default-thinking-budget N] "
+           "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
            "[--lm-head-draft] [--no-thinking] [--preserve-thinking] [--cors] "
-           "[--webui | --webui-dir DIR] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
            "       serves OpenAI Responses/Chat Completions and Anthropic Messages endpoints\n"
@@ -88,36 +90,25 @@ std::string serve_usage_text(const char* argv0) {
            "       --media-cache-mib defaults to 1024; 0 disables retained media reuse\n"
            "       --media-live-mib defaults to 2048 and bounds all live BF16 patch payloads\n"
            "       --media-preprocess-threads defaults to 0 (auto, at most 16 workers)\n"
-           "       --image-token-budget caps each image in Vision tokens (32x32 pixels each) "
-           "by scaling it to fit; 0 keeps the artifact ceiling\n"
            "       --request-log-jsonl appends full-precision server/request records\n"
            "       --model-id overrides the artifact identity.model_id reported by the server\n"
            "       Responses state is process-local and bounded to 1024 records / 256 MiB by "
            "default\n"
            "       --log-stats-interval-ms defaults to 5000; 0 disables periodic throughput logs\n"
            "       --vision enables media and loads the fixed Vision GPU allocations\n"
-           "       --kv-host-cache-mib N keeps computed context in pinned host RAM: previously\n"
-           "         computed prefixes restore through PCIe instead of re-prefilling, and\n"
-           "         branches sharing a prefix deduplicate against the same pages (0 = off)\n"
-           "       --vision-residency overlay keeps Vision weights in pinned host memory\n"
-           "         and encodes images through device memory temporarily borrowed from\n"
-           "         evicted read-only text weights; resident (default) is the fixed\n"
-           "         device allocation\n"
            "       --kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
-           " MiB of sizing headroom (bounded by max-context * max-concurrency)\n"
+           " MiB of sizing headroom\n"
            "       --no-prefix-reuse disables compatible-prefix caching (enabled by default)\n"
-           "       --host-kv-cache-mib N parks evicted sequences in a pinned N MiB host budget instead of discarding them\n"
-            "       --host-kv-cache-mib sizes each parked sequence to its real page count; sessions larger than the budget fall back to re-prefill\n"
-            "       --host-kv-cache-mib is not supported with --spec dflash (the lane-affine DFlash caches are not captured)\n"
-            "       --host-kv-cache-mib requires prefix reuse (incompatible with --no-prefix-reuse)\n"
+           "       context cache defaults: device-state=max-concurrency, private=2x concurrency, "
+           "shared=concurrency, anchors=2, markers=4; Host state=8 slots, Host KV=8192 MiB\n"
+           "       --device-state-slots is extra checkpoint capacity beyond active lanes; "
+           "--host-kv-mib uses MiB\n"
+           "       --default-thinking-budget caps model-origin thinking for enabled requests; "
+           "control tokens count toward the request output limit\n"
            "       --preserve-thinking retains closed-turn assistant reasoning in later prompts\n"
            "       sampler defaults come from the loaded model and resolved thinking mode; "
            "server flags and request fields override individual values.\n"
-           "       --webui auto-downloads the prebuilt llama.cpp webui (ggml-org/llama-ui "
-           "HF bucket) into the webui dir and serves it at / alongside the API\n"
-           "       --webui-dir DIR serves (and for --webui, downloads into) DIR; "
-           "defaults to <model dir>/webui\n"
            "       --greedy forces temperature 0 (exact argmax).\n";
 }
 
@@ -136,6 +127,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     bool default_max_tokens_explicit = false;
     bool kv_capacity_explicit        = false;
+    bool context_capacity_explicit   = false;
     if (argc >= 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
         options.help_requested = true;
         return options;
@@ -159,11 +151,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             if (options.model_id_override->empty()) {
                 throw std::invalid_argument("--model-id must not be empty");
             }
-        } else if (arg == "--chat-template-file") {
-            options.chat_template_path = require_value("--chat-template-file");
-            if (options.chat_template_path.empty()) {
-                throw std::invalid_argument("--chat-template-file must not be empty");
-            }
         } else if (arg == "--max-context") {
             options.max_context = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--max-context"), "max-context"));
@@ -182,6 +169,11 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--prefill-chunk") {
             options.prefill_chunk = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--prefill-chunk"), "prefill-chunk"));
+        } else if (arg == "--context-cost-presets") {
+            options.context_cost_presets = require_value("--context-cost-presets");
+            if (options.context_cost_presets.empty()) {
+                throw std::invalid_argument("--context-cost-presets must not be empty");
+            }
         } else if (arg == "--log-stats-interval-ms") {
             options.log_stats_interval_ms = static_cast<std::uint32_t>(parse_nonnegative_int(
                 require_value("--log-stats-interval-ms"), "log-stats-interval-ms"));
@@ -213,9 +205,41 @@ ServeOptions parse_serve_options(int argc, char** argv) {
                 throw std::invalid_argument("--media-preprocess-threads must be in [0,64]");
             }
             options.media_preprocess_threads = static_cast<std::uint32_t>(threads);
-        } else if (arg == "--image-token-budget") {
-            options.image_token_budget = static_cast<std::uint32_t>(
-                parse_nonnegative_int(require_value("--image-token-budget"), "image-token-budget"));
+        } else if (arg == "--device-state-slots") {
+            options.context_cache.device_state_slots = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value("--device-state-slots"), "device-state-slots"));
+            context_capacity_explicit = true;
+        } else if (arg == "--host-state-slots") {
+            options.context_cache.host_state_slots = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value("--host-state-slots"), "host-state-slots"));
+            context_capacity_explicit = true;
+        } else if (arg == "--host-kv-mib") {
+            const std::uint64_t mib = parse_u64(require_value("--host-kv-mib"), "host-kv-mib");
+            if (mib > std::numeric_limits<std::size_t>::max() / (1ULL << 20)) {
+                throw std::invalid_argument("--host-kv-mib is out of range");
+            }
+            options.context_cache.host_kv_capacity_bytes = static_cast<std::size_t>(mib << 20);
+            context_capacity_explicit                    = true;
+        } else if (arg == "--max-private-continuations") {
+            options.context_cache.max_private_continuations =
+                static_cast<std::uint32_t>(parse_nonnegative_int(
+                    require_value("--max-private-continuations"), "max-private-continuations"));
+            context_capacity_explicit = true;
+        } else if (arg == "--max-shared-prefixes") {
+            options.context_cache.max_shared_prefixes =
+                static_cast<std::uint32_t>(parse_nonnegative_int(
+                    require_value("--max-shared-prefixes"), "max-shared-prefixes"));
+            context_capacity_explicit = true;
+        } else if (arg == "--max-long-anchors-per-continuation") {
+            options.context_cache.max_long_anchors_per_continuation = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value("--max-long-anchors-per-continuation"),
+                                      "max-long-anchors-per-continuation"));
+            context_capacity_explicit = true;
+        } else if (arg == "--max-cache-markers-per-request") {
+            options.context_cache.max_cache_markers_per_request = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value("--max-cache-markers-per-request"),
+                                      "max-cache-markers-per-request"));
+            context_capacity_explicit = true;
         } else if (arg == "--request-log-jsonl") {
             options.request_log_jsonl = require_value("--request-log-jsonl");
             if (options.request_log_jsonl.empty()) {
@@ -249,51 +273,27 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.default_max_tokens =
                 parse_nonnegative_int(require_value("--default-max-tokens"), "default-max-tokens");
             default_max_tokens_explicit = true;
+        } else if (arg == "--default-thinking-budget") {
+            const std::uint64_t budget =
+                parse_u64(require_value("--default-thinking-budget"), "default-thinking-budget");
+            if (budget == 0 || budget > std::numeric_limits<std::uint32_t>::max()) {
+                throw std::invalid_argument("--default-thinking-budget is out of range");
+            }
+            options.default_thinking_budget = static_cast<std::uint32_t>(budget);
         } else if (arg == "--vision") {
             options.enable_vision = true;
-        } else if (arg == "--vision-max-merged") {
-            const int value =
-                parse_nonnegative_int(require_value("--vision-max-merged"), "vision-max-merged");
-            if (value < 64 || value > 32768) {
-                throw std::invalid_argument("--vision-max-merged must be in [64, 32768]");
-            }
-            options.vision_max_merged_tokens = static_cast<std::uint32_t>(value);
-        } else if (arg == "--kv-host-cache-mib") {
-            const int value =
-                parse_nonnegative_int(require_value("--kv-host-cache-mib"), "kv-host-cache-mib");
-            options.kv_host_cache_mib = static_cast<std::size_t>(value);
-        } else if (arg == "--vision-residency") {
-            const std::string_view value = require_value("--vision-residency");
-            if (value == "resident") {
-                options.vision_residency = ninfer::VisionResidency::Resident;
-            } else if (value == "overlay") {
-                options.vision_residency = ninfer::VisionResidency::Overlay;
-            } else {
-                throw std::invalid_argument(
-                    "--vision-residency accepts resident or overlay");
-            }
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
         } else if (arg == "--no-prefix-reuse") {
             options.allow_prefix_reuse = false;
         } else if (arg == "--lm-head-draft") {
             options.speculative.proposal_head = ProposalHead::Optimized;
-        } else if (arg == "--host-kv-cache-mib") {
-            options.host_kv_cache_mib =
-                parse_nonnegative_int(require_value("--host-kv-cache-mib"), "host-kv-cache-mib");
         } else if (arg == "--no-thinking") {
             options.enable_thinking = false;
         } else if (arg == "--preserve-thinking") {
             options.preserve_thinking = true;
         } else if (arg == "--cors") {
             options.enable_cors = true;
-        } else if (arg == "--webui") {
-            options.webui_auto = true;
-        } else if (arg == "--webui-dir") {
-            options.webui_dir = require_value("--webui-dir");
-            if (options.webui_dir.empty()) {
-                throw std::invalid_argument("--webui-dir must not be empty");
-            }
         } else if (arg == "--temperature") {
             options.sampling_overrides.temperature =
                 parse_float_in(require_value("--temperature"), "temperature", 0.0f, 2.0f);
@@ -301,8 +301,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.sampling_overrides.top_p =
                 parse_float_in(require_value("--top-p"), "top-p", 0.0f, 1.0f);
         } else if (arg == "--top-k") {
-            options.sampling_overrides.top_k =
-                parse_nonnegative_int(require_value("--top-k"), "top-k");
+            const int top_k = parse_nonnegative_int(require_value("--top-k"), "top-k");
+            if (top_k > 20) { throw std::invalid_argument("top-k must be in [0,20]"); }
+            options.sampling_overrides.top_k = top_k;
         } else if (arg == "--min-p") {
             options.sampling_overrides.min_p =
                 parse_float_in(require_value("--min-p"), "min-p", 0.0f, 1.0f);
@@ -322,6 +323,15 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     if (!kv_capacity_explicit) {
         options.kv_capacity = KvCapacityPolicy::explicit_capacity(options.max_context);
+    }
+    if (!options.allow_prefix_reuse) {
+        if (context_capacity_explicit) {
+            throw std::invalid_argument(
+                "--no-prefix-reuse cannot be combined with context-cache capacity options");
+        }
+        options.context_cache.enabled                = false;
+        options.context_cache.host_state_slots       = 0;
+        options.context_cache.host_kv_capacity_bytes = 0;
     }
     if (options.port <= 0 || options.port > 65535) {
         throw std::invalid_argument("--port must be in [1,65535]");
@@ -350,46 +360,10 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     if (options.speculative.backend == SpeculativeBackend::DFlash && options.enable_vision) {
         throw std::invalid_argument("--spec dflash cannot be combined with --vision");
     }
-    if (options.kv_host_cache_mib != 0 && !options.allow_prefix_reuse) {
-        throw std::invalid_argument(
-            "--kv-host-cache-mib conflicts with --no-prefix-reuse: the host cache is only "
-            "reachable through prefix reuse; drop one of the two flags");
-    }
-    if (options.kv_host_cache_mib != 0 &&
-        options.speculative.backend == SpeculativeBackend::DFlash) {
-        throw std::invalid_argument(
-            "--kv-host-cache-mib is not supported with --spec dflash yet: content anchors do "
-            "not carry the DFlash drafter context; drop one of the two flags");
-    }
-    if (options.vision_residency == ninfer::VisionResidency::Overlay && !options.enable_vision) {
-        throw std::invalid_argument("--vision-residency overlay requires --vision");
-    }
     if (default_max_tokens_explicit) {
         if (options.default_max_tokens <= 0) {
             throw std::invalid_argument("--default-max-tokens must be positive");
         }
-    }
-    // --host-kv-cache-mib parks evicted sequences for later RESTORE, but
-    // --no-prefix-reuse makes every request cold-prefill and the host-cache
-    // gate to skip restore. The combination is write-only: every resident is
-    // parked on eviction and no parked entry can ever be restored, which is
-    // strictly worse than no cache. Reject it rather than silently waste
-    // pinned RAM and host traffic.
-    if (options.host_kv_cache_mib > 0 && !options.allow_prefix_reuse) {
-        throw std::invalid_argument(
-            "--host-kv-cache-mib requires prefix reuse; --no-prefix-reuse makes every "
-            "parked entry unrestorable (write-only caching)");
-    }
-    // --host-kv-cache-mib and --spec dflash are the same class of "unsupported
-    // combination" as the prefix-reuse check above: DFlash's lane-affine draft
-    // caches are not captured by a parked entry, so a restored DFlash sequence
-    // would be incomplete. Reject at the CLI layer (the engine keeps its own
-    // check as a backstop for programmatic Engine construction).
-    if (options.host_kv_cache_mib > 0 &&
-        options.speculative.backend == SpeculativeBackend::DFlash) {
-        throw std::invalid_argument(
-            "--host-kv-cache-mib is not supported with --spec dflash: the lane-affine "
-            "DFlash caches are not captured by a parked entry");
     }
     return options;
 }
