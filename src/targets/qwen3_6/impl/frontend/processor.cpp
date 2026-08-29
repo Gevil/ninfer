@@ -609,7 +609,6 @@ RenderedChat expand_placeholders(RenderedChat rendered, const std::vector<Vision
         rendered.rewrite_checkpoint->offset =
             map_boundary(rendered.rewrite_checkpoint->offset, "rewrite checkpoint");
     }
-    }
     for (std::size_t& boundary : rendered.rewrite_execution_boundaries) {
         boundary = map_boundary(boundary, "rewrite execution boundary");
     }

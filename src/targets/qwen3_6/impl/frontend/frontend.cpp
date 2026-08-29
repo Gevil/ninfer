@@ -1447,12 +1447,12 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
         message_boundaries = std::move(processed.message_boundaries);
         cache_boundaries   = std::move(processed.cache_boundaries);
         starts_in_reasoning                =
-            options.add_generation_prompt && processed.opens_reasoning;
+            options.continuation == PromptContinuationMode::NewAssistantTurn && processed.opens_reasoning;
     } else {
         const fi::RenderedChat rendered =
             impl_->chat_template.render(messages, render_options(options, cache_hints.markers));
         starts_in_reasoning =
-            options.add_generation_prompt && fi::prompt_ends_in_open_reasoning(rendered.text);
+            options.continuation == PromptContinuationMode::NewAssistantTurn && fi::prompt_ends_in_open_reasoning(rendered.text);
         const auto tokenize_started = Clock::now();
         fi::EncodedChat encoded     = fi::encode_rendered_chat(
             *impl_->tokenizer, rendered, static_cast<std::size_t>(impl_->max_context) + 1U);

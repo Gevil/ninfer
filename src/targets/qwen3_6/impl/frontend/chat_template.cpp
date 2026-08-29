@@ -444,7 +444,7 @@ std::string_view render_reasoning_effort(ReasoningEffort effort) {
 }
 
 OrderedJson render_template_content(const ChatMessage& message) {
-    if (!message.has_media()) { return message.rendered_content(); }
+    if (!message.has_media()) { return message.rendered_content().text; }
 
     OrderedJson content = OrderedJson::array();
     for (const ChatPart& part : message.parts) {
@@ -605,29 +605,8 @@ RenderedFragment ChatMessage::rendered_content(bool add_vision_id, int* image_co
         switch (part.kind) {
         case ChatPartKind::Text:
             out.append_literal(escape_literal_vision_tokens(part.text));
-=======
-std::string ChatMessage::rendered_content(bool add_vision_id, int* image_count,
-                                          int* video_count) const {
-    int local_images = 0;
-    int local_videos = 0;
-    int& images      = image_count == nullptr ? local_images : *image_count;
-    int& videos      = video_count == nullptr ? local_videos : *video_count;
-    std::string out;
-    std::string text_run;
-    const auto flush_text_run = [&] {
-        if (text_run.empty()) { return; }
-        out += escape_literal_vision_tokens(std::move(text_run));
-        text_run.clear();
-    };
-    for (const ChatPart& part : parts) {
-        switch (part.kind) {
-        case ChatPartKind::Text:
-            // Consecutive text parts are one semantic text run. Escape after
-            // coalescing so part boundaries cannot reconstruct a control token.
-            text_run += part.text;
             break;
         case ChatPartKind::Image:
-            flush_text_run();
             ++images;
             if (add_vision_id) { out.append_template("Picture " + std::to_string(images) + ": "); }
             out.append_template("<|vision_start|>");
@@ -635,7 +614,6 @@ std::string ChatMessage::rendered_content(bool add_vision_id, int* image_count,
             out.append_template("<|vision_end|>");
             break;
         case ChatPartKind::Video:
-            flush_text_run();
             ++videos;
             if (add_vision_id) { out.append_template("Video " + std::to_string(videos) + ": "); }
             out.append_template("<|vision_start|>");
