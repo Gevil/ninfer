@@ -163,3 +163,47 @@ Renumbering: ADOPTION.md's parked 08-26 proposal defined T8 = DFlash2 probe, T9 
 | **Hold** | PR #35 E8-KV, #37 Ollama adapter, Don-Chad 3090 (sm_86), cometkim 768k presets (lane is 225k on 32 GB), tier7 fast-path fix (fallback if T8 probe fails) | — | — | — | — |
 
 Ordering rationale: T8 first (hours, decides the spec-decode direction the 08-26 parking was waiting for, and gates T9) → T10 (unblocks everything: every fork/PR candidate is "89 behind", so post-merge cherry-picks are conflict-cheap) → T11 (keep the live lane green) → T12-A→B→C (cheap wins first, battery-gated Tier items last).
+## 10. T10 execution record (2026-08-29)
+
+Branch `upstream-2026-08-29` (from `qwen3.8-nvfp4full` @ 1b9aef3b):
+
+- **7e771891** `Merge upstream/master (ce09aee5)` — the 89-commit wave (421 files, +72k/−21k).
+  Policy per §3/§4: adopt the serve protocol-adapter re-architecture (`openai_chat_*`/
+  `openai_responses_*`/`anthropic_messages_*` replace `openai_schema`/`anthropic_schema`/
+  `tool_call_parser`), the new runtime (resource authority + prefix-cache scheduling +
+  default host-context cache), ops consolidation. Keep: nvfp4full + quasar profiles,
+  all tier ops perf picks (files upstream did not touch stayed ours), ADOPTION docs,
+  `tools/convert/qwen3_8_27b` nvfp4full converter. Drop: our #73 host-KV port tests
+  (upstream deleted the mechanism they superseded).
+- **Re-lands (in order):**
+  | commit | what |
+  |---|---|
+  | 839ea7d1 | Jinja chat template override `--chat-template-file` (quadlet dependency) |
+  | 81e32cc9 | honor reasoning effort in custom Jinja templates |
+  | dbc6e2f2 | Sharp template kwargs (`reasoning_effort`/`terse`) + structured output (`response_format`) |
+  | 57e355fb | `--webui`/`--webui-dir` in-process stock WebUI serving |
+  | 333b339e | `starts_in_reasoning` derived from rendered prompt (fc4f6cae) |
+  | d39d050b | strip stray vision-pad markers (caec0dee, extended: source-coord strip shifts every boundary/span field) |
+  | f7b7e96b | tool-call checkpointing, BPE-stable placement (281cf9ec = dylan 673d695c) |
+  | 159cf61d | drop stray think-close markers in tool-capable content (e4beff22 = PR #86 port) |
+  | d0d8cfc5 | literal vision tokens kept out of media binding (6da2efef, adapted to RenderBuilder; fragment literal-spans shifted per inserted break byte) |
+  | 1f739774 | skip empty think wrappers on past assistant turns (16f405d4) |
+  | 75244b0a | terminate handler names the escaping exception (PR #54) |
+  | d03b0a72 | drop duplicate declarations left by re-lands (`chat_template_path`, `supports_terse_`) |
+- **Verified superseded (no re-land):** PR #55 cached_tokens (upstream native:
+  `openai_chat_response` reports `prompt_tokens_details.cached_tokens` from
+  `prefix_cache_hit_tokens`); PR #79 warmup decoupling (upstream warmup uses
+  `DeadlinePolicy::UnboundedStartup`); PR #61 image token budget (replaced by upstream
+  media admission: `--media-cache-mib`/`--media-live-mib`); e7430984/3ab8e8e8
+  max_model_len/n_ctx (upstream exposes `max_model_len` natively in /v1/models).
+- **Deferred:** ca0763ba WebUI dialect (built-in WebUI off by default; OWUI is the lane UI;
+  re-land only if the in-process WebUI is ever enabled on the lane); PR #65 string-typed
+  tool params (upstream now requires string `arguments`; verify OWUI tool-call round-trip
+  in the T11 battery — if it 400s, re-land 102ab113 against `openai_chat_request`).
+- **T11 quadlet delta (verified against merged `serve_options`):** only
+  `--kv-host-cache-mib 32768` → `--host-kv-mib 32768`. Every other quadlet flag
+  (`--spec mtp --draft-tokens 3 --lm-head-draft --vision --preserve-thinking --max-context
+  225280 --kv-capacity 225280 --kv-dtype int8 --max-concurrency 4 --pending-timeout-ms
+  900000 --default-max-tokens --chat-template-file`) is present in the merged tree.
+- **Gate:** container build + serve-layer ctest running
+  (`~/.local/share/ninfer/logs/t10-buildstage-*.log`, `t10-serve-ctest-*.log`).
