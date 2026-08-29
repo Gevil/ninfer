@@ -2463,13 +2463,12 @@ int test_stray_think_close_dropped(const Frontend& frontend) {
         ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
     ninfer::PromptInput input;
     input.messages.push_back(std::move(message));
-    input.options.add_generation_prompt = true;
     input.options.enable_thinking       = false;
     auto prompt                         = frontend.prepare(std::move(input));
     auto session                        = frontend.make_output_session(prompt, {});
     // token 3 = "thought</thi", token 4 = "nk>\n\nanswer" -> "</think>\n\nanswer"
     const std::array<ninfer::TokenId, 2> tokens{3, 4};
-    const auto decision = session.preview(tokens, 2, ninfer::FinishReason::OutputLimit);
+    const auto decision = session.preview_model(tokens, 2, ninfer::FinishReason::OutputLimit);
     int failures        = check(decision.accepted_tokens == 2,
                                 "stray-close session did not accept both tokens");
     const auto output   = session.commit_preview();
@@ -2489,13 +2488,12 @@ int test_second_think_close_dropped(const Frontend& frontend) {
         ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
     ninfer::PromptInput input;
     input.messages.push_back(std::move(message));
-    input.options.add_generation_prompt = true;
     input.options.enable_thinking       = true;
     auto prompt                         = frontend.prepare(std::move(input));
     auto session                        = frontend.make_output_session(prompt, {});
     // 3+4 close thinking and yield "answer"; then 3+4 again = stray close + "answer".
     const std::array<ninfer::TokenId, 4> tokens{3, 4, 3, 4};
-    const auto decision = session.preview(tokens, 4, ninfer::FinishReason::OutputLimit);
+    const auto decision = session.preview_model(tokens, 4, ninfer::FinishReason::OutputLimit);
     int failures        = check(decision.accepted_tokens == 4,
                                 "double-close session did not accept all tokens");
     const auto output   = session.commit_preview();
@@ -2517,20 +2515,19 @@ int test_split_think_close_dropped(const Frontend& frontend) {
         ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
     ninfer::PromptInput input;
     input.messages.push_back(std::move(message));
-    input.options.add_generation_prompt = true;
     input.options.enable_thinking       = false;
     auto prompt  = frontend.prepare(std::move(input));
     auto session = frontend.make_output_session(prompt, {});
     // Round one keeps a budget in reserve so the session stays open and the
     // ambiguous suffix is held; round two resolves it at the output limit.
-    const auto d1 = session.preview(std::array<ninfer::TokenId, 1>{3}, 2,
+    const auto d1 = session.preview_model(std::array<ninfer::TokenId, 1>{3}, 2,
                                     ninfer::FinishReason::OutputLimit);
     int failures = check(d1.accepted_tokens == 1, "split round one rejected");
     const auto out1 = session.commit_preview();
     failures += check(channel_text(out1, ninfer::OutputChannel::Content).find("</thi") ==
                           std::string::npos,
                       "split marker first half leaked");
-    const auto d2 = session.preview(std::array<ninfer::TokenId, 1>{4}, 1,
+    const auto d2 = session.preview_model(std::array<ninfer::TokenId, 1>{4}, 1,
                                     ninfer::FinishReason::OutputLimit);
     failures += check(d2.accepted_tokens == 1 &&
                           d2.finish_reason == ninfer::FinishReason::OutputLimit,
@@ -2554,14 +2551,13 @@ int test_raw_session_bypasses_marker_handling(const Frontend& frontend) {
         ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
     ninfer::PromptInput input;
     input.messages.push_back(std::move(message));
-    input.options.add_generation_prompt = true;
     input.options.enable_thinking       = false;
     auto prompt                         = frontend.prepare(std::move(input));
     auto session                        = frontend.make_output_session(
         prompt, {}, ninfer::OutputOptions{.raw = true});
     // 3 + 4 contain a complete </think>; then 3 again ends with its proper prefix.
     const std::array<ninfer::TokenId, 3> tokens{3, 4, 3};
-    const auto decision = session.preview(tokens, 3, ninfer::FinishReason::OutputLimit);
+    const auto decision = session.preview_model(tokens, 3, ninfer::FinishReason::OutputLimit);
     int failures        = check(decision.accepted_tokens == 3,
                                 "raw session did not accept all tokens");
     const auto output   = session.commit_preview();
@@ -2582,17 +2578,16 @@ int test_terminal_flush_drops_complete_marker(const Frontend& frontend) {
         ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
     ninfer::PromptInput input;
     input.messages.push_back(std::move(message));
-    input.options.add_generation_prompt = true;
     input.options.enable_thinking       = false;
     auto prompt                         = frontend.prepare(std::move(input));
     auto session                        = frontend.make_output_session(prompt, {});
     // Token 4 = "nk>\\n\\nanswer" completes the pending '</thi' into '</think>' and
     // terminates at the output limit in the same round.
-    const auto d1 = session.preview(std::array<ninfer::TokenId, 1>{3}, 2,
+    const auto d1 = session.preview_model(std::array<ninfer::TokenId, 1>{3}, 2,
                                     ninfer::FinishReason::OutputLimit);
     int failures  = check(d1.accepted_tokens == 1, "complete-marker round one rejected");
     (void)session.commit_preview();
-    const auto d2 = session.preview(std::array<ninfer::TokenId, 1>{4}, 1,
+    const auto d2 = session.preview_model(std::array<ninfer::TokenId, 1>{4}, 1,
                                     ninfer::FinishReason::OutputLimit);
     failures += check(d2.accepted_tokens == 1 &&
                           d2.finish_reason == ninfer::FinishReason::OutputLimit,
@@ -2612,14 +2607,13 @@ int test_terminal_flushes_marker_prefix(const Frontend& frontend) {
         ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
     ninfer::PromptInput input;
     input.messages.push_back(std::move(message));
-    input.options.add_generation_prompt = true;
     input.options.enable_thinking       = false;
     auto prompt  = frontend.prepare(std::move(input));
     auto session = frontend.make_output_session(prompt, {});
     // 'thought</thi' -> cleanup holds '</thi' and publishes 'thought'; termination
     // then flushes the held prefix.
     const std::array<ninfer::TokenId, 1> tokens{3};
-    const auto decision = session.preview(tokens, 1, ninfer::FinishReason::OutputLimit);
+    const auto decision = session.preview_model(tokens, 1, ninfer::FinishReason::OutputLimit);
     int failures        = check(decision.accepted_tokens == 1 &&
                                     decision.finish_reason == ninfer::FinishReason::OutputLimit,
                                 "prefix round did not terminate at output limit");
