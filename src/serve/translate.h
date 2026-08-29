@@ -20,6 +20,7 @@ struct ResolvedPromptSemantics {
     std::optional<ninfer::ReasoningEffort> reasoning_effort;
     std::optional<ninfer::ReasoningEffort> effective_reasoning_effort;
     bool preserve_thinking = false;
+    std::optional<bool> terse;
 };
 
 ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& req,

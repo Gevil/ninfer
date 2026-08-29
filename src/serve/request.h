@@ -85,6 +85,21 @@ struct ToolChoice {
     ToolChoiceMode mode = ToolChoiceMode::Auto;
 };
 
+// Wire value of `response_format.type` accepted by the OpenAI layer. The engine
+// performs no token-level constraint; JSON modes are prompt-injected (see
+// translate.cpp) in the same soft-JSON spirit as llama.cpp's json_object path.
+enum class StructuredOutputType : std::uint8_t {
+    None,
+    Text,
+    JsonObject,
+    JsonSchema,
+};
+
+struct StructuredOutput {
+    StructuredOutputType type = StructuredOutputType::None;
+    std::string schema_json; // serialized `json_schema.schema` for JsonSchema
+};
+
 struct ChatTurn {
     ChatRole role = ChatRole::User;
     std::vector<ContentPart> content; // ordered parts; may be empty when wire content is empty
@@ -169,6 +184,9 @@ struct GenerationRequest {
     std::optional<std::uint32_t> thinking_budget;
     std::optional<RequestedReasoningEffort> reasoning_effort;
     std::optional<bool> preserve_thinking;
+    // Sharp template per-request terseness toggle (kwargs channel only; null = template default).
+    std::optional<bool> terse;
+    StructuredOutput structured_output;
     ninfer::PromptContinuationMode continuation = ninfer::PromptContinuationMode::NewAssistantTurn;
     bool private_cache_boundary_at_prompt_end   = false;
     SamplingParams sampling;

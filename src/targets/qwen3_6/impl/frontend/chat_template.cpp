@@ -470,6 +470,9 @@ minja::Value jinja_context(const std::vector<ChatMessage>& messages,
         values["preserve_thinking"] = *options.preserve_thinking;
         values["chat_template_kwargs"]["preserve_thinking"] = *options.preserve_thinking;
     }
+    if (options.terse) {
+        values["terse"] = *options.terse;
+    }
     return minja::Value(values);
 }
 
@@ -479,7 +482,8 @@ class CompiledChatTemplate::JinjaTemplate {
 public:
     JinjaTemplate(std::string source, std::string source_name)
         : source_name_(std::move(source_name)),
-          supports_reasoning_effort_(source.find("reasoning_effort") != std::string::npos) {
+          supports_reasoning_effort_(source.find("reasoning_effort") != std::string::npos),
+          supports_terse_(source.find("terse") != std::string::npos) {
         try {
             template_ = minja::Parser::parse(source, minja::Options{.trim_blocks           = true,
                                                                       .lstrip_blocks         = true,
@@ -495,6 +499,9 @@ public:
         if (options.reasoning_effort && !supports_reasoning_effort_) {
             throw std::invalid_argument(
             "custom Jinja chat template does not reference reasoning_effort");
+        }
+        if (options.terse && !supports_terse_) {
+            throw std::invalid_argument("custom Jinja chat template does not reference terse");
         }
         try {
             return RenderedChat{.text = template_->render(
@@ -517,8 +524,8 @@ public:
         }
         return result;
     }
-
-private:
+    bool supports_terse_ = false;
+    bool supports_terse_ = false;
     std::string source_name_;
     bool supports_reasoning_effort_ = false;
     std::shared_ptr<minja::TemplateNode> template_;
