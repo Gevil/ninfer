@@ -79,6 +79,7 @@ add_library(ninfer_ops STATIC
   ops/launcher/prepare_ragged_prefix.cu
   ops/launcher/prepare_masked_block.cu
   ops/launcher/residual_add.cu
+  ops/launcher/residual_rmsnorm.cu
   ops/launcher/rmsnorm.cu
   ops/launcher/rope.cu
   ops/launcher/sampling.cu
@@ -159,6 +160,7 @@ add_library(ninfer_ops STATIC
   ops/linear/bf16/bf16_small_t.cu
   ops/linear/bf16/bf16_dispatch.cpp
   ops/common/memory_evict.cu
+  ops/common/device_info.cu
   ops/linear/fp8/fp8_format.cpp
   ops/linear/fp8/fp8_gemv.cu
   ops/linear/fp8/fp8_small_t.cu
@@ -259,6 +261,7 @@ add_library(ninfer_ops STATIC
   ops/wrapper/prepare_masked_block.cpp
   ops/wrapper/residual_add.cpp
   ops/wrapper/rmsnorm.cpp
+  ops/wrapper/residual_rmsnorm.cpp
   ops/wrapper/rope.cpp
   ops/wrapper/sampling.cpp
   ops/wrapper/scalar.cpp
