@@ -475,6 +475,18 @@ Conflict surface if merged today (merge-base = `feaf4dd0`): **100 hunks / ~30 fi
 3. **Watch:** dev → master (Tier 10 trigger), #90 settlement, dylan/cometkim DFlash2 evolution.
 4. **Tier 9** only after the DFlash2 decision + prefill-bottleneck evidence.
 
+## T11 - quasar re-verification on the T10 upstream merge (2026-08-30)
+- Branch `t11-quasar-merged` @ 02d7b041 = T10 merge (upstream ce09aee5 into
+  qwen3.8-nvfp4full @ 1b9aef3b, 114 fix commits) + the 5 quasar commits
+  (c6da81ff..303dbcaa) re-applied. Conflict in package.cpp resolve_weights
+  restored the nvfp4full + quasar-nvfp4 profile cases dropped by T10.
+- Free-GPU full ctest (buildstage-merge, GPU passthrough): rc=0.
+- Battery (quasar-restart-verify): 9 PASS / 0 FAIL; decode
+  probes within -5% of the 08-26 quasar baseline (/home/gevil/.local/share/ninfer/logs/quasar-baseline-2026-08-26.json).
+- Lane live on image ninfer-nvfp4:t11-02d7b041 (tags :quasar, :latest).
+- Rollback: retag the previous :quasar image (61c74d6b6e9d40b6c8f26f51c8f5ba9720dc9d72e7805838634ff15a3e54b9fd) to
+  ninfer-nvfp4:quasar + :latest, systemctl --user restart ninfer-nvfp4.service.
+
 ## T12 - upstream convergence wave (2026-08-30)
 - Branch `t12-upstream-merged` @ 4567363e = T11w line (185decf5) + merge of upstream
   master ce09aee5..d9dbe1ce (16 commits; upstream dev merged into master). New:
