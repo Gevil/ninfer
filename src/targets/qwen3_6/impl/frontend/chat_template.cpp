@@ -575,7 +575,6 @@ public:
         return result;
     }
     bool supports_terse_ = false;
-    bool supports_terse_ = false;
     std::string source_name_;
     bool supports_reasoning_effort_ = false;
     std::shared_ptr<minja::TemplateNode> template_;
