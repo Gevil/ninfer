@@ -296,13 +296,12 @@ void gated_delta_net_replay_record(const Tensor& q, const Tensor& k, const Tenso
                                    const Tensor& ssm_states, const Tensor& valid_columns,
                                    const Tensor& initial_state_slots, Tensor& key_record,
                                    Tensor& value_record, Tensor& gate_record, Tensor& out,
-                                   cudaStream_t stream, GdnPostNormSpan post_norm) {
+                                   cudaStream_t stream) {
     validate_replay_record(q, k, v, g, beta, scale, ssm_states, valid_columns, initial_state_slots,
                            key_record, value_record, gate_record, out);
     detail::gated_delta_net::launch_recurrent_record(q, k, v, g, beta, scale, ssm_states,
                                                      valid_columns, initial_state_slots, key_record,
-                                                     value_record, gate_record, out, stream,
-                                                     post_norm);
+                                                     value_record, gate_record, out, stream);
 }
 
 GdnReplayFoldPlan::GdnReplayFoldPlan(const GdnReplayRecords& records,
