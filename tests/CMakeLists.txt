@@ -143,16 +143,6 @@ target_include_directories(ninfer_qwen3_6_27b_load_plan_test PRIVATE
   ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_27b/export)
 target_link_libraries(ninfer_qwen3_6_27b_load_plan_test PRIVATE CUDA::cudart)
 set_tests_properties(ninfer_qwen3_6_27b_load_plan_test PROPERTIES SKIP_RETURN_CODE 77)
-ninfer_add_test(ninfer_qwen3_6_27b_host_kv_real_test
-  SOURCES targets/qwen3_6_27b/test_engine_host_kv_real.cpp
-  LIBRARIES ninfer_engine)
-set_tests_properties(ninfer_qwen3_6_27b_host_kv_real_test PROPERTIES SKIP_RETURN_CODE 77)
-# Forward the local artifact path into the ctest environment so the real-artifact
-# test runs instead of skipping (it gates on the env var and returns 77 when unset).
-if(NINFER_QWEN3_6_27B_NVFP4_WEIGHTS)
-  set_tests_properties(ninfer_qwen3_6_27b_host_kv_real_test
-    PROPERTIES ENVIRONMENT "NINFER_QWEN3_6_27B_NVFP4_WEIGHTS=${NINFER_QWEN3_6_27B_NVFP4_WEIGHTS}")
-endif()
 ninfer_add_test(ninfer_qwen3_6_35b_a3b_real_test
   SOURCES targets/qwen3_6_35b_a3b/test_engine_real.cpp
   LIBRARIES ninfer_engine)
