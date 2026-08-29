@@ -42,6 +42,11 @@ constexpr std::string_view kXHighReasoningInstructions =
  constexpr std::array<std::string_view, 4> kVisionControlTokens = {
      "<|vision_start|>", "<|vision_end|>", "<|image_pad|>", "<|video_pad|>"};
  constexpr std::string_view kControlTokenBreak = "\xE2\x81\xA0"; // U+2060 WORD JOINER
+// The Jinja-template render path records structured media placeholders by
+// scanning the rendered text for these pad markers (one per media part, in
+// request order). Literal markers quoted in text are escaped upstream.
+constexpr std::string_view kImagePadMarker = "<|⁠image_pad|>";
+constexpr std::string_view kVideoPadMarker = "<|⁠video_pad|>";
  
  // Text content can legitimately quote the chat template or one of its Vision
  // control tokens. Keep those strings readable, but break their exact added-token
@@ -447,13 +452,14 @@ std::string_view resolve_reasoning_instructions(ChatTemplateSemantics semantics,
  }
  
  OrderedJson render_template_content(const ChatMessage& message) {
-     if (!message.has_media()) { return message.rendered_content().text; }
+    if (!message.has_media()) { return escape_literal_vision_tokens(message.rendered_content().text); }
  
      OrderedJson content = OrderedJson::array();
      for (const ChatPart& part : message.parts) {
          switch (part.kind) {
          case ChatPartKind::Text:
-             content.push_back(OrderedJson{{"type", "text"}, {"text", part.text}});
+             content.push_back(OrderedJson{{"type", "text"},
+                                           {"text", escape_literal_vision_tokens(part.text)}});
              break;
          case ChatPartKind::Image:
              content.push_back(OrderedJson{{"type", "image"}});
@@ -496,7 +502,8 @@ std::string_view resolve_reasoning_instructions(ChatTemplateSemantics semantics,
      for (const ChatMessage& message : messages) {
          jinja_messages.push_back(OrderedJson{{"role", render_role(message.role)},
                                                {"content", render_template_content(message)},
-                                               {"reasoning_content", message.reasoning_content},
+                                              {"reasoning_content",
+                                               escape_literal_vision_tokens(message.reasoning_content)},
                                                {"tool_calls", render_template_tool_calls(message)},
                                                {"tool_call_id", message.tool_call_id}});
      }
@@ -555,10 +562,32 @@ std::string_view resolve_reasoning_instructions(ChatTemplateSemantics semantics,
          if (options.terse && !supports_terse_) {
              throw std::invalid_argument("custom Jinja chat template does not reference terse");
          }
-         try {
-             return RenderedChat{.text = template_->render(
-                                     minja::Context::make(jinja_context(messages, options))),
-                                 .rewrite_checkpoint = std::nullopt};
+        try {
+            std::string text = template_->render(
+                minja::Context::make(jinja_context(messages, options)));
+            RenderedChat result{.text = std::move(text), .rewrite_checkpoint = std::nullopt};
+            // The template renders one structured pad marker per media part (in request
+            // order); literal markers quoted in text are escaped upstream, so only
+            // structured Image/Video parts produce pads here. Record them so
+            // expand_placeholders can bind each placeholder to its decoded item.
+            std::size_t image_pos = result.text.find(kImagePadMarker);
+            std::size_t video_pos = result.text.find(kVideoPadMarker);
+            std::size_t item_index = 0;
+            while (image_pos != std::string::npos || video_pos != std::string::npos) {
+                const bool image = video_pos == std::string::npos || image_pos < video_pos;
+                const std::string_view pad = image ? kImagePadMarker : kVideoPadMarker;
+                const std::size_t pos = image ? image_pos : video_pos;
+                result.media_placeholders.push_back(MediaPlaceholderByteSpec{
+                    .bytes      = ByteSpan{pos, pos + pad.size()},
+                    .modality   = image ? Modality::Image : Modality::Video,
+                    .item_index = item_index++});
+                if (image) {
+                    image_pos = result.text.find(kImagePadMarker, pos + pad.size());
+                } else {
+                    video_pos = result.text.find(kVideoPadMarker, pos + pad.size());
+                }
+            }
+            return result;
          } catch (const std::exception& error) {
              throw std::invalid_argument("failed to render Jinja chat template '" + source_name_ +
                                          "': " + error.what());

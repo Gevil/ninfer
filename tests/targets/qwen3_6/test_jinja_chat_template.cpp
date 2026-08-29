@@ -91,6 +91,64 @@ int main() {
                           .c_str());
     failures += check(!rendered.rewrite_checkpoint.has_value(),
                       "custom Jinja template unexpectedly exposed a rewrite checkpoint");
+    failures += check(rendered.media_placeholders.empty(),
+                      "jinja template without pad markers recorded placeholders");
+
+    // The Jinja render path must record structured media placeholders: one per
+    // media part, in request order, at the exact pad-marker bytes.
+    const std::string jw = "\xE2\x81\xA0";
+    const std::string image_marker = "<|" + jw + "image_pad|>";
+    const std::string video_marker = "<|" + jw + "video_pad|>";
+    std::string vision_source = std::string(
+        "{% for m in messages %}{% for item in m.content %}"
+        "{% if item.type == 'image' %}<|" + jw + "vision_start|>" + image_marker +
+        "<|" + jw + "vision_end|>"
+        "{% elif item.type == 'video' %}<|" + jw + "vision_start|>" + video_marker +
+        "<|" + jw + "vision_end|>"
+        "{% elif item.type == 'text' %}{{ item.text }}"
+        "{% endif %}{% endfor %}{% endfor %}");
+    const fi::CompiledChatTemplate vision_template =
+        fi::CompiledChatTemplate::compile_jinja(vision_source, "vision-template");
+
+    fi::ChatMessage vision_user;
+    vision_user.role = ninfer::ChatRole::User;
+    vision_user.parts.push_back(fi::ChatPart::text_part("a "));
+    vision_user.parts.push_back(fi::ChatPart::image({}));
+    vision_user.parts.push_back(fi::ChatPart::video({}));
+    vision_user.parts.push_back(fi::ChatPart::text_part(" c"));
+    const fi::RenderedChat vision_rendered =
+        vision_template.render({vision_user}, fi::ChatRenderOptions{});
+    failures += check(vision_rendered.media_placeholders.size() == 2,
+                      "jinja render did not record one placeholder per media part");
+    if (vision_rendered.media_placeholders.size() == 2) {
+        const fi::MediaPlaceholderByteSpec& image = vision_rendered.media_placeholders[0];
+        const fi::MediaPlaceholderByteSpec& video = vision_rendered.media_placeholders[1];
+        const auto span_text = [&](const fi::MediaPlaceholderByteSpec& spec) {
+            return vision_rendered.text.substr(spec.bytes.begin,
+                                                spec.bytes.end - spec.bytes.begin);
+        };
+        failures += check(image.modality == fi::Modality::Image && image.item_index == 0,
+                          "first jinja placeholder is not the image part");
+        failures += check(video.modality == fi::Modality::Video && video.item_index == 1,
+                          "second jinja placeholder is not the video part");
+        failures += check(span_text(image) == image_marker,
+                          "image placeholder bytes do not cover the image pad marker");
+        failures += check(span_text(video) == video_marker,
+                          "video placeholder bytes do not cover the video pad marker");
+    }
+
+    // Literal pad markers quoted in text are escaped upstream, not recorded.
+    fi::ChatMessage literal_user;
+    literal_user.role = ninfer::ChatRole::User;
+    literal_user.parts.push_back(fi::ChatPart::text_part("quote " + image_marker + " here"));
+    literal_user.parts.push_back(fi::ChatPart::image({}));
+    const fi::RenderedChat literal_rendered =
+        vision_template.render({literal_user}, fi::ChatRenderOptions{});
+    const std::string broken_marker = "<|\xE2\x81\xA0\xE2\x81\xA0image_pad|>";
+    failures += check(literal_rendered.media_placeholders.size() == 1,
+                      "literal pad marker in text was not escaped before scanning");
+    failures += check(literal_rendered.text.find(broken_marker) != std::string::npos,
+                      "literal pad marker was not broken in the rendered text");
 
     bool malformed_rejected = false;
     try {
