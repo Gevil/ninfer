@@ -182,31 +182,33 @@ __global__ __launch_bounds__(Cfg::THREADS, Cfg::MIN_BLOCKS) void w8_rowsplit_gem
     auto dequant_w = [&](int kt) {
         constexpr int GROUPS            = BK / 32;
         constexpr int SCALE_CACHE_TILES = 8 / GROUPS;
-        constexpr int ChunksPerRow      = BK / 8;
-        static_assert(GROUPS == 2 || GROUPS == 4);
-        const int scale_pair_offset = (kt % SCALE_CACHE_TILES) * GROUPS * 2;
-        for (int item = tid; item < BM * ChunksPerRow; item += Cfg::THREADS) {
-            const int row   = item / ChunksPerRow;
-            const int chunk = item - row * ChunksPerRow;
+        // w8g32_swz64 permutes whole eight-element runs, so eight codes are the widest chunk
+        // contiguous in As for every row. BK % 32 keeps gg inside GROUPS and the row stride
+        // aligned for the vector store; 8 % GROUPS keeps the scale cache a whole number of tiles.
+        constexpr int kChunksPerRow = BK / 8;
+        static_assert(BK % 32 == 0 && (8 % GROUPS) == 0,
+                      "an eight-code chunk must lie inside one W8G32 group and the scale cache "
+                      "must hold whole tiles");
+        const int scale_tile_offset = (kt % SCALE_CACHE_TILES) * GROUPS * 2;
+        for (int item = tid; item < BM * kChunksPerRow; item += Cfg::THREADS) {
+            const int row   = item / kChunksPerRow;
+            const int chunk = item - row * kChunksPerRow;
             const int col   = chunk * 8;
             const int gg    = col >> 5;
-            const float scale = __half2float(__ushort_as_half(
-                *reinterpret_cast<const std::uint16_t*>(
-                    &Sr[row * Cfg::SCALE_CACHE_BYTES + scale_pair_offset + gg * 2])));
+            const float scale =
+                __half2float(__ushort_as_half(*reinterpret_cast<const std::uint16_t*>(
+                    &Sr[row * Cfg::SCALE_CACHE_BYTES + scale_tile_offset + gg * 2])));
             const uint2 packed = *reinterpret_cast<const uint2*>(&Cr[row * BK + col]);
-            unsigned decoded[4];
+            W8Bf16x8Bits decoded;
 #pragma unroll
             for (int pair = 0; pair < 4; ++pair) {
                 const unsigned word = (pair < 2 ? packed.x : packed.y) >> ((pair & 1) * 16);
                 const int q0        = static_cast<int>(static_cast<std::int8_t>(word & 0xffu));
                 const int q1 = static_cast<int>(static_cast<std::int8_t>((word >> 8) & 0xffu));
-                const __nv_bfloat162 values = __floats2bfloat162_rn(
-                    static_cast<float>(q0) * scale, static_cast<float>(q1) * scale);
-                decoded[pair] = *reinterpret_cast<const unsigned*>(&values);
+                decoded.pair[pair] = __floats2bfloat162_rn(static_cast<float>(q0) * scale,
+                                                           static_cast<float>(q1) * scale);
             }
-            store_vec(&As[row * BK + w8g32_swz64(row, col)],
-                      make_int4(static_cast<int>(decoded[0]), static_cast<int>(decoded[1]),
-                                static_cast<int>(decoded[2]), static_cast<int>(decoded[3])));
+            store_vec(&As[row * BK + w8g32_swz64(row, col)], decoded.raw);
         }
     };
 
