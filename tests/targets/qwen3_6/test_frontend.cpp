@@ -224,6 +224,24 @@ FrontendResources resources(const std::string& chat_template = thinking_toggle_t
     return result;
 }
 
+// FrontendResources for poison-history tests: the shared fixture vocab covers
+// only the bytes its minimal texts need, but a rendered prompt that quotes the
+// pad markers plus tool-call scaffolding contains far more. This local copy
+// adds byte-level symbols for every byte (ids 1000..1255, clear of the added
+// tokens and the fixture ids) so arbitrary prompt text stays encodable while
+// the added-token (special) behaviour is unchanged.
+FrontendResources poison_resources() {
+    FrontendResources result = resources();
+    nlohmann::json tokenizer = nlohmann::json::parse(result.tokenizer_json);
+    nlohmann::json& vocab = tokenizer["model"]["vocab"];
+    for (int byte = 0; byte < 256; ++byte) {
+        const std::string symbol = byte_level_symbol(static_cast<std::uint8_t>(byte));
+        if (!vocab.contains(symbol)) { vocab[symbol] = 1000 + byte; }
+    }
+    result.tokenizer_json = tokenizer.dump();
+    return result;
+}
+
 std::vector<std::uint8_t> gradient_ppm() {
     std::vector<std::uint8_t> ppm;
     const std::string header = "P6\n64 64\n255\n";
@@ -2623,6 +2641,85 @@ int test_terminal_flushes_marker_prefix(const Frontend& frontend) {
     return failures;
 }
 
+std::string plain_pad_marker(const char* name) {
+    return std::string("<|") + name + "|>";
+}
+
+// 2026-08-30 t11v incident: a history that quotes the pad marker (tool-call
+// arguments, reasoning, text) must still prepare cleanly - only structured
+// parts create media slots - and the image must keep its bound token span.
+// Uses a local full-byte tokenizer (poison_resources) because the shared
+// fixture vocab cannot encode the rendered scaffolding + quoted-marker bytes.
+int test_poisoned_vision_history_prepare() {
+    const Frontend frontend = FrontendFactory::create_component(poison_resources());
+    const std::string image_marker = plain_pad_marker("image_pad");
+
+    ninfer::ChatMessage user;
+    user.role = ninfer::ChatRole::User;
+    user.parts.push_back(
+        ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text,
+                            .text = "inspect this image",
+                            .media = {}});
+    ninfer::OwnedMedia media;
+    media.kind         = ninfer::MediaKind::Image;
+    media.bytes        = gradient_ppm();
+    media.media_type   = "image/x-portable-pixmap";
+    media.source_name  = "inline.ppm";
+    user.parts.push_back(
+        ninfer::MessagePart{.kind = ninfer::MessagePartKind::Media, .text = "", .media = media});
+    user.parts.push_back(
+        ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text,
+                            .text = "note: the marker is " + image_marker + " quoted here",
+                            .media = {}});
+
+    ninfer::ChatMessage assistant;
+    assistant.role              = ninfer::ChatRole::Assistant;
+    assistant.reasoning_content = "debugging the spelling of " + image_marker + " now";
+    const std::string poisoned_args =
+        std::string(R"({"path":"tpl.jinja","content":"line )") + image_marker +
+        std::string("\"}");
+    assistant.tool_calls.push_back(
+        ninfer::ToolCall{.id = "call-poison", .name = "write", .arguments_json = poisoned_args});
+
+    ninfer::ChatMessage tool_result;
+    tool_result.role         = ninfer::ChatRole::Tool;
+    tool_result.tool_call_id = "call-poison";
+    tool_result.parts.push_back(
+        ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text,
+                            .text = "wrote " + image_marker,
+                            .media = {}});
+
+    ninfer::PromptInput input;
+    input.messages.push_back(std::move(user));
+    input.messages.push_back(std::move(assistant));
+    input.messages.push_back(std::move(tool_result));
+
+    const auto prepared = frontend.prepare(std::move(input));
+    const auto& data    = FrontendFactory::inspect(prepared);
+    int failures        = check(data.has_media() && data.vision_items.size() == 1,
+                      "poisoned vision history did not bind its single structured image");
+    failures += check(!data.vision_items.empty() && !data.vision_items.front().token_spans.empty(),
+                      "poisoned vision history image lost its bound token span");
+    return failures;
+}
+
+// The 00:48 t11 failure mode: a template that renders fewer pad markers than
+// media parts must be rejected at prepare, never silently bound to nothing.
+int test_under_render_vision_rejected() {
+    std::string source = thinking_toggle_template_source();
+    const std::string pad = plain_pad_marker("image_pad");
+    while (source.find(pad) != std::string::npos) {
+        source.replace(source.find(pad), pad.size(), "[[no-pad]]");
+    }
+    return check(
+        throws_invalid_argument([&] {
+            const Frontend under_frontend =
+                FrontendFactory::create_component(resources(source), true);
+            (void)under_frontend.prepare(image_input());
+        }),
+        "under-rendered vision template was accepted instead of rejected");
+}
+
 int main() {
     const FrontendResources owned = resources();
     const Frontend frontend       = FrontendFactory::create_component(owned);
@@ -2645,6 +2742,8 @@ int main() {
     failures += test_official_resource_guards();
     failures += test_invalid_public_part_enums(frontend);
     failures += test_text_and_image_prepare(frontend);
+    failures += test_poisoned_vision_history_prepare();
+    failures += test_under_render_vision_rejected();
     failures += test_literal_control_tokens_with_media();
     failures += test_image_resize_rejection_policy();
     failures += test_explicit_leading_instruction_cache_boundary();

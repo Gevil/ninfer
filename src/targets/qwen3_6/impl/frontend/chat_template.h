@@ -138,6 +138,15 @@ struct RenderedChat {
 // render options alone.
 [[nodiscard]] bool prompt_ends_in_open_reasoning(const std::string& rendered_text);
 
+// Per-modality count of structured media parts across user/assistant/tool
+// messages. Same role filter as Processor::media_parts (processor.cpp).
+// JinjaTemplate::render uses this to cap placeholder recording at the number
+// of parts the template actually renders pads for, so plain pad markers
+// quoted in text are treated as prose, never recorded.
+void count_structured_media_parts(const std::vector<ChatMessage>& messages,
+                                  std::size_t& image_parts,
+                                  std::size_t& video_parts);
+
 enum class ChatTemplateSemantics : std::uint8_t {
     ThinkingToggle,
     ReasoningEffort,

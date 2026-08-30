@@ -149,6 +149,109 @@ int main() {
     failures += check(literal_rendered.text.find(broken_marker) != std::string::npos,
                       "literal pad marker was not broken in the rendered text");
 
+    // Poisoned history (2026-08-30 t11v incident): plain markers quoted in a text
+    // part, an assistant reasoning channel, a tool-call arguments JSON, and a tool
+    // result are all escaped upstream; only the structured parts' pads are
+    // recorded, in request order.
+    std::string poisoned_source = std::string(
+        "{% for m in messages %}{% for item in m.content %}"
+        "{% if item.type == 'image' %}IMG" + image_marker +
+        "{% elif item.type == 'video' %}VID" + video_marker +
+        "{% elif item.type == 'text' %}{{ item.text }}"
+        "{% endif %}{% endfor %}"
+        "{% if m.tool_calls %}ARGS{{ m.tool_calls[0].function.arguments | tojson }}"
+        "ENDARGS{% endif %}"
+        "{% if m.reasoning_content %}REASON{{ m.reasoning_content }}ENDREASON{% endif %}"
+        "{% endfor %}");
+    const fi::CompiledChatTemplate poisoned_template =
+        fi::CompiledChatTemplate::compile_jinja(poisoned_source, "poisoned-template");
+
+    fi::ChatMessage poisoned_user;
+    poisoned_user.role = ninfer::ChatRole::User;
+    poisoned_user.parts.push_back(fi::ChatPart::text_part("a "));
+    poisoned_user.parts.push_back(fi::ChatPart::image({}));
+    poisoned_user.parts.push_back(fi::ChatPart::image({}));
+    poisoned_user.parts.push_back(
+        fi::ChatPart::text_part("quoted " + std::string(image_marker) + " here"));
+    fi::ChatMessage poisoned_tools;
+    poisoned_tools.role = ninfer::ChatRole::Assistant;
+    poisoned_tools.reasoning_content =
+        "debugging the spelling of " + std::string(image_marker) + " now";
+    const std::string poisoned_args =
+        std::string(R"({"path":"tpl.jinja","content":"line )") + std::string(image_marker) +
+        std::string("\"}");
+    poisoned_tools.tool_calls.push_back(
+        fi::ToolCall{.id = "call-poison", .name = "write", .arguments_json = poisoned_args});
+    fi::ChatMessage poisoned_result;
+    poisoned_result.role         = ninfer::ChatRole::Tool;
+    poisoned_result.tool_call_id = "call-poison";
+    poisoned_result.parts.push_back(
+        fi::ChatPart::text_part("wrote " + std::string(image_marker)));
+    const fi::RenderedChat poisoned_rendered = poisoned_template.render(
+        {poisoned_user, poisoned_tools, poisoned_result}, fi::ChatRenderOptions{});
+    failures += check(poisoned_rendered.media_placeholders.size() == 2,
+                      "poisoned history recorded more placeholders than structured parts");
+    if (poisoned_rendered.media_placeholders.size() == 2) {
+        const auto span_text = [&](const fi::MediaPlaceholderByteSpec& spec) {
+            return poisoned_rendered.text.substr(spec.bytes.begin,
+                                                 spec.bytes.end - spec.bytes.begin);
+        };
+        failures += check(
+            poisoned_rendered.media_placeholders[0].modality == fi::Modality::Image &&
+                poisoned_rendered.media_placeholders[0].item_index == 0 &&
+                poisoned_rendered.media_placeholders[1].modality == fi::Modality::Image &&
+                poisoned_rendered.media_placeholders[1].item_index == 1 &&
+                span_text(poisoned_rendered.media_placeholders[0]) == image_marker &&
+                span_text(poisoned_rendered.media_placeholders[1]) == image_marker,
+            "poisoned history placeholders do not cover the structured pads in order");
+        std::size_t plain_count = 0;
+        for (std::size_t pos = poisoned_rendered.text.find(image_marker);
+             pos != std::string::npos; pos = poisoned_rendered.text.find(image_marker, pos + 1)) {
+            ++plain_count;
+        }
+        failures += check(plain_count == 2,
+                          "poisoned history rendered text still contains stray plain markers");
+        const std::size_t args_begin = poisoned_rendered.text.find("ARGS");
+        const std::size_t args_end   = poisoned_rendered.text.find("ENDARGS");
+        failures += check(args_begin != std::string::npos && args_end > args_begin,
+                          "poisoned history render missing tool-call arguments region");
+        if (args_begin != std::string::npos && args_end > args_begin) {
+            const std::string args_region = poisoned_rendered.text.substr(args_begin,
+                                                                          args_end - args_begin);
+            failures += check(args_region.find(image_marker) == std::string::npos,
+                              "tool-call arguments leaked a plain pad marker into the render");
+            failures += check(args_region.find(broken_marker) != std::string::npos,
+                              "tool-call arguments pad marker was not escaped");
+        }
+    }
+
+    // Count cap: a plain marker outside the structured parts (prose after the
+    // last part) is never recorded, even though it appears in the rendered
+    // text - the per-modality cap ignores excess markers in text order.
+    std::string cap_source = std::string(
+        "{% for m in messages %}{% for item in m.content %}"
+        "{% if item.type == 'image' %}IMG" + image_marker +
+        "{% elif item.type == 'text' %}{{ item.text }}"
+        "{% endif %}{% endfor %}{% endfor %}"
+        "TRAILER" + image_marker);
+    const fi::CompiledChatTemplate cap_template =
+        fi::CompiledChatTemplate::compile_jinja(cap_source, "cap-template");
+    fi::ChatMessage cap_user;
+    cap_user.role = ninfer::ChatRole::User;
+    cap_user.parts.push_back(fi::ChatPart::image({}));
+    const fi::RenderedChat cap_rendered = cap_template.render({cap_user}, fi::ChatRenderOptions{});
+    failures += check(cap_rendered.media_placeholders.size() == 1,
+                      "jinja render recorded a stray plain marker despite the part count cap");
+    if (cap_rendered.media_placeholders.size() == 1) {
+        const fi::MediaPlaceholderByteSpec& spec = cap_rendered.media_placeholders[0];
+        failures += check(
+            cap_rendered.text.substr(spec.bytes.begin,
+                                     spec.bytes.end - spec.bytes.begin) == image_marker &&
+                spec.bytes.begin >= 3 &&
+                cap_rendered.text.substr(spec.bytes.begin - 3, 3) == "IMG",
+            "count cap recorded the stray marker instead of the structured pad");
+    }
+
     bool malformed_rejected = false;
     try {
         (void)fi::CompiledChatTemplate::compile_jinja("{% if", "malformed-template");

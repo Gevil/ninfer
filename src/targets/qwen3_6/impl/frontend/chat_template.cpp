@@ -476,9 +476,16 @@ std::string_view resolve_reasoning_instructions(ChatTemplateSemantics semantics,
      OrderedJson calls = OrderedJson::array();
      for (const ToolCall& call : message.tool_calls) {
          OrderedJson arguments = OrderedJson::object();
-         if (!call.arguments_json.empty()) {
-             try {
-                 arguments = OrderedJson::parse(call.arguments_json);
+          if (!call.arguments_json.empty()) {
+              try {
+                  // Literal pad markers quoted inside tool-call argument JSON would
+                  // otherwise be re-emitted into the rendered text verbatim, where the
+                  // placeholder scan in render() would record them as structured pads.
+                  // The marker characters are not JSON-structural, so a plain marker can
+                  // only occur inside a JSON string literal; inserting the break token
+                  // there keeps the JSON valid and unrecordable.
+                  arguments = OrderedJson::parse(
+                      escape_literal_vision_tokens(call.arguments_json));
              } catch (const std::exception& error) {
                  throw std::invalid_argument("invalid tool call arguments: " +
                                              std::string(error.what()));
@@ -567,9 +574,19 @@ std::string_view resolve_reasoning_instructions(ChatTemplateSemantics semantics,
                 minja::Context::make(jinja_context(messages, options)));
             RenderedChat result{.text = std::move(text), .rewrite_checkpoint = std::nullopt};
             // The template renders one structured pad marker per media part (in request
-            // order); literal markers quoted in text are escaped upstream, so only
-            // structured Image/Video parts produce pads here. Record them so
-            // expand_placeholders can bind each placeholder to its decoded item.
+            // order). Literal markers quoted in text are escaped upstream on every
+            // channel (text parts, reasoning, tool results, tool-call arguments), and the
+            // per-modality cap below is defense in depth: record at most as many
+            // placeholders as structured parts exist, so any plain marker left in the
+            // rendered text is prose - never recorded, and dropped by the stray-strip in
+            // expand_placeholders when it falls after the last bound placeholder. An
+            // under-render (fewer markers than parts) still fails loudly at the
+            // expand_placeholders size check.
+            std::size_t structured_image = 0;
+            std::size_t structured_video = 0;
+            count_structured_media_parts(messages, structured_image, structured_video);
+            std::size_t recorded_image = 0;
+            std::size_t recorded_video = 0;
             std::size_t image_pos = result.text.find(kImagePadMarker);
             std::size_t video_pos = result.text.find(kVideoPadMarker);
             std::size_t item_index = 0;
@@ -577,14 +594,19 @@ std::string_view resolve_reasoning_instructions(ChatTemplateSemantics semantics,
                 const bool image = video_pos == std::string::npos || image_pos < video_pos;
                 const std::string_view pad = image ? kImagePadMarker : kVideoPadMarker;
                 const std::size_t pos = image ? image_pos : video_pos;
-                result.media_placeholders.push_back(MediaPlaceholderByteSpec{
-                    .bytes      = ByteSpan{pos, pos + pad.size()},
-                    .modality   = image ? Modality::Image : Modality::Video,
-                    .item_index = item_index++});
                 if (image) {
                     image_pos = result.text.find(kImagePadMarker, pos + pad.size());
                 } else {
                     video_pos = result.text.find(kVideoPadMarker, pos + pad.size());
+                }
+                const bool structural = image ? recorded_image < structured_image
+                                              : recorded_video < structured_video;
+                if (structural) {
+                    result.media_placeholders.push_back(MediaPlaceholderByteSpec{
+                        .bytes      = ByteSpan{pos, pos + pad.size()},
+                        .modality   = image ? Modality::Image : Modality::Video,
+                        .item_index = item_index++});
+                    if (image) { ++recorded_image; } else { ++recorded_video; }
                 }
             }
             return result;
@@ -1009,6 +1031,26 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
                         .message_boundaries           = std::move(message_boundaries),
                         .cache_boundaries             = std::move(cache_boundaries)};
 }
+
+ void count_structured_media_parts(const std::vector<ChatMessage>& messages,
+                                   std::size_t& image_parts,
+                                   std::size_t& video_parts) {
+     image_parts = 0;
+     video_parts = 0;
+     for (const ChatMessage& message : messages) {
+         // Same role filter as Processor::media_parts (processor.cpp): system/developer
+         // media is invalid there and never counted; unsupported roles are rejected
+         // upstream. Keep the two predicates in lockstep - the count must equal the
+         // number of VisionItems the processor builds from the same messages.
+         if (message.role == ChatRole::System || message.role == ChatRole::Developer) { continue; }
+         if (message.role != ChatRole::User && message.role != ChatRole::Assistant &&
+             message.role != ChatRole::Tool) { continue; }
+         for (const ChatPart& part : message.parts) {
+             if (part.kind == ChatPartKind::Image) { ++image_parts; }
+             else if (part.kind == ChatPartKind::Video) { ++video_parts; }
+         }
+     }
+ }
 
  bool prompt_ends_in_open_reasoning(const std::string& rendered_text) {
      // Reasoning markers depend on the active chat template. Qwen-Sharp opens
