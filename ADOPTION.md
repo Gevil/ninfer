@@ -606,16 +606,25 @@ dir, rc!=0 or TOTAL<=50 = FAIL).
 
 **Adoption queue (ordered):**
 
-1. **Tier 8 DFlash2 probe — the hinge, rebased pick set.** The 08-26 pick list
-   (71c934e0 etc.) is dangling; use the rewritten line: 9f36497c (width-8 hq verify +
-   MTP K≤7) + 74dc35fc (module rides nvfp4full artifact) + e5c33792 (nvfp4full v2) +
-   9101d425 (draft primitives) + 0a7bef84 (top-k walk) + 2470a6d8 (engine integration) +
-   71677e35 (norm-gain fix) + f92234ca (int8 verify tile). Gate (unchanged): free-GPU
-   buildstage + v2 artifact, decode battery at 98k/225k gated vs the quasar baseline JSON
-   (-5%), merge only if net decode beats baseline; the probe was NEVER run (08-25 pass-1
-   69.2 tok/s was the pre-DFlash2 staged-smem attempt). Implies a quasar → nvfp4full-v2
-   profile switch on the live lane if it passes — a user decision. In-house fallback on
-   failure: resume tier7 with the decode fast-path fix (known scope, no fork dep).
+1. **Tier 8 DFlash2 probe — the hinge, rebased pick set, quasar-v2 artifact (user decision
+   2026-08-30: probe rides on QUASAR, not nvfp4full-v2 — no lane profile switch).** The
+   08-26 pick list (71c934e0 etc.) is dangling; use the rewritten line: 9f36497c (width-8 hq
+   verify + MTP K≤7) + 9101d425 (draft primitives) + 0a7bef84 (top-k walk) + 2470a6d8 (engine
+   integration) + 71677e35 (norm-gain fix) + f92234ca (int8 verify tile — the single-pass
+   DFlash2/MTP7 verify on the int8 lane = our exact KV dtype). 74dc35fc (module rides
+   nvfp4full artifact) + e5c33792 (nvfp4full v2 quantization) are profile-specific: adapt for
+   QUASAR instead — extend the in-tree quasar recipe (tools/convert/qwen3_8_27b/
+   recipe_quasar.py) with the fourth source (`--dflash2-model` → the incoai/z-lab 2B BF16
+   drafter checkpoint, NOT local — exact repo ID to confirm from the fork's recipe) per
+   cometkim's nvfp4full-v1 recipe (docs/maintainer/qwen3.8-27b-artifact.md §15); drafter
+   weights are layout-independent and the target interface (taps [5,19,33,47,61] @ hidden
+   5120) is identical on quasar. Gate: free-GPU buildstage + quasar-v2 artifact, boot ledger
+   (drafter is resident ~1 GB+ NVFP4 vs ~1.08 GiB free-after-startup slack — may need to
+   shrink the KV pool or media budget), decode battery at 98k/225k gated vs the quasar
+   baseline JSON (-5%), full battery incl. vision; merge only if net decode beats baseline.
+   The probe was NEVER run (08-25 pass-1 69.2 tok/s was the pre-DFlash2 staged-smem
+   attempt). If it passes the live lane ships quasar-v2 (same profile family). In-house
+   fallback on failure: resume tier7 with the decode fast-path fix (known scope, no fork dep).
 2. **T13 upstream wave — after the T8 decision** (#107 touches the same qwen3_6_27b
    package.cpp the DFlash2 v2 artifact edits; do not interleave):
    - #107 (nvfp4 wire-format profile detection) — our quasar artifact IS the W8+NVFP4
