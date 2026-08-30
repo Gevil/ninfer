@@ -650,6 +650,35 @@ dir, rc!=0 or TOTAL<=50 = FAIL).
    (conflicts likely); pick 2470a6d8 (engine integration) touches cast.{h,cuh,cu,cpp},
    bidirectional_gqa_attention.cuh, swa.{h,cu}, nvfp4 config/dispatch/gemv/small_t —
    per-file mapping pending. Branch t8-dflash2 created at master.
+   **Ginfer audit (08-30, /tmp/ginfer-audit clone):** gadflyii/ginfer is a
+   heavily rewritten ninfer fork — artifact v3 `.ginfer` contract (producer-
+   final version-3), runtime/artifact/KV rewritten; engine code NOT portable
+   to our tree (different artifact contract + runtime); value = measurements
+   + design, not picks. Same z-lab draft confirmed (81 tensors, 5 layers
+   SWA-2048, taps [5,19,3,47,611], hidden 5120, rank 256, vocab 248320).
+   Their production draft storage is **Q4G64 (int4 group-64), not NVFP4**:
+   5090 measurement NVFP4 backbone + Q4 draft 154.4 tok/s > MTP3 143.8 > W8
+   draft 142.0 (+7.4% over MTP3); Q4 companion 0.95 GiB (nvfp4-dflash2-q4
+   artifact 22.5 GiB total). Our T12 tree already has Q4G64_F16S/W8G32_F16S
+   numeric formats + the groupwise converter lineage, so a Q4G64 draft
+   companion is feasible — add as a second probe variant after the NVFP4-
+   module probe if it fits the same artifact window. Acceptance expectations
+   (their engine, same draft on Qwen3.8): 2.4-2.73 tok/round at k=4 (36-43%);
+   their MTP3 2.40 (46.52%) — our probe settles it on our engine. Port
+   candidates beyond the draft: (i) adaptive context-copy verification —
+   request-local 6-12-token suffix match reuses the earlier occurrence's
+   continuation as point-mass proposals, expanded to 15 proposals after two
+   copy rounds; lossless (target verifies exact tokens); engine logic, not
+   kernel — strong fit for agentic/repetitive sessions; (ii) compact Q4
+   kernel schedules for sm_120a (34-47% op speedup on exact Qwen DFlash2
+   geometry) — only needed if the Q4 variant is chosen. "Generating our own
+   draft" = training (the z-lab draft is learned; no training pipeline in the
+   repo) — the practical path stays re-quantizing z-lab's draft via our
+   converter. The doc's DFlash2 section independently corroborates the
+   quantized-draft VRAM math (community: 3.53 -> 1.37 GiB draft = +44% KV
+   context at equal acceptance) and the converter landscape (taylor-shift
+   `--dflash-model` = proven route; agwosdz convert_dflash2.py; no unified
+   converter anywhere — our in-tree recipe is the gap-filler).
 2. **T13 upstream wave — after the T8 decision** (#107 touches the same qwen3_6_27b
    package.cpp the DFlash2 v2 artifact edits; do not interleave):
    - #107 (nvfp4 wire-format profile detection) — our quasar artifact IS the W8+NVFP4
@@ -723,12 +752,40 @@ dir, rc!=0 or TOTAL<=50 = FAIL).
    Re-derive the pick list from experimental@582431c0 (the 08-26 list predates
    e3f40a24 + 4 more commits). Gate if pursued: their GQA suite + PPL parity +
    prefill/TTFT battery + free-GPU ctest.
+6. **Sub-8-bit KV (E8 lattice / KVarN / KIVI) — HOLD, evidence updated
+   (08-30, user doc review "is there a version of ninfer that supports kvarn
+   kv context").** KVarN proper does NOT exist in any ninfer fork: KVarN
+   (Hadamard rotation + dual-scaling variance normalization, calibration-free)
+   is vLLM-native (huawei-csl fork, `kvarn_k4v2_g128` fixed preset) +
+   beellama.cpp (kvarn2-8, independent K/V bit widths, F16 precision tail).
+   KIVI (per-channel K / per-token V): vLLM plugin 4-bit only, no ninfer port.
+   NVFP4 KV cache = vLLM SM120 flashinfer patch only (NVIDIA: <1%
+   LiveCodeBench/MBPP loss; Terminal-Bench 38.2 vs FP8 36.0, not significant)
+   — out of scope for ninfer. The ninfer-ecosystem 4-bit path is the E8
+   Conway-Sloane lattice family (upstream #35 held; fork lineage
+   UDPSendToFailed/ninfer-4090 -> pefman/sergiuszm/KobusG): `rk4v4-e8`
+   (4-bit K + 4-bit V) / `rk2v4-e8` (2-bit K); 250-350k context reported on a
+   4090; 4x KV compression vs BF16 (= 2x vs our INT8). Evidence: no E2E
+   coding benchmark for E8 (98.7% = signal fidelity only); multi-source data:
+   4-bit KV near-lossless for coding (naive INT4 ±0.5%, KIVI-4 -1..-2%),
+   2-bit only viable via KVarN variance normalization (-0.4..-0.7%) while
+   naive INT2 collapses to 0%. Our T12 tree confirmed: DType enum =
+   BF16/I8/FP8_E4M3FN only — no sub-byte KV types (the "lattice" hit in
+   dflash2_draft.cuh is a comment). Hold rationale unchanged: 40-50% decode
+   slowdown (recorded on #35) + lane fits 225k INT8. Revisit ONLY as the lever
+   for (a) context >225k, or (b) T8 draft-module headroom if the ~1.3 GiB
+   NVFP4 module turns out too tight vs the ~1.94 GiB free-after-startup slack
+   (4-bit KV halves the 10.85 GiB INT8 pool -> ~5.4 GiB freed, or ~450k tokens
+   at pool size). Candidate = `rk4v4-e8`, never 2-bit. If pursued: port from
+   KobusG/ninfer-engine (5090-class measurements) rather than pefman/
+   sergiuszm; gate = decode tok/s regression ceiling + coding-battery parity
+   + free-GPU ctest.
 
 **Holds (revised 2026-08-30):**
 
 | Item | What | Why not |
 |---|---|---|
-| upstream #35 (E8 compressed KV) | 262k context via KV lattice quant | 40-50% decode slowdown; lane already fits 225k INT8 — only if we outgrow INT8 headroom |
+| upstream #35 (E8 compressed KV) | 262k context via KV lattice quant (`rk4v4-e8`/`rk2v4-e8`: Hadamard + Conway-Sloane; forks pefman/sergiuszm/KobusG, lineage UDPSendToFailed/ninfer-4090) | 40-50% decode slowdown (recorded on #35); lane fits 225k INT8. 08-30 doc review: no E2E coding benchmark for E8 (98.7% = signal fidelity only); 4-bit KV near-lossless for coding (naive INT4 ±0.5%, KIVI-4 -1..-2%), 2-bit only via KVarN variance norm; KVarN/KIVI have NO ninfer port (vLLM-native); NVFP4 KV = vLLM SM120 patch only. Revisit as the lever for context >225k or T8 draft-VRAM headroom — see queue item 6 |
 | upstream #84/#59 (Windows), #37 (Ollama) | platform/protocol additions | not the 5090 OpenAI-protocol lane |
 | cometkim dev (111 behind upstream) | whole dev line incl. kernel-perf 14 commits | moving target on a stale base; re-audit when it absorbs d9dbe1ce — then the prefill-perf subset may be adoptable separately from DFlash2 |
 | cometkim 768k presets + eval harness | long-context presets; quality tooling | lane runs 225k; pull the eval harness in to validate T8/T9 when they run |
