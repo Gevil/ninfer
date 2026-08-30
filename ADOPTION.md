@@ -670,6 +670,13 @@ dir, rc!=0 or TOTAL<=50 = FAIL).
    rollback. 16:34 re-shipped **default 8 GiB + v22.4.0** (the 16384 flag append
    silently failed — sed pattern missed the Exec line — and the default proved
    sufficient, so it stays off).
+   Note: both of today's "A/B" runs actually ran the 32 GiB pin — the v2 job's
+   rollback restored the 08-26 quadlet (`--host-kv-mib 32768`, the #64 parking
+   arena flag; `--kv-host-cache-mib` is the dropped #73 name and matches nothing),
+   and the 16384 sed targeted the wrong flag name. So the A/B is clean on the pin
+   axis: pin-on (both battery runs, v22.4.0) -> decode FAIL; pin-off (cold,
+   v22.4.0) -> decode PASS 160.9/138.7. The pin is the regression variable, not
+   the template.
    **Cold verification (lane idle during the probes):** decode-fresh 160.9 tok/s
    (gate ≥132.4), decode-8k 138.7 tok/s (gate ≥130.5) — fastest measurements of the
    day; soak 5/5 200; 313-msg/13-media fixture replay http=200 wall=76.6s; live
