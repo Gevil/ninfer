@@ -14,6 +14,14 @@ struct Q6RowSplitStorage {
     static constexpr int kCodeBytesPerGroup  = 32;
     static constexpr int kHighBytesPerGroup  = 16;
     static constexpr int kScaleBytesPerGroup = 2;
+
+    // A chunk is the eight codes one thread decodes, so it spans four packed bytes.
+    static constexpr int kCodeBytesPerChunk = 4;
+    static constexpr int kHighBytesPerChunk =
+        kHighBytesPerGroup / (kCodeBytesPerGroup / kCodeBytesPerChunk);
+    static_assert(kHighBytesPerChunk * (kCodeBytesPerGroup / kCodeBytesPerChunk) ==
+                      kHighBytesPerGroup,
+                  "the high-bit plane must divide evenly across a group's chunks");
 };
 
 struct Q6SimtDecodeAtom {
@@ -37,11 +45,10 @@ struct Q6SimtDecodeAtom {
 };
 
 struct Q6MmaDecodeAtom {
-    // Four packed bytes plus two high-bit bytes -> four bf16 pairs, in weight order.
-    // Per-weight arithmetic is identical to decode_pair below (lane = 4 * chunk + i).
-    static __device__ __forceinline__ void decode_eight(unsigned word,
-                                                        const std::uint8_t* high_chunk,
-                                                        float scale, unsigned (&out)[4]) {
+    // Four packed bytes plus their two high-bit bytes -> four bf16 pairs, in weight order; out[i]
+    // holds the pair decode_pair produces at lane = 4 * chunk + i.
+    static __device__ __forceinline__ void
+    decode_eight(unsigned word, const std::uint8_t* high_chunk, float scale, unsigned (&out)[4]) {
         const unsigned high0 = high_chunk[0];
         const unsigned high1 = high_chunk[1];
 #pragma unroll
@@ -53,13 +60,13 @@ struct Q6MmaDecodeAtom {
                 ((static_cast<int>(byte & 0x0fu) | static_cast<int>(((high >> shift) & 3u) << 4)) ^
                  0x20) -
                 0x20;
-            const int q1 = ((static_cast<int>(byte >> 4) |
-                             static_cast<int>(((high >> (shift + 2)) & 3u) << 4)) ^
-                            0x20) -
-                           0x20;
+            const int q1               = ((static_cast<int>(byte >> 4) |
+                                           static_cast<int>(((high >> (shift + 2)) & 3u) << 4)) ^
+                                          0x20) -
+                                         0x20;
             const __nv_bfloat162 value = __floats2bfloat162_rn(static_cast<float>(q0) * scale,
                                                                static_cast<float>(q1) * scale);
-            out[i] = *reinterpret_cast<const unsigned*>(&value);
+            out[i]                     = *reinterpret_cast<const unsigned*>(&value);
         }
     }
 

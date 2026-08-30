@@ -6,7 +6,7 @@
 
 // Internal, wire-format-independent representation of a generation request.
 //
-// OpenAI and Anthropic schemas both map into this wire-independent value.
+// OpenAI and Anthropic schemas map into this wire-independent value.
 // translate.cpp then produces the public PromptInput and RequestOptions consumed
 // by Engine; media sources remain unresolved until the product service acquires
 // owning bytes.
@@ -17,7 +17,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 namespace ninfer::serve {
@@ -48,38 +47,41 @@ struct RequestLimits {
     int default_max_tokens = 8192;
 };
 
-struct CompletionUsage {
-    int prompt_tokens     = 0;
-    int completion_tokens = 0;
-    // The subset of prompt_tokens the prefix cache served, so a client can tell a
-    // reused prompt from a recomputed one. OpenAI semantics: a subset, not an
-    // addend. The Anthropic schema deliberately does not emit this -- there
-    // input_tokens *excludes* cache reads, so reporting it would also have to
-    // change what input_tokens means for every existing Messages client.
-    int cached_prompt_tokens = 0;
-};
-
 enum class ContentKind {
     Text,
     Image,
     Video,
-    InputAudio,
-    Unsupported,
+};
+
+struct CacheBoundary {
+    enum class Ttl : std::uint8_t {
+        Default,
+        FiveMinutes,
+        OneHour,
+    };
+
+    ninfer::PromptCacheMarkerKind kind       = ninfer::PromptCacheMarkerKind::SharedStablePrefix;
+    ninfer::SharedCandidateEvidence evidence = ninfer::SharedCandidateEvidence::ExplicitBoundary;
+    Ttl ttl                                  = Ttl::Default;
+
+    [[nodiscard]] friend constexpr bool operator==(CacheBoundary, CacheBoundary) noexcept = default;
 };
 
 struct ContentPart {
     ContentKind kind = ContentKind::Text;
     std::string text;     // populated for Text
-    std::string type_raw; // original OpenAI "type" string (diagnostics / future use)
+    std::string type_raw; // original wire "type" string for diagnostics
     ninfer::product::media_acquire::Source source;
+    ninfer::ImageResizePolicy image_resize_policy = ninfer::ImageResizePolicy::Downsize;
+    std::optional<CacheBoundary> cache_boundary_after;
 };
 
 struct ToolDefinition {
     std::string name;
     std::string description;
-    std::string parameters_json;
-    std::string definition_json; // normalized OpenAI function-tool object for Qwen prompt rendering
-    bool strict = false;
+    std::string input_schema_json;
+    std::optional<std::string> input_examples_json;
+    std::optional<CacheBoundary> cache_boundary_after;
 };
 
 struct ToolCall {
@@ -91,8 +93,10 @@ struct ToolCall {
 enum class ToolChoiceMode {
     Auto,
     None,
-    Required,
-    Named,
+};
+
+struct ToolChoice {
+    ToolChoiceMode mode = ToolChoiceMode::Auto;
 };
 
 // Wire value of `response_format.type` accepted by the OpenAI layer. The engine
@@ -110,33 +114,30 @@ struct StructuredOutput {
     std::string schema_json; // serialized `json_schema.schema` for JsonSchema
 };
 
-struct ToolChoice {
-    ToolChoiceMode mode = ToolChoiceMode::Auto;
-    std::string name;
-};
-
 struct ChatTurn {
     ChatRole role = ChatRole::User;
-    std::vector<ContentPart>
-        content; // one or more parts; assistant content may be empty with tool_calls
+    std::vector<ContentPart> content; // ordered parts; may be empty when wire content is empty
     std::vector<ToolCall> tool_calls;
-    std::string tool_call_id;      // populated for role=tool
+    std::string tool_call_id; // populated for role=tool
+    // Optional protocol assertion for a tool result. Call-graph normalization verifies it against
+    // the function identified by tool_call_id before the Engine sees the history.
+    std::optional<std::string> tool_result_name;
+    bool tool_result_is_error = false;
     std::string reasoning_content; // assistant thinking carried across turns (round-tripped to the
                                    // template)
+    std::optional<CacheBoundary> cache_boundary_after;
 };
 
-// OpenAI sampling fields carried by the protocol adapter. `logit_bias` remains
-// parsed for wire compatibility; the current public engine sampler has no bias
-// input, so it does not affect generation.
+// Sampling overrides that have an executable Engine meaning. Protocol-only
+// fields are normalized or rejected before this value is constructed.
 struct SamplingParams {
     std::optional<double> temperature;
     std::optional<double> top_p;
+    std::optional<double> min_p;
     std::optional<int> top_k;
     std::optional<double> presence_penalty;
     std::optional<double> frequency_penalty;
     std::optional<std::uint64_t> seed;
-    std::unordered_map<int, double> logit_bias;
-    int n = 1;
 };
 
 // Protocol-level effort vocabulary. Each wire adapter accepts the values from
@@ -186,25 +187,22 @@ requested_reasoning_effort_name(RequestedReasoningEffort effort) noexcept {
 }
 
 struct GenerationRequest {
-    std::string model;
     std::vector<ChatTurn> messages;
     std::vector<ToolDefinition> tools;
     std::size_t tool_name_max_length = 64;
     ToolChoice tool_choice;
-    StructuredOutput structured_output;
     std::vector<std::string> stop_strings;
-    int max_tokens      = 0; // 0 => use server default; set via max_tokens_set when client pinned a value
-    bool max_tokens_set = false;
-    bool stream         = false;
-    bool include_usage  = false;
-    std::optional<bool> enable_thinking; // non-standard extension; falls back to server default
+    bool stop_strings_apply_to_reasoning = false;
+    int max_tokens                       = 0; // resolved budget; zero means immediate output limit
+    std::optional<bool> enable_thinking;      // unset => use the server default
+    std::optional<std::uint32_t> thinking_budget;
     std::optional<RequestedReasoningEffort> reasoning_effort;
-    std::string reasoning_effort_param = "reasoning_effort";
     std::optional<bool> preserve_thinking;
-    // Sharp template per-request terseness toggle (kwargs channel only; the
-    // template keeps its own default when absent).
+    // Sharp template per-request terseness toggle (kwargs channel only; null = template default).
     std::optional<bool> terse;
-    bool preserve_thinking_semantic_change = false;
+    StructuredOutput structured_output;
+    ninfer::PromptContinuationMode continuation = ninfer::PromptContinuationMode::NewAssistantTurn;
+    bool allow_engine_automatic_shared_prefixes = true;
     SamplingParams sampling;
 
     [[nodiscard]] bool uses_tools() const noexcept {
