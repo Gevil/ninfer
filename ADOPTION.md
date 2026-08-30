@@ -679,6 +679,60 @@ dir, rc!=0 or TOTAL<=50 = FAIL).
    context at equal acceptance) and the converter landscape (taylor-shift
    `--dflash-model` = proven route; agwosdz convert_dflash2.py; no unified
    converter anywhere — our in-tree recipe is the gap-filler).
+   **taylor-shift/ninferno audit (08-30, user point, /tmp/taylorshift-audit,
+   branch dflash2-27b):** upstream feaf4dd (T10 start) + 103 commits, 105
+   behind upstream master; last commit 08-25 (dead since). Complete
+   DFlash2-27B package: engine (afd1bcd, +4983: grouped_dynamic_causal_conv
+   + dflash_selector family (full-vocab top-16, 256-rank projection, 16x16
+   edge scores), 5-layer DFlashConfig, 66-object dflash/ load section, 4
+   conv insertions), converter (tools/convert/qwen3_8_27b/dflash2.py: 81 HF
+   tensors -> 66 objects, 2,226,792,960 B; convert_nvfp4.py --dflash-model),
+   tests (op units, linear dispatch, 27B load-plan, engine real = golden +
+   D4 negative + determinism + long-restore, python converter), env-gated
+   diagnostic matrix (k=1..7 sweep + MTP probe + token streams), 5-stage
+   acceptance script, PyTorch reference drafter (vllm PR 52816 port,
+   stage-by-stage cross-check of engine [dflash.trace]), published
+   nvfp4-dflash2 image + the phaseonx11 artifact. **Module format =
+   W8G32_F16S (2.07 GiB payload, 21 draft GEMMs), NOT NVFP4.** **CRITICAL:
+   unresolved acceptance bug at branch tip — engine accepts ~1.1
+   drafts/step vs published ~4.8** while every op passes its unit tests;
+   tip commits (08-25) are the debugging stage (reference drafter, round
+   dumps, per-layer checksums, W8-dequant-compare: the W8 draft GEMMs vs
+   the BF16 references is the one structural difference — a bad
+   scale/stride/row mapping degrades every draft while leaving the target
+   correct). Their published DFlash numbers are 35B-A3B only (upstream-
+   origin: 4.0-5.6 tok/round; DFlash beats MTP3 on long-reasoning/
+   structured but -14%..-43% on code/story) — NO 27B-8 DFlash2 numbers.
+   **Implications for the T8 probe:** (1) draft-weight quantization
+   fidelity is a LIVE acceptance-rate risk: the W8 hypothesis is exactly
+   the class our NVFP4 module (4-bit, more aggressive than W8) faces —
+   gate addition: module-fidelity check (port their dequant-compare:
+   dequantize each module object, compare vs the raw checkpoint tensor,
+   tolerance-gated) must PASS before the quasar-v2 artifact ships; (2)
+   port the PyTorch reference drafter as probe oracle (engine trace vs
+   reference, one propose block, stage-by-stage); (3) acceptance gate:
+   probe must beat MTP3 (~2.40 tok/round) — an acceptance collapse
+   surfaces as net-decode loss in the 98k/225k battery; (4) module
+   fallback chain if NVFP4 fails on acceptance: W8G32 module (2.07 GiB —
+   FITS the ~2.36 GiB slack, unlike the 3.85 GiB BF16) -> KV-pool shrink
+   -> BF16. Cross-checks: their 34ba938 (kv_cache_append_prefix per-cache
+   window) independently corroborates our pick-5 DU change; their a2ba70f
+   (selector walk IMC: sampling config by value, not host pointer) is a
+   bug class to audit in our ported walk; their 5713946/bf24792 (drafter
+   shared-KV entitlement gating, hybrid vs pure-SWA) + 7f84d5a (masked
+   verify blocks off the Prompt prefill path) + aeba589 (oversized
+   prefill chunks) = equivalence checks during pick 5/6. **Decision: NOT
+   the T8 engine source** (tip broken on acceptance, 105 behind master,
+   W8 module, 60+ fleet-deploy commits of noise) — the dylan line stays
+   (active 08-30, norm-gain fix, int8 verify tile); taylor-shift = the
+   verification asset + the W8 fallback-format source. **Port state
+   (08-30):** 4/8 picks committed + gate-verified (8b113373, aa6acabf,
+   f7f3acbe, 2cc5292c); pick 5 (2470a6d8, 57 files / 2125 ins, 21
+   conflicts) was in progress (7 easy resolutions + 5 new files staged,
+   8 hard qwen3_6-runtime conflicts) — an accidental `git checkout
+   t8-dflash2 -- .` wiped the staged resolutions to existing files (the 5
+   new files survived); recovery = cherry-pick --abort + fresh re-pick,
+   then re-resolve.
 2. **T13 upstream wave — after the T8 decision** (#107 touches the same qwen3_6_27b
    package.cpp the DFlash2 v2 artifact edits; do not interleave):
    - #107 (nvfp4 wire-format profile detection) — our quasar artifact IS the W8+NVFP4
@@ -774,9 +828,10 @@ dir, rc!=0 or TOTAL<=50 = FAIL).
    dflash2_draft.cuh is a comment). Hold rationale unchanged: 40-50% decode
    slowdown (recorded on #35) + lane fits 225k INT8. Revisit ONLY as the lever
    for (a) context >225k, or (b) T8 draft-module headroom if the ~1.3 GiB
-   NVFP4 module turns out too tight vs the ~1.94 GiB free-after-startup slack
-   (4-bit KV halves the 10.85 GiB INT8 pool -> ~5.4 GiB freed, or ~450k tokens
-   at pool size). Candidate = `rk4v4-e8`, never 2-bit. If pursued: port from
+   NVFP4 module (or the 2.07 GiB W8G32 fallback) turns out too tight vs
+   the ~2.36 GiB free-after-startup slack (4-bit KV halves the 10.85 GiB
+   INT8 pool -> ~5.4 GiB freed, or ~450k tokens at pool size)
+   Candidate = `rk4v4-e8`, never 2-bit. If pursued: port from
    KobusG/ninfer-engine (5090-class measurements) rather than pefman/
    sergiuszm; gate = decode tok/s regression ceiling + coding-battery parity
    + free-GPU ctest.
