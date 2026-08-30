@@ -474,3 +474,29 @@ Conflict surface if merged today (merge-base = `feaf4dd0`): **100 hunks / ~30 fi
 2. **tier7 fast-path fix** — in-house fallback on the same spec-decode bottleneck.
 3. **Watch:** dev → master (Tier 10 trigger), #90 settlement, dylan/cometkim DFlash2 evolution.
 4. **Tier 9** only after the DFlash2 decision + prefill-bottleneck evidence.
+
+## T12 - upstream convergence wave (2026-08-30)
+- Branch `t12-upstream-merged` @ 4567363e = T11w line (185decf5) + merge of upstream
+  master ce09aee5..d9dbe1ce (16 commits; upstream dev merged into master). New:
+  value-aware shared prefix scheduling (099d9032 + 4ce08e34 bench + 6b94b8c5
+  checkpoint-pressure fix), w8 rowsplit eight-code decode (93cdc264), fused TMA
+  SwiGLU width registration (00369f63 + 5327d676 test), nvtx engine profiling
+  (89e297e1), perplexity evaluator + corpus + logprob reduction (f6b3ba93/
+  11e76d8d/0b5b7c9a), artifact-decoupling docs (953a7b2f), four removal chores
+  (python reference stack af0bd2d0, v1 artifact migration 6143271f, obsolete
+  benches 68324a97, peripheral tooling d9dbe1ce).
+- t12->quasar merge: clean (9-file conflict resolution on the quasar branch:
+  frontend.cpp/frontend.h upstream marker machinery + kept P1 reasoning
+  derivation; package.cpp x2 upstream call form; w8_rowsplit upstream
+  eight-code optimization; types.h additive).
+- t12->master merge: 1 conflict (sparse_moe_prefill_kernels.cu — master kept
+  the local q4_decode_eight_bf16 byte_perm decode + old q4 kernel signature;
+  t12/upstream superseded it with the grouped_io redesign) — resolved to t12,
+  file byte-identical to the verified t12 tree.
+- Verified on the lane: consolidated battery 16/16 (UP, IMAGE, MODELS, LEDGER,
+  WARMUP, VISION, VISION-HIST, VISION-POISONED, REPLAY x2, XHIGH, THINK-SMOKE,
+  DECODE-FRESH, DECODE-8K, QUALITY, SOAK, 4XX-WATCH) on image d85a4163, plus
+  free-GPU ctest recheck 100 tests rc=0 (skip set within baseline, incl. new
+  baseline entry ninfer_qwen3_6_27b_score_real_test).
+- Propagated to master via no-ff merge; PR #9 (t11-quasar-merged) closed as
+  superseded — its content is fully contained in this merge.
