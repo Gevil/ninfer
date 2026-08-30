@@ -630,6 +630,9 @@ dir, rc!=0 or TOTAL<=50 = FAIL).
    group-16 1.36 GiB) are parity references only — the engine loads the module from the
    .ninfer artifact in the fork's NVFP4 encoding, so our converter quantizes the BF16
    incoai repo either way. Gate: free-GPU buildstage + quasar-v2 artifact (NVFP4 module),
+   boot ledger (module resident ~1.3 GiB NVFP4 vs ~2.36 GiB free-after-startup slack —
+   fits without touching the KV pool), decode battery at 98k/225k gated vs the quasar
+   baseline JSON (-5%), full battery incl. vision; merge only if net decode beats baseline.
    The probe was NEVER run (08-25 pass-1 69.2 tok/s was the pre-DFlash2 staged-smem
    attempt). If it passes the live lane ships quasar-v2 (same profile family). In-house
    fallback on failure: resume tier7 with the decode fast-path fix (known scope, no fork dep).
