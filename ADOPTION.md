@@ -614,17 +614,39 @@ dir, rc!=0 or TOTAL<=50 = FAIL).
    DFlash2/MTP7 verify on the int8 lane = our exact KV dtype). 74dc35fc (module rides
    nvfp4full artifact) + e5c33792 (nvfp4full v2 quantization) are profile-specific: adapt for
    QUASAR instead — extend the in-tree quasar recipe (tools/convert/qwen3_8_27b/
-   recipe_quasar.py) with the fourth source (`--dflash2-model` → the incoai/z-lab 2B BF16
-   drafter checkpoint, NOT local — exact repo ID to confirm from the fork's recipe) per
-   cometkim's nvfp4full-v1 recipe (docs/maintainer/qwen3.8-27b-artifact.md §15); drafter
-   weights are layout-independent and the target interface (taps [5,19,33,47,61] @ hidden
-   5120) is identical on quasar. Gate: free-GPU buildstage + quasar-v2 artifact, boot ledger
-   (drafter is resident ~1 GB+ NVFP4 vs ~1.08 GiB free-after-startup slack — may need to
-   shrink the KV pool or media budget), decode battery at 98k/225k gated vs the quasar
-   baseline JSON (-5%), full battery incl. vision; merge only if net decode beats baseline.
+   drafter checkpoint — **repo confirmed 2026-08-30: incoai/Qwen3.8-27B-DFlash2**
+   (mirror: z-lab/Qwen3.8-27B-DFlash2; 3.58 GiB model.safetensors, 81 BF16 tensors,
+   5 layers, selector codebooks [248320,256], fc [5120,25600] = 5 taps; downloaded to
+   ~/.local/share/ninfer/models/qwen3.8-27b-dflash2/) per
+   cometkim's recipe (docs/maintainer/qwen3.8-27b-artifact.md §15). **Module format
+   (2026-08-30, user question):** port BOTH 74dc35fc (module rides the artifact) AND
+   e5c33792 (nvfp4full-v2: the module's 34 weight matrices quantized with the fork's own
+   NVFP4_MAXABS_DIVISOR_RNE_V1 encoder — weight-only, no calibration; norms + conv base
+   kernels stay BF16): module 3.85 GiB BF16 -> ~1.3 GiB NVFP4, ~2.55 GiB freed per held
+   envelope. The v1-style BF16 module (3.85 GiB resident) would NOT fit the quasar lane's
+   ~2.36 GiB free-after-startup slack without shrinking the KV pool; the NVFP4 module is
+   the viable path. Community NVFP4 drafts (maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal
+   modelopt 1.55 GiB; YourHighnessLA/Qwen3.8-27B-DFlash2-NVFP4 compressed-tensors W4A16
+   group-16 1.36 GiB) are parity references only — the engine loads the module from the
+   .ninfer artifact in the fork's NVFP4 encoding, so our converter quantizes the BF16
+   incoai repo either way. Gate: free-GPU buildstage + quasar-v2 artifact (NVFP4 module),
    The probe was NEVER run (08-25 pass-1 69.2 tok/s was the pre-DFlash2 staged-smem
    attempt). If it passes the live lane ships quasar-v2 (same profile family). In-house
    fallback on failure: resume tier7 with the decode fast-path fix (known scope, no fork dep).
+   **Port status (2026-08-30):** the mechanical cherry-pick is BLOCKED by the T10/T12
+   restructure — the picks' gqa decode files (gqa_attention_decode_*.cuh/.cu,
+   gqa_attention.h/.cpp) no longer exist in master; decode moved to
+   src/ops/softmax_attention/dense/causal_cache/ (small_t*.cuh/cu, launch.h,
+   causal_softmax_attention.cpp). T8 is therefore a PORT, not a pick. File map so far:
+   pick 9f36497c (width-8 hq verify: TokenTile assert small_t_bf16.cuh:26 <=6 -> <=8,
+   new gqa_small_t_chunk_tokens(DType) U8->8 else 6, uses_small_t/resolve_route gain a
+   DType param) -> small_t_bf16.cuh + launch.h:30-32 + small_t.cu:228 +
+   causal_softmax_attention.cpp; pick f92234ca (int8 tile) -> small_t_i8.cuh:88 + same
+   routing files; picks 9101d425/0a7bef84 (dflash2 primitives/top-k) are ~all-new files
+   (dflash2_draft.{cuh,cu,h}, dflash2_draft.cpp, dflash2_selector_*, tests) + CMakeLists
+   (conflicts likely); pick 2470a6d8 (engine integration) touches cast.{h,cuh,cu,cpp},
+   bidirectional_gqa_attention.cuh, swa.{h,cu}, nvfp4 config/dispatch/gemv/small_t —
+   per-file mapping pending. Branch t8-dflash2 created at master.
 2. **T13 upstream wave — after the T8 decision** (#107 touches the same qwen3_6_27b
    package.cpp the DFlash2 v2 artifact edits; do not interleave):
    - #107 (nvfp4 wire-format profile detection) — our quasar artifact IS the W8+NVFP4
@@ -633,12 +655,60 @@ dir, rc!=0 or TOTAL<=50 = FAIL).
    - #72 (on-demand vision residency, DRAFT but complete, measured on RTX 5090) — the
      vision-lane VRAM/context lever; sequence last in the wave, full battery incl.
      vision probes.
-3. **Lane ops: enable host-KV parking** (independent of 1-2; restart only, no free GPU):
-   add `--kv-host-cache-mib 16384` to the quadlet (8 GiB default currently thrashes on
-   two ~76k-token int8 branch roots: 18-40s re-prefills; 16 GiB → 0.2s restore) and fix
-   the stale 32768 comment. Pinned host RAM, zero VRAM impact. Gate: full battery
-   (REPLAY + 4XX-WATCH). Watch #75 for a unifying PR before committing to a larger budget.
-4. **Tier 9 dylan xattn prefill — deferred, rebased.** Only after the T8 decision
+3. **Lane ops: host-KV + template (COMPLETE 2026-08-30 16:45).** Finding:
+   `--kv-host-cache-mib` no longer exists in the engine — the #73 content-addressed
+   host-KV subsystem was dropped in the T10/T12 upstream merge (fix(merge) 944a9be:
+   "caller was the dropped #73 host-KV path"; 43298ee3 dropped the stale real-test).
+   The 2026-08-24 quadlet comment ("--kv-host-cache-mib 32768 added") was wrong: the
+   flag was never in the Exec. The lane runs the built-in `--host-kv-mib` #64 parking
+   arena, 8 GiB default (`kDefaultHostKvCapacityBytes`, include/ninfer/types.h;
+   ledger: `host-state=8 host-kv=8.00 GiB`).
+   Sequence: 08-26 enabled `--host-kv-mib 32768` + Sharp v22.4.0 → battery FAIL:
+   DECODE 119.6/116.8 tok/s (~15% below gate) + 34 engine rejections (503) during
+   soak → auto-rollback. 08-30 16:07 re-ran the battery on the SAME config (32 GiB
+   pin + v22.3.2): DECODE 119.6/116.8 FAIL again + 34 rejections + SOAK 4xx FAIL →
+   rollback. 16:34 re-shipped **default 8 GiB + v22.4.0** (the 16384 flag append
+   silently failed — sed pattern missed the Exec line — and the default proved
+   sufficient, so it stays off).
+   **Cold verification (lane idle during the probes):** decode-fresh 160.9 tok/s
+   (gate ≥132.4), decode-8k 138.7 tok/s (gate ≥130.5) — fastest measurements of the
+   day; soak 5/5 200; 313-msg/13-media fixture replay http=200 wall=76.6s; live
+   session decode 122–160 tok/s with `reuse=private_response_replay`.
+   **Diagnosis (two confounds, both now documented):**
+   (a) The 32 GiB pin correlated with the decode regression in both battery runs —
+   pinning 24 GiB above the 8 GiB default at boot (MemFree 26→1.8 GiB); consistent
+   with reclaim pressure on the pinned arena's extent copies.
+   (b) Both DECODE FAIL windows overlapped the live OMP session generating against
+   the same lane (178k-context xhigh stream, C=4 pool shared with the probe) — the
+   probe stream was crushed (3.6 tok/s in the worst window). **Battery design rule
+   (new, R2): DECODE/SOAK gates are only valid in a quiet window (no concurrent
+   session generation against the lane-under-test); a concurrent session is the
+   T11-postmortem session-coupling class, now hitting the battery. Cold probes in a
+   tool-call window are the valid measurement.**
+   **Final state (shipping):** image t12-4567363e + Sharp template v22.4.0 +
+   default 8 GiB `--host-kv-mib` (no pin). The 32 GiB pin is NOT re-shipped: no
+   measured benefit, and both pin runs regressed decode under the gate. Revisit only
+   if session-parking demand appears (then pin at ≤16 GiB with a quiet-window A/B).
+   v22.4.0 is SHIPPED (multi-part reasoning + default_reasoning_effort + whitespace
+   fixes; vision markers byte-unchanged).
+4. **Tier 14 host-KV content cache — re-port the #73 subsystem onto the T12 tree**
+   (new tier, 2026-08-30). The built-in `--host-kv-mib` arena (page-granular
+   HostKVArena + HostKVExtentStore, program_impl.h) pins host RAM for KV parking but
+   is NOT content-addressed: no prefix dedup, no 0.2s branch restore, no #74
+   identical-burst coalescing. The tier4-wave #73 port (9 commits: 7fa78bec core,
+   0d45cfce flag conflicts, b5ecbd1b stale-plan revalidation, a5202b29 store
+   invariants, 258bd89b admission replan, 57d52d5e anchor-bytes+epoch gate,
+   e30d0843 coalescing, ad89f3d3+beb2c7ba tests) was dropped by the T10 merge —
+   re-apply it on master. Conflicts expected in runtime/program (the T12
+   runtime-ownership refactor restructured the pool APIs that 944a9be orphaned),
+   serve_options (flag + ContextCacheOptions fields), and CMake. Upstream status:
+   #73 closed unmerged (DIRTY), #90 closed unmerged, #75 design-only (no unifying
+   PR) — this stays fork-only. Gate: free-GPU ctest + full battery + a new probe:
+   two sessions sharing a ~76k-token prefix, switch latency target <2s vs the
+   18-40s re-prefill at 8 GiB. Budget: start at 16384 MiB (two ~200k-token sessions);
+   the 32768 pin measured MemFree 1.8 GiB and failed the decode gate — verify the
+   pin size against decode tok/s before shipping larger.
+5. **Tier 9 dylan xattn prefill — deferred, rebased.** Only after the T8 decision
    (if dylan's dflash2 line wins, xattn rides on it) + prefill/TTFT bottleneck evidence.
    Re-derive the pick list from experimental@582431c0 (the 08-26 list predates
    e3f40a24 + 4 more commits). Gate if pursued: their GQA suite + PPL parity +
@@ -655,8 +725,12 @@ dir, rc!=0 or TOTAL<=50 = FAIL).
 | dylan perf/rtx5090-qwen38 | width-invariant fix line (7d566547 et al.) | dead since 08-18; the live line is experimental |
 | eason / md / knoop / matpape | dead or redundant | eason dead 08-22; md ships via upstream (in-tree); knoop line arrived via T12; matpape redundant with #57/#65 |
 
-**Sequencing (un-parked 2026-08-30):** (1) T8 DFlash2 probe on the rebased pick set —
-the only decision the plan hinges on; (2) T13 upstream wave (#107 + #97 + #72) after the
-decision; (3) host-KV 16 GiB quadlet enablement can run any time in between (no free
-GPU); (4) Tier 9 only after the DFlash2 decision + TTFT evidence. Standing watch:
-cometkim rebase onto d9dbe1ce, dylan's daily experimental commits, #75 follow-up PR.
+**Sequencing (un-parked 2026-08-30, updated after the host-KV A/B finding):** (1)
+re-ship the winning lane config (template v22.4.0 + a host-KV pin size that passes the
+decode gate — isolated by A/B) + full battery; (2) T8 DFlash2 probe on the rebased
+PORT set (the 6 picks must be re-landed onto the T12 softmax_attention layout — see
+port status under item 1) — the only decision the plan hinges on; (3) T13 upstream wave
+(#107 + #97 + #72) after the decision; (4) T14 host-KV content-cache re-port whenever a
+free-GPU window opens (independent of 1-3); (5) Tier 9 only after the DFlash2 decision
++ TTFT evidence. Standing watch: cometkim rebase onto d9dbe1ce, dylan's daily
+experimental commits, #75 follow-up PR.
