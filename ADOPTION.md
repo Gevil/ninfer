@@ -562,3 +562,92 @@ Shipping-gate re-evaluation (post-mortem):
    sessions and the FAIL path (retag + restart) only triggers when the
    battery fails - the battery passed, so no automatic recovery existed;
    rollback was only reachable from a new session.
+
+## Audit 2026-08-30 - post-T12 re-evaluation (adoption queue)
+
+**Base state (verified 2026-08-30):** master @ 1019ef7f = T12 tree, **0 behind upstream/master**
+(tip `d9dbe1ce`; upstream merged its dev branch into master 08-29 — the dev line is gone,
+Tier 10 watch item resolved by T12). Live lane: image t12-4567363e (d85a4163, tags
+:quasar/:latest), battery 16/16 PASS (3 distinct vision probes + REPLAY 10/10 + SOAK 5/5
+incl. vision x2 + 4XX-WATCH; decode 141.6/147.3 tok/s in gate), fresh live vision probe 200.
+Ship gate: both T11-vision-400 script bugs fixed and codified (battery rule R1: Python
+probes build payloads via json.dumps; ship rule G4: ctest builds targets, cd's to the build
+dir, rc!=0 or TOTAL<=50 = FAIL).
+
+**What changed since the 08-26 audit:**
+
+- **Tier 10 (dev sync) — RESOLVED.** dev merged into upstream master 08-29; T12 consumed it.
+  The knoop "program authority" line arrived in-tree with T12.
+- **#90 (igorls prefix seeding) — CLOSED UNMERGED 08-27**, no maintainer feedback. The
+  competing-design question is settled: in-tree #73 host content cache is the surviving
+  design. #73 itself was closed unmerged upstream (merge state DIRTY) — stays fork-only.
+- **#74/#75 are closed design-doc issues, not PRs.** #75 (host-KV convergence: #64 park
+  fast-path over the #73 content store) is design-only — no unified PR exists; watch for
+  one (it would change the host-KV lane-ops item below).
+- **Upstream merged a large PR batch 08-27..08-29** (md perf #99/#106/#112/#113/#115 =
+  gevil copies 92bb06eb/8d343527/00369f63/93cdc264/5327d676; protocol-adapter completion
+  superseded #55/#108) — all in our tip, nothing to adopt.
+- **cometkim DFlash2 line REWRITTEN 08-27**: the five 08-26 audit SHAs are dangling;
+  re-pushed as 9f36497c/74dc35fc/e5c33792/9101d425/0a7bef84/2470a6d8, plus NEW 71677e35
+  (context norm gains plain w — native acceptance reproduced at 3.4-3.7 tok/round),
+  folded into dev via db9a9051 (08-28) with f92234ca (width-8 int8 verify tile — the
+  single-pass DFlash2/MTP7 verify on the int8 lane, i.e. our lane's KV dtype) + f6bb4f10
+  (serving presets). No PRs exist on cometkim/ninfer or upstream from cometkim.
+- **cometkim feat/kernel-perf: 14 commits** (08-27, not in-tree): fp16-accumulate PV i8
+  prefill, key-range splits (+14.2% pp65536 i8 / +6.0% hq), PDL decode chain, fused
+  GDN decode route, per-request error boundary, 524k/786k prefill fixes. Folded into the
+  same dev squash; dev is 111 commits behind upstream (has not absorbed d9dbe1ce).
+- **dylan: the only fork with activity today (08-30 07:08).** experimental moved
+  13a2e5d0 → 582431c0: KV-RAM/DFlash entitlement poison fixes (13a2e5d0), decode-band
+  Linear pinning (2c295b6e), dflash2 paper-chain verify (eb5bedb5), HTTP timing parity
+  (582431c0). The xattn/prefill pick list from the 08-26 audit needs re-derivation.
+- **md / eason: dead sources.** md ships via upstream PRs (all 5 merged = in-tree);
+  eason dead since 08-22.
+
+**Adoption queue (ordered):**
+
+1. **Tier 8 DFlash2 probe — the hinge, rebased pick set.** The 08-26 pick list
+   (71c934e0 etc.) is dangling; use the rewritten line: 9f36497c (width-8 hq verify +
+   MTP K≤7) + 74dc35fc (module rides nvfp4full artifact) + e5c33792 (nvfp4full v2) +
+   9101d425 (draft primitives) + 0a7bef84 (top-k walk) + 2470a6d8 (engine integration) +
+   71677e35 (norm-gain fix) + f92234ca (int8 verify tile). Gate (unchanged): free-GPU
+   buildstage + v2 artifact, decode battery at 98k/225k gated vs the quasar baseline JSON
+   (-5%), merge only if net decode beats baseline; the probe was NEVER run (08-25 pass-1
+   69.2 tok/s was the pre-DFlash2 staged-smem attempt). Implies a quasar → nvfp4full-v2
+   profile switch on the live lane if it passes — a user decision. In-house fallback on
+   failure: resume tier7 with the decode fast-path fix (known scope, no fork dep).
+2. **T13 upstream wave — after the T8 decision** (#107 touches the same qwen3_6_27b
+   package.cpp the DFlash2 v2 artifact edits; do not interleave):
+   - #107 (nvfp4 wire-format profile detection) — our quasar artifact IS the W8+NVFP4
+     community layout; auto-detection unblocks the official-vs-community artifact call.
+   - #97 (container build ccache) — build-only; verify against our customized Dockerfile.
+   - #72 (on-demand vision residency, DRAFT but complete, measured on RTX 5090) — the
+     vision-lane VRAM/context lever; sequence last in the wave, full battery incl.
+     vision probes.
+3. **Lane ops: enable host-KV parking** (independent of 1-2; restart only, no free GPU):
+   add `--kv-host-cache-mib 16384` to the quadlet (8 GiB default currently thrashes on
+   two ~76k-token int8 branch roots: 18-40s re-prefills; 16 GiB → 0.2s restore) and fix
+   the stale 32768 comment. Pinned host RAM, zero VRAM impact. Gate: full battery
+   (REPLAY + 4XX-WATCH). Watch #75 for a unifying PR before committing to a larger budget.
+4. **Tier 9 dylan xattn prefill — deferred, rebased.** Only after the T8 decision
+   (if dylan's dflash2 line wins, xattn rides on it) + prefill/TTFT bottleneck evidence.
+   Re-derive the pick list from experimental@582431c0 (the 08-26 list predates
+   e3f40a24 + 4 more commits). Gate if pursued: their GQA suite + PPL parity +
+   prefill/TTFT battery + free-GPU ctest.
+
+**Holds (revised 2026-08-30):**
+
+| Item | What | Why not |
+|---|---|---|
+| upstream #35 (E8 compressed KV) | 262k context via KV lattice quant | 40-50% decode slowdown; lane already fits 225k INT8 — only if we outgrow INT8 headroom |
+| upstream #84/#59 (Windows), #37 (Ollama) | platform/protocol additions | not the 5090 OpenAI-protocol lane |
+| cometkim dev (111 behind upstream) | whole dev line incl. kernel-perf 14 commits | moving target on a stale base; re-audit when it absorbs d9dbe1ce — then the prefill-perf subset may be adoptable separately from DFlash2 |
+| cometkim 768k presets + eval harness | long-context presets; quality tooling | lane runs 225k; pull the eval harness in to validate T8/T9 when they run |
+| dylan perf/rtx5090-qwen38 | width-invariant fix line (7d566547 et al.) | dead since 08-18; the live line is experimental |
+| eason / md / knoop / matpape | dead or redundant | eason dead 08-22; md ships via upstream (in-tree); knoop line arrived via T12; matpape redundant with #57/#65 |
+
+**Sequencing (un-parked 2026-08-30):** (1) T8 DFlash2 probe on the rebased pick set —
+the only decision the plan hinges on; (2) T13 upstream wave (#107 + #97 + #72) after the
+decision; (3) host-KV 16 GiB quadlet enablement can run any time in between (no free
+GPU); (4) Tier 9 only after the DFlash2 decision + TTFT evidence. Standing watch:
+cometkim rebase onto d9dbe1ce, dylan's daily experimental commits, #75 follow-up PR.
