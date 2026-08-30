@@ -853,6 +853,45 @@ decode gate — isolated by A/B) + full battery; (2) T8 DFlash2 probe on the reb
 PORT set (the 6 picks must be re-landed onto the T12 softmax_attention layout — see
 port status under item 1) — the only decision the plan hinges on; (3) T13 upstream wave
 (#107 + #97 + #72) after the decision; (4) T14 host-KV content-cache re-port whenever a
-free-GPU window opens (independent of 1-3); (5) Tier 9 only after the DFlash2 decision
-+ TTFT evidence. Standing watch: cometkim rebase onto d9dbe1ce, dylan's daily
+free-GPU window opens (independent of 1-3); (5) the dylan lane-perf wave (packed verify
+`2c7785d9` + decode-band pins + blocking host sync + no-re-tokenize + cancel-retain —
+see the dylan re-audit section) after the T8 verdict; (6) Tier 9 only after the
+DFlash2 decision + TTFT evidence. Standing watch: cometkim rebase onto d9dbe1ce, dylan's daily
 experimental commits, #75 follow-up PR.
+
+## Audit 2026-08-30 — dylan/experimental deep re-audit (@ 582431c0)
+
+Full clone `/tmp/dylan-audit`; range `d8cb420f..582431c0` = 23 commits (08-25..08-30)
+since the 08-26 dylan audit tip. dylan ships daily on a 5090 (same silicon as ours).
+Per-commit triage; conflict surface spot-checked against `~/containers/ninfer-github`.
+
+### P0 — fixes the in-flight T8 port is missing (cherry-pick after pick 8, handed to the port agent)
+
+| Commit | Fix | Why P0 |
+|---|---|---|
+| `13a2e5d0` stop KV-RAM and DFlash entitlement poisons | (a) cancelled suffix prefill must keep `ledger_frontier == execution_frontier + 1` (one trailing ledger slot) or the next RAM spill throws and marks the executor failed; (b) Main KV entitlement must cover `verify_width` in BOTH tree and chain verify — chain verify also materializes frontier+W, so short-`max_tokens` requests throw "materialize extent is outside entitlement" and poison the executor | the harness cancels streams; the DFlash path we port runs chain verify (k=4/W=5). program_impl.h (revert_cancelled_prefill_lane) + request_plan_impl.h (plan_request_base) + 3 regression test files (159 lines) |
+| `eb5bedb5` verify the paper chain and keep C>1 on C=1 GDN math | Qwen3.8 DFlash2 = **chain-only** (k=4/W=5 on 5090 — packed-tree verify lost to W=k+1 on AIME/story; drop tree verify from the probe config). The T=W×B flattened NVFP4 GDN conv-record compose flipped greedy column 0 vs the C=1 fused SmallT+FP32; the fix = one fused launch with grid.x=B (batch-isolated) + S3 packed-append hybrid block max. `dflash2_path_select.cuh` now takes the shared `SamplingConfig` (ninfer/ops/sampling.h) instead of its own per-batch temp/seed struct — interface change if our pick 6 (0a7bef84) brought the old one | ~15 source files, mostly the GDN nvfp4 decode kernels the T8 module rides on |
+
+### Lane-perf wave (post-T8 verdict, free-GPU window, battery gate incl. 98k/225k quiet-window R2)
+
+| Rank | Commit | What | Payoff | Effort |
+|---|---|---|---|---|
+| 1 | `2c7785d9` packed speculative verify as one aggregate T=width×B pass | removes the per-request T=width re-launches (B weight re-reads + B graph nodes); C=1 route pinning (`packed_route_tokens`) keeps the W4A4/A16 cutover stable | their 5090 A/B: MTP3 C=2 178.4→275.9 tok/s (+54.7%), DFlash2 C=3 +55.9%, C=1 unchanged, no PPL drift — the biggest single lever for our C=4 MTP3 lane | medium (text_context_impl.h, variant.cpp 27b/35b) |
+| 2 | `583d8e10` block host sync to fix 100% CPU during decode | cudaDeviceScheduleAuto resolves to spin on 5090-class boxes → per-round synchronize() busy-waits a core; switch to blocking sync (primary-ctx flag + blocking events) | live lane shows the class (ninfer-serve ~88% lifetime CPU, 0% when idle); 46 lines across device.cu/h + kv_ram_cache.cpp | small |
+| 3 | `20f622f6` + `2c295b6e` decode-band linear routes (measured W4A4 schedules, pinned A16/W4A4 cutovers) | per-T schedule/crossover pins for the decode-band linears; GEMV/SmallT grow a batch/token grid axis so C>1 fused GDN shares one launch without flattening T to W×B | decode tok/s on our exact silicon; their docs/maintainer/nvfp4-decode-linear.md bound cards are the measurement authority | medium (nvfp4 linear kernels + variant.cpp — we edited variant for the quasar profile) |
+| 4 | `48d18570` don't re-tokenize the whole conversation on every turn | engine remembers committed chat tokens (16 histories × 262144 tok, 48 MiB worst case), encodes only the new suffix; ~21 ms saved at 150k | the harness re-sends full history every turn — a per-request win | medium (new encoded_history_cache.cpp + frontend.cpp/tokenizer.cpp — C1 collision surface) |
+| 5 | `3946c441` retain cancelled sequences for prefix reuse | decode-ready / speculative in-flight cancels retain like OutputLimit (previously the lane was wiped at every GPU boundary); incomplete suffix prefill reverts to the occupy-base rollback | the harness cancels a lot → better prefix-reuse hits on resumed sessions | medium (program_impl.h +115, +477 lines of tests) |
+
+Secondary (same wave or later): `ac8fea98` MTP prefix-reuse checkpoint fallback (decide_resident_reuse extracted as the single source of truth; MTP append-not-ready → usable checkpoint instead of FullReset; 12-scenario test); `6951a47f` persistent event in order_copy_after_compute; `4f99f6da` isolate gdn snapshot leaf workspace (port of upstream f08597d's intent — our wrapper diverged, variant.cpp only); `9ec0d8c4` MTP layer weights BF16→NVFP4 (converter tool `convert_mtp_nvfp4`; MTP propose rides the NVFP4 kernels + fused input mix — VRAM saving for the quasar-v2 recipe); `582431c0` HTTP timings match the engine log (unified token bases, graph install excluded from decode.ms); `f708cb21` ninfer_bench `--spec dflash` surface — use it for the T8 probe battery.
+
+### Deferred / N/A
+
+| Commits | Class | Reason |
+|---|---|---|
+| `6fac74a7` host-RAM context-checkpoint restore on MTP+DFlash (ladder marks 24576..151552) | engine feature | competing/complementary subsystem to T14 (#73 re-port) — defer until the host-KV shape settles |
+| `d98f3fdb` request-pinned checkpoint + freeze-ladder replacement | serve API | useful (the harness could pin checkpoints) but restructures the automatic ladder — adopt with the T13 wave |
+| `3b730ee8` / `55dde21c` / `a56c3a77` / `1e9c5dda` xattn series | Tier 9 | confirmed T9 candidates; `a56c3a77` (per-page K-centering PPL blowup fix) is only relevant if sage/xattn gets adopted |
+| `7dd5feeb` / `0edd6778` / `56b0196b` eval suites (qwen3.8 groupwise-int/nvfp4 reasoning; ifbench/erqa/real_world_qa) | eval | pull in for the T8/T9 quality gates, not lane code |
+| `3ef301ee` / `88b79ea2` kdev kernel-dev tooling | tools | dylan's internal iteration loop; the decode-band bound cards in docs are the reference asset |
+
+**Status (08-30):** `13a2e5d0` + `eb5bedb5` handed to the T8 port agent as picks 9/10. The lane-perf wave queues after the T8 verdict. None of this is upstreamed — fork-only dylan work.
