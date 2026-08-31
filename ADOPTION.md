@@ -1068,3 +1068,33 @@ candidate (`gzenz/kv-nvfp4-yarn`) with E2E quality — moves from "hold, no evid
 "Tier 15 probe-gated candidate." E8 lattice / KVarN / KIVI still no ninfer port. vLLM,
 Windows, 1M-context, hyperquant still off-lane. PR-99 (in-tree) pending the residency check
 above.
+
+## T13 ship attempt 2026-08-31 (t13-f98ca817) — FAIL, auto-rolled-back
+
+**Attempt:** merge upstream/master (d9dbe1ce..3d9fda22) into the T12 lane tree
+(4567363e) → build → free-GPU ctest → battery. **Verdict: FAIL at G6** (battery
+pass=8 fail=8), auto-rolled-back to `:quasar` `d85a4163`, lane re-verified serving
+real inference. **Net: lane untouched, no regression shipped.**
+
+**Root cause:** `3d9fda22` "fix(runtime): preserve reuse under bounded pressure
+search" — the #98 pressure-search line — is **known-bad on our profile**. Under
+concurrent load it throws `materialization pressure owner is duplicated`
+(`program_impl.h:3556`, introduced by this commit) → engine unavailable → 503s.
+This is **exactly the commit gzenz's `kv-nvfp4-yarn` branch reverts** (1882-line
+removal of the #98 pressure-search line), and their #98 comments are two
+high-quality pressure-planner bug reports (demote-to-host suppressed under
+concurrent large admissions; ordinal-0 `LongAnchor` crash — the latter already
+fixed upstream in `9dbc0740`, in-tree). We merged the bad fix without adopting
+the revert.
+
+**Gate lesson:** ctest PASSED (rc=0, unit tests) but the battery caught the
+runtime regression — the G6 full-shape battery is doing its job (G4 ctest alone
+would have shipped a 503-serving lane). Reinforces: **upstream "fix" commits are
+not auto-adopt** — they're candidates to be probed, especially scheduler/runtime
+commits that gzenz (the scheduler owner) has diverged from.
+
+**T13 re-scope:** absorb ONLY the 3 non-runtime commits (bd99ce4e TTFT fixtures,
+ec8b6a25 GPQA budgets, 36f23d79 perf docs). **DEFER `3d9fda22` + `5e4bf313`**
+(the two #98 pressure-search runtime fixes) until upstream fixes the concurrent-
+admission regression or we adopt gzenz's `5594ba9b` demote-to-host gate. T13 thus
+becomes a low-value bench+docs ship — likely skip until the lane-perf wave lands.
