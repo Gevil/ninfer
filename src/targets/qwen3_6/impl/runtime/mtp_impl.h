@@ -221,6 +221,7 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
                                        cudaMemcpyDeviceToDevice, state.execution.device.stream));
         }
 
+        }
         CUDA_CHECK(cudaMemcpyAsync(&state.host_egress, frame.egress.data,
                                    sizeof(qwen3_6::MtpDecodeEgress), cudaMemcpyDeviceToHost,
                                    state.execution.device.stream));
