@@ -365,6 +365,7 @@ if(NINFER_BUILD_SERVE)
     serve/http_server.cpp
     serve/openai_responses_http.cpp
     serve/webui_update.cpp
+    serve/console_log.cpp
     serve/serve_options.cpp)
   ninfer_internal_includes(ninfer_serve)
   target_include_directories(ninfer_serve PRIVATE
