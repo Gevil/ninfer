@@ -21,6 +21,7 @@
 #include <deque>
 #include <exception>
 #include <future>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -1573,7 +1574,17 @@ private:
                 control_progress = true;
                 continue;
             }
-            auto head_inspection = inspect_admission(head);
+            ResourceInspection head_inspection;
+            try {
+                head_inspection = inspect_admission(head);
+            } catch (const std::exception& error) {
+                (void)remove_pending_error(
+                    head, std::make_exception_ptr(RequestError(
+                              RequestErrorKind::Overloaded,
+                              std::string("admission planning failed: ") + error.what())));
+                control_progress = true;
+                continue;
+            }
             if (head_inspection.readiness == Readiness::PermanentlyInfeasible) {
                 (void)remove_pending_error(
                     head, std::make_exception_ptr(RequestError(
@@ -1647,7 +1658,18 @@ private:
                     control_progress = true;
                     continue;
                 }
-                auto candidate_inspection = inspect_admission(candidate);
+                ResourceInspection candidate_inspection;
+                try {
+                    candidate_inspection = inspect_admission(candidate);
+                } catch (const std::exception& error) {
+                    (void)remove_pending_error(
+                        candidate, std::make_exception_ptr(RequestError(
+                                          RequestErrorKind::Overloaded,
+                                          std::string("admission planning failed: ") +
+                                              error.what())));
+                    control_progress = true;
+                    continue;
+                }
                 if (candidate_inspection.readiness == Readiness::PermanentlyInfeasible) {
                     (void)remove_pending_error(
                         candidate, std::make_exception_ptr(RequestError(
@@ -1891,6 +1913,15 @@ private:
                 finish_engine_phase(boundary, EngineHostPhase::Boundary);
             } catch (...) {
                 const std::exception_ptr error = std::current_exception();
+                try {
+                    std::rethrow_exception(error);
+                } catch (const std::exception& fatal) {
+                    std::cerr << "ninfer: engine fatal error, failing all requests: " << fatal.what()
+                              << std::endl;
+                } catch (...) {
+                    std::cerr << "ninfer: engine fatal error, failing all requests: unknown exception"
+                              << std::endl;
+                }
                 HostPhaseMeasurement cleanup   = begin_host_phase();
                 fail_all_locked(error);
                 finish_engine_phase(cleanup, EngineHostPhase::Maintenance);
