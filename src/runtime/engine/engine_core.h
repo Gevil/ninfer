@@ -1574,35 +1574,34 @@ private:
                 control_progress = true;
                 continue;
             }
-            ResourceInspection head_inspection;
-            try {
-                head_inspection = inspect_admission(head);
-            } catch (const std::exception& error) {
-                (void)remove_pending_error(
-                    head, std::make_exception_ptr(RequestError(
-                              RequestErrorKind::Overloaded,
-                              std::string("admission planning failed: ") + error.what())));
-                control_progress = true;
-                continue;
-            }
-            if (head_inspection.readiness == Readiness::PermanentlyInfeasible) {
-                (void)remove_pending_error(
-                    head, std::make_exception_ptr(RequestError(
-                              RequestErrorKind::ContextLengthExceeded,
-                              "request reservation exceeds Engine shared KV capacity")));
-                control_progress = true;
-                continue;
-            }
-            if (head_inspection.readiness == Readiness::Ready ||
-                head_inspection.readiness == Readiness::NeedsTransfer) {
-                if (!head_inspection.choice) {
-                    throw std::logic_error("ready resource inspection has no admission choice");
-                }
-                AdmissionGrant grant = scheduler_.grant_head(
-                    head->id, head_inspection.choice->summary().service_work_quanta);
-                return admit_planned_request(head, std::move(*head_inspection.choice),
-                                             std::move(grant));
-            }
+try {
+    ResourceInspection head_inspection = inspect_admission(head);
+    if (head_inspection.readiness == Readiness::PermanentlyInfeasible) {
+        (void)remove_pending_error(
+            head, std::make_exception_ptr(RequestError(
+                      RequestErrorKind::ContextLengthExceeded,
+                      "request reservation exceeds Engine shared KV capacity")));
+        control_progress = true;
+        continue;
+    }
+    if (head_inspection.readiness == Readiness::Ready ||
+        head_inspection.readiness == Readiness::NeedsTransfer) {
+        if (!head_inspection.choice) {
+            throw std::logic_error("ready resource inspection has no admission choice");
+        }
+        AdmissionGrant grant = scheduler_.grant_head(
+            head->id, head_inspection.choice->summary().service_work_quanta);
+        return admit_planned_request(head, std::move(*head_inspection.choice),
+                                     std::move(grant));
+    }
+} catch (const std::exception& error) {
+    (void)remove_pending_error(
+        head, std::make_exception_ptr(RequestError(
+                  RequestErrorKind::Overloaded,
+                  std::string("admission planning failed: ") + error.what())));
+    control_progress = true;
+    continue;
+}
 
             const ActiveAdmissionSet active =
                 scheduler_.active_admission_set(slots_, max_concurrency_);
@@ -1658,44 +1657,43 @@ private:
                     control_progress = true;
                     continue;
                 }
-                ResourceInspection candidate_inspection;
-                try {
-                    candidate_inspection = inspect_admission(candidate);
-                } catch (const std::exception& error) {
-                    (void)remove_pending_error(
-                        candidate, std::make_exception_ptr(RequestError(
-                                          RequestErrorKind::Overloaded,
-                                          std::string("admission planning failed: ") +
-                                              error.what())));
-                    control_progress = true;
-                    continue;
-                }
-                if (candidate_inspection.readiness == Readiness::PermanentlyInfeasible) {
-                    (void)remove_pending_error(
-                        candidate, std::make_exception_ptr(RequestError(
-                                       RequestErrorKind::ContextLengthExceeded,
-                                       "request reservation exceeds Engine shared KV capacity")));
-                    control_progress = true;
-                    continue;
-                }
-                if ((candidate_inspection.readiness != Readiness::Ready &&
-                     candidate_inspection.readiness != Readiness::NeedsTransfer) ||
-                    !candidate_inspection.choice) {
-                    continue;
-                }
-                const auto proof = resources_.prove_persistent_backfill(
-                    *instance_.program, *head->base_plan, *candidate_inspection.choice,
-                    std::span<const SequenceHandle>(persistent_borrowers.data(),
-                                                    persistent_borrower_count));
-                if (!proof) { continue; }
-                const RequestPlanSummary& candidate_plan = candidate_inspection.choice->summary();
-                auto grant =
-                    scheduler_.qualify_backfill(candidate->id, candidate_plan.service_work_quanta,
-                                                active.span(), proof->resource_revision());
-                if (grant) {
-                    return admit_planned_request(candidate, std::move(*candidate_inspection.choice),
-                                                 std::move(*grant));
-                }
+try {
+    ResourceInspection candidate_inspection = inspect_admission(candidate);
+    if (candidate_inspection.readiness == Readiness::PermanentlyInfeasible) {
+        (void)remove_pending_error(
+            candidate, std::make_exception_ptr(RequestError(
+                           RequestErrorKind::ContextLengthExceeded,
+                           "request reservation exceeds Engine shared KV capacity")));
+        control_progress = true;
+        continue;
+    }
+    if ((candidate_inspection.readiness != Readiness::Ready &&
+         candidate_inspection.readiness != Readiness::NeedsTransfer) ||
+        !candidate_inspection.choice) {
+        continue;
+    }
+    const auto proof = resources_.prove_persistent_backfill(
+        *instance_.program, *head->base_plan, *candidate_inspection.choice,
+        std::span<const SequenceHandle>(persistent_borrowers.data(),
+                                        persistent_borrower_count));
+    if (!proof) { continue; }
+    const RequestPlanSummary& candidate_plan = candidate_inspection.choice->summary();
+    auto grant =
+        scheduler_.qualify_backfill(candidate->id, candidate_plan.service_work_quanta,
+                                    active.span(), proof->resource_revision());
+    if (grant) {
+        return admit_planned_request(candidate, std::move(*candidate_inspection.choice),
+                                     std::move(*grant));
+    }
+} catch (const std::exception& error) {
+    (void)remove_pending_error(
+        candidate, std::make_exception_ptr(RequestError(
+                      RequestErrorKind::Overloaded,
+                      std::string("admission planning failed: ") +
+                          error.what())));
+    control_progress = true;
+    continue;
+}
             }
             return control_progress ? AdmissionProgress::ControlProgress : AdmissionProgress::None;
         }
