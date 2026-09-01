@@ -1098,3 +1098,85 @@ ec8b6a25 GPQA budgets, 36f23d79 perf docs). **DEFER `3d9fda22` + `5e4bf313`**
 (the two #98 pressure-search runtime fixes) until upstream fixes the concurrent-
 admission regression or we adopt gzenz's `5594ba9b` demote-to-host gate. T13 thus
 becomes a low-value bench+docs ship — likely skip until the lane-perf wave lands.
+
+## Audit 2026-09-01 (24h re-check) — upstream absorbed the T13 blocker fix + native NVFP4/K8V4 KV
+
+**Upstream master advanced 3d9fda22 → 21a0e85f (8 commits; dev == master ==
+feat/kv-nvfp4-k8v4 all at 21a0e85f).** The headline: master now contains BOTH
+the deferred runtime fixes AND their fix, plus a real native NVFP4+K8V4 KV cache.
+
+| SHA | What | Impact |
+|---|---|---|
+| `da49c0d6` | fix(runtime): exclude materialization sources from pressure — 184-line pressure_planner.h rewrite + 93-line regression test (`test_engine_prefix_real.cpp`, scenario "source-pressure-protection") | **Fixes the known-bad `3d9fda22` concurrent-admission regression** (the "materialization pressure owner is duplicated" throw that broke the 08-31 T13 ship). UNBLOCKS T13. |
+| `4ac73c47` | feat(kv-cache): add nvfp4 + k8v4 modes — real impl (nvfp4_kernel.cuh 121L, nvfp4_launch.cu 80L, k8v4_kernel.cuh 130L, k8v4_launch.cu 81L, nvfp4_group16_codec.cuh, prompt_nvfp4.cu/.cuh, paged_kv_storage.h 91L, mbarrier.cuh 47L) | **Native `--kv-dtype nvfp4\|k8v4`** (options.cpp:59-60, types.h Nvfp4Group16 + Fp8KeyNvfp4Value). Supersedes gzenz's Tier 15 KV branch. |
+| `21a0e85f` | feat(kv-cache): use fp16 V storage and PV compute | KV follow-up. |
+| `138d76ae` | refactor(runtime): clarify resource scheduling ownership | The new #98 scheduling architecture — T14 target. |
+| `57b033af` | bench(ttft): cover two-cohort stream pressure | Alternation/pressure bench (issue #98 / gearwave area). |
+| `4a1a2188` / `5438b743` | spdlog foundation + unify product operational logs | Infra. |
+| `28b5f15b` | docs(agents): remove obsolete qus reference | Docs. |
+
+**Both deferred runtime commits (`3d9fda22`, `5e4bf313`) are IN upstream master, and so is
+their fix (`da49c0d6`).**
+
+**Fork movements (24h):**
+- **gzenz/kv-nvfp4-yarn** (819cd249→103ad0d8): 3 commits. gzenz **REVERSED its revert** —
+  now applies the upstream pressure fix (`da49c0d6`) + re-applies bounded pressure search
+  (`b9feebe8`) + adds `103ad0d8` "skip eviction of shared prefixes with active references".
+  The pressure line is now workable upstream.
+- **dylan/experimental** (07ab6ca7→c450798c): 3 commits, all DFlash2/serve (`afdfa400` smem
+  bank-conflict pad, `e4069c4e` docs, `c450798c` Qwen tool-markup diagnose). T8 area — off-lane.
+- **md**: new branches `perf/rmsnorm-weight-hoist` (`0bb9bb15`, decode +1.5–2.6%,
+  bitwise-identical) + `perf/moe-stage-from-x` (`a582615c`, MoE op 1.046x). Small decode micro-opts.
+- **gevil/mtp-sampled-draft** (4a4759b0→6da71693): added conflict fix (`6da71693` "close nvtx
+  block in mtp_decode_batch_body"). Still 188 behind master → needs re-rebase onto 21a0e85f.
+- **gevil/tier13** (f98ca817): the failed T13 ship branch (187 behind, 8 ahead).
+- cometkim, eason: no movement.
+
+**In-tree containment (our master = 4ed816a5, lane on t13-fix-ship):**
+- ABSENT: all 8 new upstream commits (incl. da49c0d6, 4ac73c47, 21a0e85f, 138d76ae) — not absorbed.
+- ABSENT: `3d9fda22`, `5e4bf313` (deferred runtime fixes) — still not in our tree.
+- IN: `92bb06eb` (PR-99 GDN prefill conv) — residency check still pending.
+
+**GitHub PRs (open):** #152 (shared-prefix write), #150 (rmsnorm-weight-hoist = md), #148
+(responses-api), #140 (moe-stage-from-x = md), #107 (nvfp4 wire-format, in T13), #97 (build
+cache), #89 (SM-count = in-tree 808bd1d1), #72 (vision-vram), #61 (image-token-budget = in-tree
+eb413c76), #55 (cached-tokens = in-tree), #54 (log-terminate = in-tree 75244b0a), #48 (request-log
+schema10), #37 (ollama), #35 (compressed-KV E8 Blackwell — watch, off-lane floor).
+
+## TIER RE-ANALYSIS (2026-09-01)
+
+**T13 — UNBLOCKED, re-scoped from "bench+docs only" to "full upstream convergence":**
+- The `3d9fda22` blocker is now fixed upstream (`da49c0d6`, in master, with regression test).
+  The 08-31 re-scope (defer `3d9fda22`+`5e4bf313`) is **SUPERSEDED**.
+- New T13 = absorb the **full upstream master (21a0e85f)**: pressure line + fix, native
+  NVFP4/K8V4 KV, scheduling-ownership refactor, logging infra, TTFT bench.
+- Gate: free-GPU ctest (incl. the new `test_engine_prefix_real.cpp` source-pressure-protection)
+  + G6 full battery + PR-99 residency + KV-mode probe (nvfp4/k8v4 decode vs int8 baseline).
+- Fallback: if G6 still fails on the pressure line, revert to the 08-31 re-scope (defer the
+  pressure commits, ship only the non-runtime subset).
+
+**Tier 15 — SPLIT + YARN PARKED (user decision 2026-09-01):**
+- NVFP4/K8V4 KV cache: now **UPSTREAM** (4ac73c47+21a0e85f) — adopt via T13, NOT cherry-pick gzenz.
+  Probe as part of the T13 gate (nvfp4/k8v4 decode vs int8 baseline).
+- YaRN context extension (262k→555k rope scaling): **PARKED** — user: "not that important for us".
+  Upstream has NO rope-scaling; only gzenz has it. Revisit only if long-context becomes a need.
+- New: gzenz `103ad0d8` (skip eviction of shared prefixes with active refs) — consider adopting.
+
+**Lane-perf wave — RANK 1 target moves:**
+- gevil/mtp-sampled-draft (6da71693) now has the conflict fix. Rebase onto 21a0e85f (post-T13)
+  → build + ctest + battery + ship. +8.96% decode target.
+- New md micro-opts (rmsnorm-weight-hoist +1.5–2.6%, moe-stage-from-x 1.046x) — add to the wave
+  (lower rank, small decode wins).
+
+**T14 — re-target to the new scheduling arch:** the `138d76ae` refactor is the current #98
+architecture. T14 evaluates it (hot + 45s-idle probe). Re-port #73 only if cold-idle fails.
+
+**PR-99 residency check — still pending** (independent, read-only probe on the lane).
+
+## t13converge-c8a2b85e ship (2026-09-01) - t13-converge @ c8a2b85e
+
+Image `ef07593e8dee` (tags: `t13converge-c8a2b85e`, :quasar, :latest); previous
+`:quasar` `7a42eee32cef` retained as rollback target.
+- Free-GPU ctest: rc=0, skips within baseline (6 expected).
+- Battery: 16 PASS / 0 FAIL: VERDICT UP: PASS VERDICT IMAGE: PASS VERDICT MODELS: PASS VERDICT LEDGER: PASS VERDICT WARMUP: PASS VERDICT VISION: PASS VERDICT VISION-HIST: PASS VERDICT VISION-POISONED: PASS VERDICT REPLAY: PASS VERDICT THINK-SMOKE: PASS VERDICT XHIGH: PASS VERDICT DECODE-FRESH: PASS VERDICT DECODE-8K: PASS VERDICT QUALITY: PASS VERDICT SOAK: PASS VERDICT 4XX-WATCH: PASS
+- State: lane `ninfer-nvfp4` runs the new image; :quasar/:latest pinned (verified match).
