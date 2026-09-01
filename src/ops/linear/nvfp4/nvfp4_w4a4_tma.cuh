@@ -22,6 +22,20 @@ struct alignas(128) Nvfp4W4a4TmaDescriptors {
     CUtensorMap b_scales;
 };
 
+// NINFER_NVFP4_TMA_DESCRIPTOR_PARAM selects the kernel parameter representation. On
+// Windows/MSVC a by-value alignas(128) kernel parameter cannot be laid out by the MSVC ABI
+// (C2719 in the cudafe1 host launcher), so the launcher copies the descriptor block to a
+// device buffer and passes a pointer. On other hosts the __grid_constant__ by-value parameter
+// keeps the map in parameter space. All kernel translation units must share this spelling, so
+// it is a macro rather than a constexpr type.
+#ifndef NINFER_NVFP4_TMA_DESCRIPTOR_PARAM
+#ifdef _WIN32
+#define NINFER_NVFP4_TMA_DESCRIPTOR_PARAM const Nvfp4W4a4TmaDescriptors* __restrict__
+#else
+#define NINFER_NVFP4_TMA_DESCRIPTOR_PARAM const __grid_constant__ Nvfp4W4a4TmaDescriptors
+#endif
+#endif
+
 inline void nvfp4_check_driver(CUresult status, const char* operation) {
     if (status == CUDA_SUCCESS) { return; }
     const char* name = nullptr;
