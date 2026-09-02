@@ -1208,3 +1208,15 @@ made `ResourceInspection` non-movable (deleted move-assignment, inherited from
   boot marker (`engine capacity` accepted alongside `listening on`).
 - State: lane `ninfer-nvfp4` runs the new image; :quasar/:latest pinned
   (verified match).
+
+## T13 gate: KV-mode probe (2026-09-02)
+
+Native `--kv-dtype` modes (from the T13 convergence, `4ac73c47`+`21a0e85f`) probed on the
+live lane (mtp-sampled-draft image `1025a4610477`):
+- **int8** (default): 121.6 tok/s (256-tok decode probe)
+- **nvfp4** (Nvfp4Group16): 137.5 tok/s (**+13%** vs int8)
+- The nvfp4 KV cache is both memory-efficient (0.55x int8 pool) AND faster — adoptable as
+  a future decode win (the lane currently runs int8 for the 225k-token pool).
+- k8v4 (Fp8KeyNvfp4Value) not separately probed (nvfp4 is the headline; k8v4 is the
+  asymmetric variant).
+
