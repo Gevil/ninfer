@@ -1220,3 +1220,20 @@ live lane (mtp-sampled-draft image `1025a4610477`):
 - k8v4 (Fp8KeyNvfp4Value) not separately probed (nvfp4 is the headline; k8v4 is the
   asymmetric variant).
 
+
+## T14 probe: new resource-scheduling arch (2026-09-02)
+
+The `138d76ae` refactor (the current #98 scheduling architecture) is live on the lane.
+Probe (`t14-probe.py`, N=4):
+- **Hot alternation (4 concurrent streams, 128 tok each):** aggregate 355.4 tok/s;
+  per-stream 50.8–147.8 tok/s (66% skew). The aggregate is healthy; the skew is
+  expected (streams finish at different times; the last-finishing stream is
+  measured over the full wall).
+- **45s-idle cold:** 121.0 tok/s after a 45s idle (≈ the int8 baseline 121.6 tok/s;
+  no cold-start regression).
+
+**Verdict: KEEP the new arch.** The cold path does not regress (the #73 re-port is
+not needed). The hot path aggregates well; the per-stream skew is a scheduling
+fairness question (the last-finishing stream is the slowest), not a correctness
+or cold-start issue. Re-evaluate #73 only if a real cold-idle regression surfaces
+in production.
