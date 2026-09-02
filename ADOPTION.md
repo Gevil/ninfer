@@ -1297,7 +1297,7 @@ adoption (same as the prior dylan-wave items).
 | #140 | MERGED | MoE stage from x (md) — upstreamed | in T16 wave |
 | #152 | OPEN | feat(serve): automatic shared-prefix write at the system/developer frontier | T20 (watch) |
 | #148 | OPEN | OpenAI Responses API: reasoning summary + encryption | T21 (watch) |
-| #107 | OPEN | fix(qwen3.8): wire-format detect nvfp4 artifact profile | T13 in-flight (already in our tree via T13 convergence) |
+| #107 | OPEN | fix(qwen3.8): wire-format detect nvfp4 artifact profile — OPEN (not merged upstream, not in our tree) | T16 candidate (adopt if it lands upstream, or cherry-pick) |
 | #149/#146/#141 | CLOSED | runtime pressure fixes (closed unmerged) | — |
 
 **Conflict check (merge-tree upstream f0eb3ac7 → our mtp-sampled-draft d428eb2b):**
