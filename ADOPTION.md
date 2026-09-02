@@ -1390,3 +1390,11 @@ Image `dcd3dce6c61e` (tags: `t17pvf16acc-2e99db7b`, :quasar, :latest); previous
 - Free-GPU ctest: rc=0, skips within baseline (6 expected).
 - Battery: 16 PASS / 0 FAIL: VERDICT UP: PASS VERDICT IMAGE: PASS VERDICT MODELS: PASS VERDICT LEDGER: PASS VERDICT WARMUP: PASS VERDICT VISION: PASS VERDICT VISION-HIST: PASS VERDICT VISION-POISONED: PASS VERDICT REPLAY: PASS VERDICT THINK-SMOKE: PASS VERDICT XHIGH: PASS VERDICT DECODE-FRESH: PASS VERDICT DECODE-8K: PASS VERDICT QUALITY: PASS VERDICT SOAK: PASS VERDICT 4XX-WATCH: PASS
 - State: lane `ninfer-nvfp4` runs the new image; :quasar/:latest pinned (verified match).
+
+## t19w8moe-f1a6d4f8 ship (2026-09-02) - t19-w8-moe @ f1a6d4f8
+
+Image `cc4a1f9abbbb` (tags: `t19w8moe-f1a6d4f8`, :quasar, :latest); previous
+`:quasar` `dcd3dce6c61e` retained as rollback target.
+- Free-GPU ctest: rc=0, skips within baseline (6 expected).
+- Battery: 16 PASS / 0 FAIL: VERDICT UP: PASS VERDICT IMAGE: PASS VERDICT MODELS: PASS VERDICT LEDGER: PASS VERDICT WARMUP: PASS VERDICT VISION: PASS VERDICT VISION-HIST: PASS VERDICT VISION-POISONED: PASS VERDICT REPLAY: PASS VERDICT THINK-SMOKE: PASS VERDICT XHIGH: PASS VERDICT DECODE-FRESH: PASS VERDICT DECODE-8K: PASS VERDICT QUALITY: PASS VERDICT SOAK: PASS VERDICT 4XX-WATCH: PASS
+- State: lane `ninfer-nvfp4` runs the new image; :quasar/:latest pinned (verified match).
