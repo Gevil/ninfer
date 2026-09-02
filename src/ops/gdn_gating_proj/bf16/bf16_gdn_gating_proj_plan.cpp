@@ -208,7 +208,7 @@ void execute_resolved(const Bf16GdnGatingPlan& plan, const Bf16GdnGatingProblem&
         return;
     case Bf16GdnGatingScheduleId::SmallTFusedCooperative:
         bf16_gdn_gating_proj_small_t_fused_launch(x, a_weight, b_weight, A_log, dt_bias,
-                                                  scratch.data, scratch.bytes, g, beta, stream);
+                                                  scratch.data, scratch.bytes, g, beta, execution.stream);
         return;
     case Bf16GdnGatingScheduleId::SimtWarpRowC4:
         bf16_gdn_gating_proj_35_simt_c4_launch(x, a_weight, b_weight, A_log, dt_bias, g, beta,
