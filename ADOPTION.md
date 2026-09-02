@@ -1237,3 +1237,4 @@ not needed). The hot path aggregates well; the per-stream skew is a scheduling
 fairness question (the last-finishing stream is the slowest), not a correctness
 or cold-start issue. Re-evaluate #73 only if a real cold-idle regression surfaces
 in production.
+
