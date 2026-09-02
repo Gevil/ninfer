@@ -1164,6 +1164,18 @@ schema10), #37 (ollama), #35 (compressed-KV E8 Blackwell — watch, off-lane flo
   when long-context becomes a need (no longer parked — 2026-09-01).
 - New: gzenz `103ad0d8` (skip eviction of shared prefixes with active refs) — consider adopting.
 
+**Tier 15 re-derivation (2026-09-02, from gzenz/kv-nvfp4-yarn tip b1efb318):** the branch is now
+**17 ahead / 38 behind upstream/master** (merge-base da49c0d6; was 35/0 at the 08-31 audit).
+Adoptable set narrows to **YaRN-only** — the NVFP4-KV portion is superseded by upstream
+`4ac73c47` (shipped via T13, live as the lane's `--kv-dtype nvfp4`). Adoptable YaRN commits
+(16, skip the `606690fb`/`b9feebe8` #98 Revert+Reapply pair and the froggeric/tool-call/serve-port
+work): `40fc03a2 7eb128f0 8a5a4a1b f4ebbe61 f116e0cf a94534fd f472157b c8b5e641 c69bbd37
+d1388961 c27fdecc 8467d429 7db686f3 618604e3 afa58f6a 3cd6db98 b1efb318`. Conflicts expected in
+`mtp_impl.h`, `text_context_impl.h`, `program_impl.h`, `layouts.h`/`layouts_impl.h`,
+`decoder_state.cpp`, `package.cpp` (all touched by the T13/T16/T19 convergence). **Still ON
+RADAR** — revisit only when long-context becomes a need (nvfp4 KV already frees the pool to ~450k;
+YaRN extends past the 262144 native ceiling to ~555k).
+
 **Lane-perf wave — RANK 1 target moves:**
 - gevil/mtp-sampled-draft (6da71693) now has the conflict fix. Rebase onto 21a0e85f (post-T13)
   → build + ctest + battery + ship. +8.96% decode target.
@@ -1395,6 +1407,14 @@ Image `dcd3dce6c61e` (tags: `t17pvf16acc-2e99db7b`, :quasar, :latest); previous
 
 Image `cc4a1f9abbbb` (tags: `t19w8moe-f1a6d4f8`, :quasar, :latest); previous
 `:quasar` `dcd3dce6c61e` retained as rollback target.
+- Free-GPU ctest: rc=0, skips within baseline (6 expected).
+- Battery: 16 PASS / 0 FAIL: VERDICT UP: PASS VERDICT IMAGE: PASS VERDICT MODELS: PASS VERDICT LEDGER: PASS VERDICT WARMUP: PASS VERDICT VISION: PASS VERDICT VISION-HIST: PASS VERDICT VISION-POISONED: PASS VERDICT REPLAY: PASS VERDICT THINK-SMOKE: PASS VERDICT XHIGH: PASS VERDICT DECODE-FRESH: PASS VERDICT DECODE-8K: PASS VERDICT QUALITY: PASS VERDICT SOAK: PASS VERDICT 4XX-WATCH: PASS
+- State: lane `ninfer-nvfp4` runs the new image; :quasar/:latest pinned (verified match).
+
+## t15yarn-0d49ac8f ship (2026-09-02) - t15-yarn @ 0d49ac8f
+
+Image `28623fdc57dd` (tags: `t15yarn-0d49ac8f`, :quasar, :latest); previous
+`:quasar` `cc4a1f9abbbb` retained as rollback target.
 - Free-GPU ctest: rc=0, skips within baseline (6 expected).
 - Battery: 16 PASS / 0 FAIL: VERDICT UP: PASS VERDICT IMAGE: PASS VERDICT MODELS: PASS VERDICT LEDGER: PASS VERDICT WARMUP: PASS VERDICT VISION: PASS VERDICT VISION-HIST: PASS VERDICT VISION-POISONED: PASS VERDICT REPLAY: PASS VERDICT THINK-SMOKE: PASS VERDICT XHIGH: PASS VERDICT DECODE-FRESH: PASS VERDICT DECODE-8K: PASS VERDICT QUALITY: PASS VERDICT SOAK: PASS VERDICT 4XX-WATCH: PASS
 - State: lane `ninfer-nvfp4` runs the new image; :quasar/:latest pinned (verified match).
