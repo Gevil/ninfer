@@ -1238,3 +1238,124 @@ fairness question (the last-finishing stream is the slowest), not a correctness
 or cold-start issue. Re-evaluate #73 only if a real cold-idle regression surfaces
 in production.
 
+## Audit 2026-09-02 — 24h fork re-audit + upstream convergence (post-T14)
+
+**Window:** 2026-09-01 → 2026-09-02. **Base:** gevil/master @ 4ed816a5 (lane runs
+mtp-sampled-draft d428eb2b). `git fetch --all --prune` moved: **upstream** (master
+`21a0e85f`→`f0eb3ac7`), **dylan** (experimental `c450798c`→`332e3194`), **md**
+(handoff `172392e2`→`e6af22eb`, +2 new branches), **gzenz** (kv-nvfp4-yarn
+force-push `103ad0d8`→`b1efb318`). cometkim/eason: no movement.
+
+**Upstream master: 8 new commits (21a0e85f..f0eb3ac7) — ALL ABSENT from our tree:**
+
+| Commit | What | Tier |
+|---|---|---|
+| `a2761ec1` | refactor(kv-cache): centralize format contracts — 27 files, −1123 lines (docs + perplexity corpus digest removed, physical/numerical detail moved to owning contracts) | T15 wave (KV contract — interacts with the nvfp4/K8V4 probe) |
+| `9954867a` | perf(rmsnorm): read the weight before the reduction, compile it out where it costs occupancy — **the md `rmsnorm-weight-hoist` micro-opt, upstreamed as PR #150** | T15 wave (decode micro-opt) |
+| `0a204aee` | perf(ops): stage the routed MoE gate/up tile from x instead of a gathered copy — **the md `moe-stage-from-x` micro-opt, upstreamed as PR #140** | T15 wave (decode micro-opt) |
+| `e51b585c` | fix(gdn): respect cooperative launch capacity — GDN gating-proj kernel + plan + device (applies to qwen3.8-27b via the Qwen3_6_27B target) | T15 wave (correctness) |
+| `3b50962b` | fix(frontend): normalize qwen tool argument parsing (tool_call_parser, 503 lines) | T15 wave |
+| `0c5d570c` | fix(frontend): preserve embedded qwen tool markup (tool_call_parser) | T15 wave |
+| `abf820a4` | fix(media): correct benchmark address range | T15 wave |
+| `f0eb3ac7` | fix(serve): upgrade cpp-httplib to 0.54.1 (third_party, +19k/−7k lines) | T15 wave |
+
+**KEY INSIGHT — the "md micro-opts" task is resolved upstream.** `rmsnorm-weight-hoist`
+(`0bb9bb15`) and `moe-stage-from-x` (`a582615c`) are the md-fork commits that were
+dropped earlier as "not in the clone / fork unreachable". They have now been **upstreamed
+into master** (PR #150 `9954867a` + PR #140 `0a204aee`, both MERGED 09-02). They arrive
+with the T15 convergence — no separate cherry-pick wave needed.
+
+**dylan/experimental (c450798c→332e3194, +1 commit):**
+
+| Commit | What | Tier |
+|---|---|---|
+| `332e3194` | perf(engine): reduce concurrent host overhead — publish hot counters without per-round snapshot scans, drop periodic memory-summary polling, skip output-event publication for terminal-only requests; C=1/2/3/4 measured. 12 files, +824/−113. | dylan wave (Tier 2) |
+
+dylan/experimental is still 89 ahead / 160 behind upstream → rebase required before any
+adoption (same as the prior dylan-wave items).
+
+**md (2 NEW branches + handoff update):**
+
+| Branch | Ahead/Behind | What | Tier |
+|---|---|---|---|
+| `perf/pv-f16acc` (a790f376, 7339e9b2) | 2 / 7 | perf(attention): FP16 PV accumulator in the prompt kernel (bf16/fp8/i8/k8v4/nvfp4 cache variants). Small decode micro-opt. | Tier 2 |
+| `research/w8-moe-prefill-staged` (f1beaea7) | 1 / 15 | perf(ops): stage the W8 prefill weight path three deep + decode a tile ahead (sparse_moe_prefill). Prefill opt. | Tier 3 (research) |
+| `handoff` (e6af22eb) | 109 / 421 | Russian worklog (RMSNorm prefetch review, 2x2 warp-tile probes, q4_gate_up ISA). Docs only, not adoptable. | docs |
+
+**gzenz (force-push on 2 branches):**
+
+| Branch | Old→New | What | Tier |
+|---|---|---|---|
+| `kv-nvfp4-yarn` | `103ad0d8`→`b1efb318` | re-stacked: `da49c0d6` (pressure fix, IN our tree) + revert/reapply `b9feebe8` + NEW `b1efb318` (try guided_closure before root_maximal + expose device KV stats). The Tier 15 cherry-pick set (`40fc03a2`→`afa58f6a`) is now stale — re-derive the adoptable set from `b1efb318`. | Tier 15 (hold) |
+| `local/combined` | →`486b9bd0` | same new engine tip. | Tier 15 (hold) |
+
+**Upstream PRs (last 48h):**
+
+| PR | State | What | Tier |
+|---|---|---|---|
+| #150 | MERGED | rmsnorm weight hoist (md) — upstreamed | in T15 wave |
+| #140 | MERGED | MoE stage from x (md) — upstreamed | in T15 wave |
+| #152 | OPEN | feat(serve): automatic shared-prefix write at the system/developer frontier | T3 watch |
+| #148 | OPEN | OpenAI Responses API: reasoning summary + encryption | T3 watch |
+| #107 | OPEN | fix(qwen3.8): wire-format detect nvfp4 artifact profile | T13 in-flight (already in our tree via T13 convergence) |
+| #149/#146/#141 | CLOSED | runtime pressure fixes (closed unmerged) | — |
+
+**Conflict check (merge-tree upstream f0eb3ac7 → our mtp-sampled-draft d428eb2b):**
+11 conflict files: `apps/serve/main.cpp`, `bench/ops/gdn_gating_proj_bench.cu`,
+`src/CMakeLists.txt`, `src/ops/gdn_gating_proj/bf16/{kernels.cu,kernels.h,plan.cpp}`,
+`src/ops/linear/nvfp4/nvfp4_w4a4_tma.cuh`, `src/serve/http_server.{cpp,h}`, + 2
+modify/delete (`load_progress.cpp`, `console_log.cpp` — upstream deleted, we keep).
+The modify/delete pair is the same `console_log` pattern fixed in the T13 convergence
+(restore + keep in CMakeLists). The GDN kernel conflicts are from the `e51b585c` fix
+touching the same bf16_gdn_gating_proj files. **Manageable, but requires a real
+convergence pass (not a clean fast-forward).**
+
+## TIERED PLAN (2026-09-02, post-T14)
+
+**Lane state:** image `1025a4610477` (`mtsmp-d428eb2b` / `:quasar` / `:latest`),
+`qwen3.8-27b-quasar`, `--kv-dtype int8`, 225k-token pool. Rollback target: `ef07593e8dee`
+(t13-converge c8a2b85e).
+
+### Tier 1 — plan-to-adopt (dedicated wave, next)
+1. **T15 convergence wave** — merge upstream `f0eb3ac7` (8 commits) into the lane tree.
+   Pulls in: the 2 md micro-opts (`9954867a`+`0a204aee`, decode +1.5–2.6% + 1.046x MoE),
+   the GDN cooperative-launch fix (`e51b585c`, correctness for qwen3.8-27b), the
+   tool-call-parser fixes, the cpp-httplib 0.54.1 bump, and the KV-cache format-contract
+   refactor (`a2761ec1`). **Gate:** free-GPU ctest + full battery + KV-mode re-probe
+   (the KV refactor `a2761ec1` must not regress the nvfp4/k8v4 decode we probed).
+   Resolve the 11 conflict files (GDN kernels + CMakeLists + console_log modify/delete).
+2. **md/perf/pv-f16acc** (`7339e9b2`+`a790f376`) — FP16 PV accumulator, small decode
+   micro-opt. Cherry-pick AFTER the T15 convergence (the KV refactor touches the same
+   prompt_*.cuh files → adopt on the converged tree to avoid double-edit conflicts).
+   **Gate:** free-GPU ctest + decode battery.
+
+### Tier 2 — conditional (rebase/entangled, adopt when convenient)
+3. **dylan/experimental `332e3194`** (concurrent host overhead) + the prior dylan wave
+   items (packed-verify `2c7785d9`, CPU-spin fix `583d8e10`, checkpoint-pin `d98f3fdb`).
+   All 160 behind upstream → rebase onto post-T15. **Gate:** free-GPU ctest + concurrency
+   battery (C=1/2/3/4) + decode battery.
+4. **md/research/w8-moe-prefill-staged** (`f1beaea7`) — prefill micro-opt, research
+   branch (1 commit). Adopt with the dylan wave (same rebase base).
+
+### Tier 3 — watch (open architecture / eval tooling / re-derive)
+5. **gzenz/kv-nvfp4-yarn** (`b1efb318`, force-pushed) — Tier 15 NVFP4 KV + YaRN
+   context extension (262k→555k). The cherry-pick set is now stale (re-stacked on
+   `da49c0d6`+`b9feebe8`+`b1efb318`). Re-derive the adoptable set when long-context
+   becomes a need. The new `b1efb318` (guided_closure before root_maximal) is a
+   pressure-planner improvement worth tracking.
+6. **#152 shared-prefix write** (open) — automatic shared-prefix write at the
+   system/developer frontier. Watch (serve feature, no decode value).
+7. **#148 OpenAI Responses API** (open) — reasoning summary + encryption compat.
+   Watch (serve API surface).
+
+### Hold / not-useful (unchanged)
+- **E8 lattice / KVarN / KIVI sub-8-bit KV** — no ninfer port (unchanged).
+- **vLLM, Windows, 1M-context, hyperquant** — off-lane (cometkim branches).
+- **md/handoff** — worklog only, not adoptable.
+- **eason** — dead (08-22), 0 ahead.
+
+**Sequencing:** (1) T15 convergence (the md micro-opts + GDN fix ride free in it) →
+(2) md/perf/pv-f16acc on the converged tree → (3) dylan wave + w8-moe-prefill rebase →
+(4) Tier 15 re-derive when long-context is needed. The KV-mode probe + T14 verdict are
+already done (nvfp4 KV +13%; keep the new scheduling arch).
+
