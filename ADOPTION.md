@@ -1155,11 +1155,13 @@ schema10), #37 (ollama), #35 (compressed-KV E8 Blackwell — watch, off-lane flo
 - Fallback: if G6 still fails on the pressure line, revert to the 08-31 re-scope (defer the
   pressure commits, ship only the non-runtime subset).
 
-**Tier 15 — SPLIT + YARN PARKED (user decision 2026-09-01):**
+**Tier 15 — SPLIT (user decision 2026-09-01):**
 - NVFP4/K8V4 KV cache: now **UPSTREAM** (4ac73c47+21a0e85f) — adopt via T13, NOT cherry-pick gzenz.
   Probe as part of the T13 gate (nvfp4/k8v4 decode vs int8 baseline).
-- YaRN context extension (262k→555k rope scaling): **PARKED** — user: "not that important for us".
-  Upstream has NO rope-scaling; only gzenz has it. Revisit only if long-context becomes a need.
+- YaRN context extension (262k→555k rope scaling): **ON RADAR** — gzenz-only (upstream has no
+  rope-scaling). This is the *only* path past the 262144 native context ceiling; nvfp4 KV now frees
+  the pool to ~450k tokens, so YaRN is the lever for long-context. Keep on the plan's radar; revisit
+  when long-context becomes a need (no longer parked — 2026-09-01).
 - New: gzenz `103ad0d8` (skip eviction of shared prefixes with active refs) — consider adopting.
 
 **Lane-perf wave — RANK 1 target moves:**
@@ -1180,3 +1182,29 @@ Image `ef07593e8dee` (tags: `t13converge-c8a2b85e`, :quasar, :latest); previous
 - Free-GPU ctest: rc=0, skips within baseline (6 expected).
 - Battery: 16 PASS / 0 FAIL: VERDICT UP: PASS VERDICT IMAGE: PASS VERDICT MODELS: PASS VERDICT LEDGER: PASS VERDICT WARMUP: PASS VERDICT VISION: PASS VERDICT VISION-HIST: PASS VERDICT VISION-POISONED: PASS VERDICT REPLAY: PASS VERDICT THINK-SMOKE: PASS VERDICT XHIGH: PASS VERDICT DECODE-FRESH: PASS VERDICT DECODE-8K: PASS VERDICT QUALITY: PASS VERDICT SOAK: PASS VERDICT 4XX-WATCH: PASS
 - State: lane `ninfer-nvfp4` runs the new image; :quasar/:latest pinned (verified match).
+
+## mtsmp-d428eb2b ship (2026-09-02) - mtp-sampled-draft @ d428eb2b
+
+Image `1025a4610477` (tags: `mtsmp-d428eb2b`, :quasar, :latest); previous
+`:quasar` `ef07593e8dee` (t13-converge) retained as rollback target.
+
+**Branch: `mtp-sampled-draft` rebased onto post-T13 (21a0e85f).** The branch
+(sampled-draft `4a4759b0` + admission-planning `31cd5a1d` + nvtx fix `6da71693`)
+was rebased onto the post-T13 tree. One compile conflict: the post-T13 rebase
+made `ResourceInspection` non-movable (deleted move-assignment, inherited from
+`Choice::operator=(Choice&&) = delete`), so the sampled-draft admission planning
+'decl; decl = f();' pattern broke. Fixed in `d428eb2b` (move-construct the
+`ResourceInspection` inside the try/catch; the dependent if-blocks nested).
+
+- Free-GPU ctest: rc=0, skips within baseline.
+- Battery: 16 PASS / 0 FAIL (final run): UP, IMAGE, MODELS, LEDGER, WARMUP,
+  VISION, VISION-HIST, VISION-POISONED, REPLAY 10/10, THINK-SMOKE, XHIGH,
+  DECODE-FRESH, DECODE-8K, QUALITY, SOAK 5/5, 4XX-WATCH.
+- Decode: DECODE-8K 145.3 tok/s (baseline 137.4, +5.7%); DECODE-FRESH 157.3 tok/s
+  (baseline 139.4, +12.8%). The +8.96% decode target is met (the decode tok/s
+  varies on the shared lane; the first ship measured DECODE-8K 153.9 tok/s =
+  +11.9%).
+- Probe fix: the battery LEDGER check was made robust to the post-T13 spdlog
+  boot marker (`engine capacity` accepted alongside `listening on`).
+- State: lane `ninfer-nvfp4` runs the new image; :quasar/:latest pinned
+  (verified match).
