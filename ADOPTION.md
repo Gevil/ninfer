@@ -1374,3 +1374,11 @@ remaining new items take T17–T21.
 rebase → (4) Tier 15 re-derive when long-context is needed. The KV-mode probe + T14
 verdict are already done (nvfp4 KV +13%; keep the new scheduling arch).
 
+
+## t16converge-2a80f20f ship (2026-09-02) - t16-converge @ 2a80f20f
+
+Image `1c47cd28dcd7` (tags: `t16converge-2a80f20f`, :quasar, :latest); previous
+`:quasar` `1025a4610477` retained as rollback target.
+- Free-GPU ctest: rc=0, skips within baseline (6 expected).
+- Battery: 16 PASS / 0 FAIL: VERDICT UP: PASS VERDICT IMAGE: PASS VERDICT MODELS: PASS VERDICT LEDGER: PASS VERDICT WARMUP: PASS VERDICT VISION: PASS VERDICT VISION-HIST: PASS VERDICT VISION-POISONED: PASS VERDICT REPLAY: PASS VERDICT THINK-SMOKE: PASS VERDICT XHIGH: PASS VERDICT DECODE-FRESH: PASS VERDICT DECODE-8K: PASS VERDICT QUALITY: PASS VERDICT SOAK: PASS VERDICT 4XX-WATCH: PASS
+- State: lane `ninfer-nvfp4` runs the new image; :quasar/:latest pinned (verified match).
