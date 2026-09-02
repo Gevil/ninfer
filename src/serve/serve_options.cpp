@@ -80,6 +80,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--request-log-jsonl FILE] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--spec mtp|dflash --draft-tokens N] "
+           "[--rope-scaling-factor F] [--rope-scaling-original-context N] "
            "[--default-max-tokens N] [--default-thinking-budget N] "
            "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
            "[--lm-head-draft] [--no-thinking] [--preserve-thinking] [--cors] "
@@ -117,7 +118,10 @@ std::string serve_usage_text(const char* argv0) {
            "HF bucket) into the webui dir and serves it at / alongside the API\n"
            "       --webui-dir DIR serves (and for --webui, downloads into) DIR; "
            "defaults to <model dir>/webui\n"
-           "       --greedy forces temperature 0 (exact argmax).\n";
+           "       --greedy forces temperature 0 (exact argmax).\n"
+           "       --rope-scaling-factor applies YaRN position scaling (1.0 = disabled); "
+           "extends effective context by the factor.\n"
+           "       --rope-scaling-original-context is the YaRN ramp threshold (default 262144).\n";
 }
 
 ServeOptions parse_serve_options(int argc, char** argv) {
@@ -271,6 +275,14 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.device = parse_nonnegative_int(require_value("--device"), "device");
         } else if (arg == "--kv-dtype") {
             options.kv_cache = parse_kv_dtype(require_value("--kv-dtype"));
+        } else if (arg == "--rope-scaling-factor") {
+            options.rope_scaling_factor =
+                parse_float_in(require_value("--rope-scaling-factor"), "rope-scaling-factor", 1.0f,
+                               16.0f);
+        } else if (arg == "--rope-scaling-original-context") {
+            options.rope_scaling_original_context = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value("--rope-scaling-original-context"),
+                                     "rope-scaling-original-context"));
         } else if (arg == "--spec") {
             options.speculative.backend =
                 product::parse_speculative_backend(require_value("--spec"));
