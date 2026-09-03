@@ -258,6 +258,106 @@ int distinct_state_case(const Case& test_case, std::uint32_t seed) {
     return failures;
 }
 
+int partition_case(const Case& test_case, std::initializer_list<std::int32_t> chunks,
+                   std::uint32_t seed) {
+    std::int32_t partition_tokens = 0;
+    std::int32_t maximum_chunk    = 0;
+    for (const std::int32_t chunk : chunks) {
+        partition_tokens += chunk;
+        maximum_chunk = std::max(maximum_chunk, chunk);
+    }
+    if (partition_tokens != test_case.tokens || maximum_chunk <= 0) {
+        std::cerr << "invalid gated_delta_net partition\n";
+        return 1;
+    }
+
+    const gdn_ref::Inputs in = make_inputs(test_case, seed);
+    const float scale        = 1.0f / std::sqrt(static_cast<float>(kStateDim));
+    const gdn_ref::Result ref =
+        gdn_ref::evaluate(in, static_cast<double>(scale), test_case.normalize_qk);
+    DeviceInputs device(in);
+    GuardedDeviceBuffer full_state(in.state.size() * sizeof(float));
+    GuardedDeviceBuffer partition_state(in.state.size() * sizeof(float));
+    GuardedDeviceBuffer full_out(in.v.size() * sizeof(std::uint16_t));
+    GuardedDeviceBuffer partition_out(in.v.size() * sizeof(std::uint16_t));
+    full_state.copy_from_host(in.state.data(), full_state.bytes());
+    partition_state.copy_from_host(in.state.data(), partition_state.bytes());
+    full_out.fill(0xff);
+    partition_out.fill(0xff);
+
+    Tensor q(device.q.p, DType::BF16, {kStateDim, test_case.qk_heads, test_case.tokens});
+    Tensor k(device.k.p, DType::BF16, {kStateDim, test_case.qk_heads, test_case.tokens});
+    Tensor v(device.v.p, DType::BF16, {kStateDim, test_case.value_heads, test_case.tokens});
+    Tensor g(device.g.p, DType::FP32, {test_case.value_heads, test_case.tokens});
+    Tensor beta(device.beta.p, DType::FP32, {test_case.value_heads, test_case.tokens});
+    Tensor full_state_tensor(full_state.data(), DType::FP32,
+                             {kStateDim, kStateDim, test_case.value_heads});
+    Tensor partition_state_tensor(partition_state.data(), DType::FP32,
+                                  {kStateDim, kStateDim, test_case.value_heads});
+    Tensor full_out_tensor(full_out.data(), DType::BF16,
+                           {kStateDim, test_case.value_heads, test_case.tokens});
+    Tensor partition_out_tensor(partition_out.data(), DType::BF16,
+                                {kStateDim, test_case.value_heads, test_case.tokens});
+    const std::size_t full_workspace_bytes = ops::gated_delta_net_workspace_capacity_bytes(
+        test_case.qk_heads, test_case.value_heads, test_case.normalize_qk, test_case.tokens,
+        test_case.tokens);
+    const std::size_t partition_workspace_bytes = ops::gated_delta_net_workspace_capacity_bytes(
+        test_case.qk_heads, test_case.value_heads, test_case.normalize_qk, 1, maximum_chunk);
+    WorkspaceArena full_workspace(std::max<std::size_t>(full_workspace_bytes, 256));
+    WorkspaceArena partition_workspace(std::max<std::size_t>(partition_workspace_bytes, 256));
+
+    ops::gated_delta_net(q, k, v, g, beta, scale, test_case.normalize_qk, full_workspace,
+                         full_state_tensor, full_out_tensor, nullptr);
+    std::int32_t offset = 0;
+    for (const std::int32_t chunk : chunks) {
+        Tensor q_chunk   = q.slice(2, offset, chunk);
+        Tensor k_chunk   = k.slice(2, offset, chunk);
+        Tensor v_chunk   = v.slice(2, offset, chunk);
+        Tensor g_chunk   = g.slice(1, offset, chunk);
+        Tensor b_chunk   = beta.slice(1, offset, chunk);
+        Tensor out_chunk = partition_out_tensor.slice(2, offset, chunk);
+        ops::gated_delta_net(q_chunk, k_chunk, v_chunk, g_chunk, b_chunk, scale,
+                             test_case.normalize_qk, partition_workspace, partition_state_tensor,
+                             out_chunk, nullptr);
+        offset += chunk;
+    }
+    cuda_synchronize();
+
+    std::string partition_name;
+    for (const std::int32_t chunk : chunks) {
+        if (!partition_name.empty()) partition_name += '+';
+        partition_name += std::to_string(chunk);
+    }
+    const std::string label = std::string(test_case.name) + " partition " + partition_name;
+    const std::vector<double> full_output = from_device_bf16(full_out.data(), in.v.size());
+    const std::vector<double> partition_output =
+        from_device_bf16(partition_out.data(), in.v.size());
+    const std::vector<double> full_state_values = read_f32(full_state.data(), in.state.size());
+    const std::vector<double> partition_state_values =
+        read_f32(partition_state.data(), in.state.size());
+    int failures = 0;
+    failures += verify_recurrence(label + " full out oracle", full_output, ref.out,
+                                  gated_delta_net_output_bf16_criterion());
+    failures += verify_recurrence(label + " partition out oracle", partition_output, ref.out,
+                                  gated_delta_net_output_bf16_criterion());
+    failures += verify_recurrence(label + " full state oracle", full_state_values, ref.final_state,
+                                  gated_delta_net_state_fp32_criterion());
+    failures += verify_recurrence(label + " partition state oracle", partition_state_values,
+                                  ref.final_state, gated_delta_net_state_fp32_criterion());
+    failures += verify_recurrence(label + " output delta", partition_output, full_output,
+                                  gated_delta_net_output_bf16_criterion());
+    failures += verify_recurrence(label + " state delta", partition_state_values,
+                                  full_state_values, gated_delta_net_state_fp32_criterion());
+    failures += full_state.verify_guards((label + " full state").c_str());
+    failures += partition_state.verify_guards((label + " partition state").c_str());
+    failures += full_out.verify_guards((label + " full out").c_str());
+    failures += partition_out.verify_guards((label + " partition out").c_str());
+    failures += verify_common_inputs_unchanged(label, in, device.q, device.k, device.v, device.g,
+                                               device.beta);
+    return failures;
+}
+
+
 int batch_update_case(const Case& test_case, const std::vector<int>& source_slots,
                       const std::vector<int>& destination_slots, int slots, std::uint32_t seed) {
     if (test_case.tokens != 1) { throw std::logic_error("batch_update_case requires W=1"); }
@@ -477,6 +577,8 @@ int main() {
                                   {8, 9, 10, 11, 12, 13, 14, 15}, 16, 13001u);
     failures += batch_update_case({"35b mixed fork destinations", 16, 32, 1, true}, {0, 2, 4, 6},
                                   {1, 3, 5, 7}, 8, 13101u);
+    failures += partition_case({"27b chunk boundary", 16, 48, 128, true}, {64, 64}, 12428u);
+    failures += partition_case({"27b chunk tail", 16, 48, 65, true}, {64, 1}, 12465u);
 
     std::cout << (failures == 0 ? "OK" : "FAIL") << " gated_delta_net correctness\n";
     return failures == 0 ? 0 : 1;
