@@ -484,3 +484,78 @@ The `gated_delta_net_snapshot` op (impl in gated_delta_net.cpp, declaration in
 include/ninfer/ops/gated_delta_net.h, text_context_impl.h integration) + its
 tests = separate adoption item (T19 candidate) if the MTP/draft-state path is
 wanted.
+
+## T-Q — QUASAR A/B campaign (2026-09-04, `t24-quasar-a` branch @ c178fae9)
+
+**Context:** the user (Mirko) maintains `QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4` — a
+QAT (quantization-aware-training) NVFP4 variant of the SAME Qwen3.8-27B model our
+lane serves (same 27B backbone, same MTP draft module, different training +
+quantization). Our lane artifact (`qwen3_8_27b_quasar.ninfer`, `quasar-nvfp4`,
+full-NVFP4 backbone) vs his artifact (`QUASAR-QAT` repo, `nvfp4` weights ID,
+400/496 source NVFP4 matrices preserved + 96 bf16 control matrices + QAT-tuned
+MTP). Plan (user-approved): A/B on the same engine, keep the winner.
+
+**T-Q1 — engine port (DONE 2026-09-04, `t24-quasar-a` @ c178fae9):** cherry-picked
+his `2d11c992` (feat(nvfp4): support Qwen3.8 QUASAR artifacts,
+[PR #19](https://github.com/MirkoCovizzi/ninfer-rtx5090-laptop/pull/19),
+`MirkoCovizzi/ninfer-rtx5090-laptop`) onto `t22-converge` — the LIVE lane tree —
+so the A/B runs on the current engine, not the stale t15yarn base. Conflict
+resolutions (his commit predates the t22 rework):
+- `27b package.h`: appended `Qwen38Nvfp4LegacyW8` + `Qwen38Nvfp4Quasar` after
+  `Qwen38Quasar` (no enum renumber); `resolve_weights` signature
+  `ArtifactIdentity` → `Reader` (content detection needs tensor access);
+  `Reader` fwd decl.
+- `27b package.cpp`: adopted his `tensor_matches`/`endpoint_matches` helpers +
+  Reader signature. `"nvfp4"` weights id now routes by endpoint storage:
+  W8 endpoints + NVFP4 layer-3 attention QKV → `Qwen38Nvfp4Quasar`;
+  W8 endpoints otherwise → `Qwen38Nvfp4LegacyW8` (the ostfralla-era W8 artifact
+  keeps working); FP8 endpoints → `Qwen38Nvfp4` (t22 behavior preserved).
+  `"nvfp4full"` → `Qwen38Nvfp4Full`, `"quasar-nvfp4"` → `Qwen38Quasar` kept.
+- `bindings.cpp`: `Qwen38Nvfp4Quasar` binds the NVFP4 text layout with
+  `full_nvfp4=true` (all 256 attention/GDN/MLP parents NVFP4 + fused
+  `gdn/a_b_projection [96,5120]` bf16 — his exact 32 attn + 96 GDN + 128 MLP
+  layout); `Qwen38Nvfp4LegacyW8` binds `full_nvfp4=false` (legacy Qwen3.6-style
+  exceptions). Both W8G32 endpoint format.
+- `variant.cpp`: both profiles join the NVFP4 workspace-capacity case group (7 sites).
+- `registry.cpp`: `Target::resolve_weights(reader)` (template call — all targets
+  now take a Reader); `qwen3_6_35b_a3b` aligned (decl + def + `Reader` fwd decl).
+- `test_load_plan.cpp`: adopted his final file (adds `verify_qwen38_quasar`:
+  1268/1006/6 materialization, 256 NVFP4 parents, fused-GDN-control format
+  check; `verify_qwen38_modern`; generic 3-arg `verify_nvfp4` for the legacy
+  ostfralla W8 artifact); restored t22's `StartupObserver{}` arg in
+  `verify_profile_mismatch_rejection`; dropped t22's `verify_rejection` (needs
+  a Reader without an artifact — not constructible; dropped in his line too).
+- Converter tooling: `convert_nvfp4_quasar.py` + `recipe_nvfp4_quasar.py` +
+  `inventory_nvfp4_quasar.py` (his, auto-merged); `test_quasar_nvfp4_converter.py`
+  moved to `tests/convert/qwen3_8_27b/` (t22 layout).
+
+**Artifact:** `QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4` @ `d8e6fbfa3e` downloaded to
+`~/.local/share/ninfer/models/mirko-quasar-nvfp4/qwen3_8_27b_nvfp4.ninfer`
+(17,555,331,072 B; SHA256 verified against the published `SHA256SUMS`; manifest
+matches the contract: 1268 objects / 1262 tensors / 6 resources, NVFP4 256,
+bf16 control 96, MTP module pinned to his recipe revision).
+
+**T-Q2 — Phase A ship (engine + our model):**
+`ninfer-ship.sh --branch t24-quasar-a --tag t24quasar-c178fae9` — full gates
+(G1 push, G2 build, G4 free-GPU ctest vs baseline, G5 tag/container match,
+G6 battery + REPLAY + 4XX-WATCH, G7 auto-rollback). Ships the T22-converge
+engine (subsumes the failed 19:45 T22 reship — its G1 push failed on a remote
+divergence; its pre-check was GREEN) + the QUASAR profile. Lane downtime
+~8–12 min (restart window + model load).
+Verdict so far: pre-check build pending (t24quasar-precheck image).
+
+**T-Q3 — Phase B (A/B on his artifact):** quadlet swap only — same `:quasar`
+image as Phase A, no rebuild:
+- add `Volume=%h/.local/share/ninfer/models/mirko-quasar-nvfp4/qwen3_8_27b_nvfp4.ninfer:/workspace/models/mirko_quasar.ninfer:ro`
+- `Exec` → `ninfer-serve /workspace/models/mirko_quasar.ninfer … --model-id qwen3.8-27b`
+  (his artifact's public model id; the `nvfp4` weights id resolves to
+  `Qwen38Nvfp4Quasar` via T-Q1's content detection)
+- battery `--model qwen3.8-27b` against the SAME baseline JSON.
+**Decision policy (user-approved):** B is kept only if (a) every battery verdict
+PASSes and (b) decode tok/s ≥ Phase A's measured tok/s (fresh and 8k). Any hard
+FAIL (load failure, 4xx, battery gate) → auto-revert to our artifact. If B is
+within ±5% of A → keep A.
+**T-Q4 — record + keep winner:** winner pinned (quadlet left as-is = winner);
+loser's model dir kept (NOT deleted); ADOPTION.md verdict entry with both
+batteries' numbers; the engine port stays in the tree regardless of outcome
+(profile + converter serve future QUASAR artifacts).
