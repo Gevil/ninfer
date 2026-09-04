@@ -272,6 +272,19 @@ const fi::Tokenizer& fixture_tokenizer() {
          .generation_config_json = fixture.generation_config_json});
     return tokenizer;
 }
+const fi::Tokenizer& official_tokenizer() {
+    static const std::string tokenizer_json =
+        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/tokenizer.json");
+    static const std::string tokenizer_config_json =
+        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/tokenizer_config.json");
+    static const std::string generation_config_json =
+        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/generation_config.json");
+    static const fi::Tokenizer tokenizer({.tokenizer_json         = tokenizer_json,
+                                          .tokenizer_config_json  = tokenizer_config_json,
+                                          .generation_config_json = generation_config_json});
+    return tokenizer;
+}
+
 
 std::vector<std::uint8_t> gradient_ppm() {
     std::vector<std::uint8_t> ppm;
