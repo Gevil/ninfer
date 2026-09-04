@@ -624,3 +624,12 @@ in `~/.local/share/ninfer/quasar-ab/phase-b.sh`:
    so the fallback also fired (`0\n0`), making `[ "$BFAIL" != "0" ]` always true and
    forcing a false revert-to-A on a perfect run; replaced with an explicit file check.
 (The double-count pattern in phase-a-clean.sh was already fixed at 23:30.)
+**Consumer rebind (2026-09-05):** lane public id is now `qwen3.8-27b` (Mirko's artifact); every consumer
+pinned to the old `qwen3.8-27b-quasar` id was rebound: OMP (`models.yml` QUASAR entry merged into the
+`qwen3.8-27b` entry, dropping the stale "official" row; `config.yml` ocpp-review/scout/sonic overrides;
+`gvs-ideator/manager/worker` + `ninfer-template-review` agent frontmatters), Hindsight quadlet (restarted,
+0 restarts), aistock (opentrade quadlet + `api.py` LANE_MODEL + Dockerfile .env, image rebuilt via
+opentrade-build; OWUI quadlet `DEFAULT_MODELS` + `webui.db` stock-analyst row + `ui.default_models`;
+`lane-ensure.json` + `lane_ensure.py` DEFAULTS + pycache purge), pipeline defaults (`ninfer-battery.sh`,
+`decode-gate.py`). Verified: lane probe OK on new id, `lane_ensure.py` rc=0 ready, opentrade
+`/lane-status` serving_model:true, OWUI `/api/models` lists `qwen3.8-27b`.
