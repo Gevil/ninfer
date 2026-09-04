@@ -1418,3 +1418,165 @@ Image `28623fdc57dd` (tags: `t15yarn-0d49ac8f`, :quasar, :latest); previous
 - Free-GPU ctest: rc=0, skips within baseline (6 expected).
 - Battery: 16 PASS / 0 FAIL: VERDICT UP: PASS VERDICT IMAGE: PASS VERDICT MODELS: PASS VERDICT LEDGER: PASS VERDICT WARMUP: PASS VERDICT VISION: PASS VERDICT VISION-HIST: PASS VERDICT VISION-POISONED: PASS VERDICT REPLAY: PASS VERDICT THINK-SMOKE: PASS VERDICT XHIGH: PASS VERDICT DECODE-FRESH: PASS VERDICT DECODE-8K: PASS VERDICT QUALITY: PASS VERDICT SOAK: PASS VERDICT 4XX-WATCH: PASS
 - State: lane `ninfer-nvfp4` runs the new image; :quasar/:latest pinned (verified match).
+
+## Audit 2026-09-04 — 48h fork re-audit + upstream convergence wave 2 + md fp8-KV campaign
+
+**Window:** 2026-09-02 → 2026-09-04. **Base:** master @ c1fa4e5e (docs line); lane runs
+t15-yarn 0d49ac8f (image 28623fdc57dd) with `--kv-dtype nvfp4` + YaRN 2.12 (262144→400k ctx)
++ MTP3 + `--lm-head-draft` + C=4 + `--preserve-thinking`. gevil/master 215 ahead / 30 behind
+upstream/master; t15-yarn 204 ahead / 9 behind.
+
+`git fetch --all --prune` moved: **upstream** (master==dev `f0eb3ac7`→`863aa8a5`, 9 commits;
+dev merged into master again), **dylan** (experimental `332e3194`→`7dd98fdc`, 16), **md**
+(handoff `e6af22eb`→`414675a5`, 93; new branches `perf/fp8-a8-tma-staging`,
+`perf/nvfp4-blocked-scales`, `claude/5090-qwen-optimization-q48nom` + 2 claude noise
+branches), **gzenz** (local/combined `486b9bd0`→`08636ed3`, 19; HEAD `ff8c3089` NVTX MTP
+profiling). eason/cometkim: no movement.
+
+**Upstream master: 9 new commits (f0eb3ac7..863aa8a5) — ALL ABSENT from the lane tree:**
+
+| Commit | What |
+|---|---|
+| `863aa8a5` | fix(dflash): allow vision prompts (dflash is now native upstream: speculative_options + dflash_impl/context) |
+| `b8786751` | fix(runtime): correct aliased state ownership |
+| `a140e7ae` | fix(engine): preserve exact agent prefix reuse |
+| `e3aeaf8c` | fix(serve): preserve anthropic thinking across restarts |
+| `719d56ef` | fix(frontend): preserve structured tool call intent (fixes #158 class; supersedes closed #159 salvage PR) |
+| `6e2786c5` | fix(logging): restore readable operational logs |
+| `550d0ac3` | feat(serve): add llama.cpp timing and prompt progress (upstreams #163) |
+| `5973313d` | test(frontend): make fixtures self-contained (fixes #156 hardcoded /home/neroued path) |
+| `5f6d44e4` | fix(serve): report engine readiness from health (fixes #155) |
+
+**Caveat:** open issue #170 (09-04): engine halts with "materialization source has no
+resident state" on the 3rd/4th turn of an agent session (Anthropic Messages, tools +
+preserve-thinking), reported on `e3aeaf8c`+`6e2786c5` — exactly our workload class. The T22
+gate must include the agent-session probes (REPLAY/XHIGH); if it reproduces, hold T22 for
+the upstream fix.
+
+**Upstream PRs (new since the 09-02 audit):**
+
+| PR | State | What | Tier |
+|---|---|---|---|
+| #167 | OPEN | md: fp8 A8 GEMM stages operands through TMA — operator 0.86x→1.00x, prefill +1.4% @1024 / +2.6% @4096, bitwise identical (branch `3d6f7f2e`, 1 commit on current master) | T23 |
+| #160 | OPEN | md: NVFP4 TMA route reads activation scales as one tile — operator 0.81x→0.87x, prefill +4.1%, bitwise identical (branch `545f64b0`, 1 commit) | T23 |
+| #162 | OPEN | hecrj: llama.cpp-compatible model metadata on /v1/models | watch |
+| #173 | OPEN | danielfparkernz: rk2v4-e8 compressed KV (208 B/head-token) on paged-KV | HOLD (KV floor) |
+| #84 | OPEN | devan-carlin: native Windows (MSVC+CUDA) build | off-lane |
+| #107 | OPEN | koloved: nvfp4 wire-format profile detect (`b03557e8`) — still ABSENT | adopt when it lands |
+| #97 | OPEN | DuncanBetts: cache C++/CUDA compilation in container builds (`03df31d5`) | T27 (build pipeline) |
+| #159 | CLOSED 09-03 | eason: salvage qwen tool calls per top-level block — superseded by `719d56ef` in the T22 wave | — |
+| #161 | CLOSED unmerged | kitaekatt: contain malformed UTF-8 — verify the upstream fix before shipping | T22 gate note |
+| #150/#140 | MERGED 09-02 | md micro-opts — in-tree via T16 | done |
+
+**Upstream issues (09-02..04, new since audit):** #170 (agent-session halt — see caveat);
+#166 (context-cache "active KV snapshot source is not stable" → 503 until restart; error
+string in-tree in program_impl.h); #169 (output-limit truncation of a long tool call stops
+the agent loop); #174 (Q4G64 full-vocab MTP proposal head proposal → T26); #171 (needle
+judge_strategy:rule scores wording, not retrieval — eval tooling); #165 (YaRN context
+extension proposal — we already ship T15 YaRN; watch for future convergence conflicts);
+#168 (strict:true rejected without opt-out); #164 (KV cache precision tail); #158 (tool
+parser — fixed by `719d56ef`); #175 (3090 cost profile — off-lane).
+
+**dylan/experimental (332e3194..7dd98fdc, 16 new, all ABSENT):**
+
+| Class | Commit | What |
+|---|---|---|
+| P0 correctness | `f25f5463` | fix(gdn): improve chunked prefill numerical accuracy — **fixes the chunked-prefill code we shipped (tier3 wave B)** |
+| P0 correctness | `c075cc38` | fix(runtime): retain ordinary decode state on cancel |
+| P0 correctness | `0412f177` | fix(runtime): prevent premature structured-output stops |
+| P0 correctness | `972f3cde` | fix(runtime): suppress registered stop tokens during qwen reasoning (thinking lane) |
+| perf | `fa80a4cd` | perf(startup): parallelize weight loading and RAM cache setup |
+| perf | `b5e23e0f` | perf: prioritize contiguous prefill before maximal decode batches (scheduler) |
+| watch | `851e7aab` | feat(kv-cache): durable SSD prefix caching (NVMe cold tier; upstream #149 area) |
+| watch | `19607984`+`9d208f61`+`bd14ef65` | p-less decoding by default + stop-token suppression on p-less + AIME temperature eval (sampling) |
+| watch | `f41e4fc3` | fix(dflash2): preserve target distribution under p-less |
+| build/test | `fa007e9e` `7dd98fdc` `851e7aab` `6c875bb5` `028d8932` `4bb186eb` | in-repo unit-test runner + stale-builder repair + test hygiene |
+
+Still 105 ahead / 169 behind upstream → rebase required after T22. Re-derives the T18 pick
+set (the 09-02 list is stale per the re-derive-at-execution lesson).
+
+**md:**
+- **handoff (93 commits, 09-02..03) — the fp8-KV campaign on the 5090 (vs int8):** quality:
+  needle 1K-32K 200/200, 64K/128K at parity with int8, GQN slightly below int8 (10 tasks),
+  AIME strong; perf: decode +12.7% short context (length caveat), prefill +2.2..4.2%,
+  perplexity +0.02..0.05%. The "ready" branch `e033990` is **not pushed** (ABSENT in clone)
+  → numbers-only reference, no adoptable code.
+- **`perf/fp8-a8-tma-staging` (`3d6f7f2e`) = PR #167; `perf/nvfp4-blocked-scales`
+  (`545f64b0`) = PR #160.**
+- **`claude/5090-qwen-optimization-q48nom` (9 docs commits, 09-03/04):** sm_120a opportunity
+  catalogue (`docs/maintainer/rtx5090-sm120a-opportunities-qwen3.6-35b-a3b.md`): GB202
+  architecture model (170 SM, L2 96MB, GDDR7 measured 1674.5 GB/s), multi-GPU prefill
+  design (separate doc), megakernel-portable techniques, section 11 kernel-internal
+  arithmetic audit — 8 code-anchored findings (e.g. M3: fold exp(g)·q·h^T into the
+  state_passing scan, halves h traffic). Lane-relevant: prefill chunk 4096 vs 1024 =
+  prefill time −19.8% (workspace 109→438 MB); `--lm-head-draft` already live on our lane;
+  **`pv-f16acc` passes the perplexity gate but FAILS the 64k needle** (S/64 fold noise) —
+  our T17 gate was battery-only; kernel-wave roadmap = `__ldcs` evict-first on the weight
+  stream (+1.4pp proven), M3 state_passing fold; megakernel CLOSED (0.939 baseline —
+  dead end).
+
+**gzenz local/combined (486b9bd0..08636ed3, 19 new, all ABSENT):** the safety-net feature
+set (09-02..04): `8f22b222` host-KV safety net store+API (continuation eviction → restore
+from host RAM); `21192b11` session-key fallback for catalog candidates; `3053027` e2e test
+suite; `96bb9414` run all e2e testphases by default; `0076496e` `--rehash-test` graceful
+degradation under memory pressure; `71373222`+`717465` pin-based restore +
+smallest-first eviction; `321e6f69` merge Device+Host KV tile selector; bad_alloc catches
+(`4f51b93` kv_find, `59594157` allocate_multi); `08636ed3` reasoning-aware prefix matching
+via compact_prefix_find; `60d60606` session-key fallback on evicted continuations. gzenz
+HEAD `ff8c3089`: NVTX ranges for MTP decode round phases + windowed-MTP post-mortem TODO +
+retry admission on transient KV-entitlement exhaustion. Value: graceful degradation for
+long agent sessions under KV pressure (our OMP-session class; the #135-halt family). 24
+behind → rebase after T22.
+
+**Fork scan (all forks of Neroued/ninfer pushed since 09-01):** no new unique work beyond
+the tracked remotes. kybrcore + Little-Star888 mirror the upstream tip;
+andrewleech/ninfer-v100 (Volta sync, off-lane); BenWu/ninfer-pro-4000-bw (two-card router,
+off-lane); chillaheal/ninfer-win + JCraigWasTaken/ninfer-gfx906 + devan #84 (Windows/AMD,
+off-lane); mr-september/ninfer-sharp tip 08-21 (Sharp overlay already in-tree as the
+template); igorls tip 08-27 (#89 upstreamed and in-tree).
+
+**In-tree containment (lane tree, verified):** all 9 new upstream commits ABSENT (lane is
+9 behind on t15-yarn); dylan `7dd98fdc`/`f25f5463`/`fa80a4cd`/`b5e23e0f`/`851e7aab`
+ABSENT; md `414675a5` (handoff) / `3d6f7f2e` / `545f64b0` ABSENT; gzenz `08636ed3` ABSENT;
+#107 `b03557e8` ABSENT; #97 `03df31d5` ABSENT; #162 `9a43fda2` ABSENT.
+
+## TIERED PLAN (2026-09-04, post-audit)
+
+**Lane state:** image `28623fdc57dd` (t15-yarn 0d49ac8f / :quasar / :latest),
+`qwen3.8-27b-quasar`, `--kv-dtype nvfp4`, YaRN 2.12 (262144→400k ctx), MTP3 +
+`--lm-head-draft`, C=4, `--preserve-thinking`, `--default-max-tokens 80000`. Rollback
+target: `cc4a1f9abbbb` (t19w8moe f1a6d4f8).
+
+**Numbering note:** T21 is the highest existing number (09-02 watch). T15/T16/T17/T19
+shipped 09-02. New items take T22+.
+
+| Tier | Item | Source | Value | Gate / status |
+|---|---|---|---|---|
+| **T22** | Upstream convergence wave 2 — merge `863aa8a5` (9 commits) into the lane tree | upstream master | agent-session correctness (anthropic thinking across restart, exact prefix reuse, tool-call intent, aliased state), dflash vision fix, llama.cpp timing (#163 upstreamed), health readiness (#155), self-contained fixtures (#156) | free-GPU ctest + full battery + agent-session probes (REPLAY/XHIGH); **watch #170** (halt reported on this tree — if it reproduces, hold for the upstream fix) |
+| **T23** | md TMA prefill pair — #167 `3d6f7f2e` (fp8 A8 GEMM TMA staging, prefill +1.4% @1024 / +2.6% @4096) + #160 `545f64b0` (NVFP4 TMA activation-scales tile, prefill +4.1%), both bitwise identical | md PRs | prefill +1.4..+4.1%, bit-exact | cherry-pick after T22 (both are 1 commit on current master) or adopt when merged upstream; free-GPU ctest + prefill battery |
+| **T18 (re-derive)** | dylan wave 2 from tip `7dd98fdc` (16 commits): P0 `f25f5463` GDN chunked-prefill accuracy + `972f3cde`/`0412f177`/`c075cc38` stop-token/cancel fixes + `fa80a4cd` startup parallelization + `b5e23e0f` prefill-batch priority; watch: `851e7aab` SSD prefix cache, p-less sampling set | dylan fork | correctness for the shipped GDN chunked-prefill code + startup + scheduler | rebase after T22 (105 ahead / 169 behind); free-GPU ctest + C=1..4 battery + agent battery |
+| **T24** | gzenz safety net (tip `08636ed3`, 19 commits) — host-KV safety-net store + session-key fallback + pin-based restore + e2e suite + `--rehash-test` | gzenz fork | graceful degradation for long agent sessions under KV pressure (instead of halts) | CONDITIONAL: rebase after T22; free-GPU ctest + e2e suite + pressure battery (eviction scenario); consider the core subset first |
+| **T25** | Lane probe wave (no rebuild): (a) `--prefill-chunk 4096` (catalog: prefill −19.8% of prefill time, workspace 109→438 MB); (b) MTP window sweep under `--lm-head-draft` (catalog: window optimum depends on the flag, combined +23.7%); (c) **T17 64k-needle gate** (md: pv-f16acc passes perplexity but fails the 64k needle — our T17 gate was battery-only); (d) k8v4 decode probe (only nvfp4 was probed in the T13 gate; md fp8 numbers as reference: needle ≤128K parity, decode +12.7% short ctx) | md catalog + md handoff | prefill + decode upside + T17 validation + KV-mode data | quiet-window probes + decode/prefill battery; T17 rollback if the 64k needle fails |
+| **T20** | #152 shared-prefix write (open) | upstream PR | watch (serve feature) | re-audit |
+| **T21** | #148 OpenAI Responses API (open) | upstream PR | watch (serve API surface) | re-audit |
+| **T26** | #174 Q4G64 full-vocab MTP proposal head (09-04) — draft-head bandwidth, FP8-head coverage | upstream issue | MTP decode upside (lane is MTP3) | watch |
+| **T27** | #97 build caching (open, `03df31d5`) — C++/CUDA compile cache for container builds | upstream PR | shorter lane image rebuilds | watch (build pipeline) |
+
+### Hold / not-useful (unchanged + new)
+- **KV floor:** #173 rk2v4-e8 compressed KV, E8 lattice, KVarN/KIVI sub-8-bit KV — no
+  adoption (md's fp8 campaign is reference data only; upstream-native KV modes stay the
+  exception path).
+- **Off-lane:** vLLM, Windows (#84, #139, #136), 1M-context, hyperquant, V100
+  (andrewleech), AMD gfx906 (JCraigWasTaken), two-card router (BenWu), #175 3090 profile.
+- **md/handoff** — worklog + campaign numbers only (`e033990` never pushed).
+- **megakernel** — CLOSED dead end (0.939 baseline, research/megakernel).
+- **eason** — dead; **cometkim** — no movement.
+
+**Sequencing:** (1) T25 probe wave (cheap, no rebuild, validates T17 + sizes prefill) →
+(2) T22 convergence wave 2 → (3) T23 md TMA pair → (4) T18 re-derivation (dylan wave 2) →
+(5) T24 gzenz safety net (conditional).
+
+**Open questions (for the user):**
+1. #170 agent-session halt — ship T22 as-is and probe, or wait for the upstream fix?
+2. T17 pv-f16acc — run the 64k-needle gate now (T25c), or defer?
+3. T24 gzenz safety net — full 19-commit feature, or core subset first?
