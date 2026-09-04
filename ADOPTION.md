@@ -448,3 +448,39 @@ Stacked on t23. Cherry-pick of dylan's P0 GDN chunked-prefill precision fix (`f2
 - `tests/ops/test_gated_delta_net.cpp` (UU): dylan's commit replaced `batch_update_case` with a new `partition_case` test + a refactored `batched_snapshot_case` whose BODY differs (they are NOT one shared-body function — a plain 3-way merge left a dangling opening that would not compile). Resolved as the union: their complete `partition_case` + their complete `batched_snapshot_case` + our complete `batch_update_case`, with all three call-site sets in main() (2 partition + 3 batched_snapshot + 4 batch_update).
 - Kernel files (launch.cu/h, output.cu/cuh, prepare_wy_wu.cu/cuh, state_passing.cu/cuh, gated_delta_net.cpp, launch.h) auto-merged clean.
 Gates before promotion: GPU ctest (`ninfer_gated_delta_net_test`) + MTP/dflash accuracy battery on the lane.
+
+**T22 first-ship failure (17:15) + post-merge fixes:** the 17:15 ship failed at G4
+(ctest, 12 failures, all inside the NEW upstream scenarios from the wave, not
+regressions in existing coverage) and auto-rolled back (lane back on
+`28623fdc57dd`). Two genuine post-merge bugs found and fixed on the branch:
+- `c8ba7c2a`: upstream's fixture rework added `--product-logging` handling to
+  `apps/cli/options.cpp`; our `ninfer_cli_options_test` needed the
+  `ninfer_product_logging` target linked (CMakeLists).
+- `1eff9672`: the upstream fixture rework dropped our `official_tokenizer()`
+  helper that the wave's qwen3.6/27b tests call; restored verbatim
+  (tests/targets/qwen3_6/test_frontend.cpp, test_engine_prefix_real.cpp).
+Pre-check re-run GREEN (build 0, ctest 106/106, real-model skips per baseline).
+Reship scheduled 19:45 via `ninfer-ship-t22v2.timer` ->
+`ninfer-ship.sh --branch t22-converge --tag t22converge-1eff9672` (same
+auto-rollback gates).
+
+**T23 (TMA wave) prepared:** cherry-picked upstream PR #167 (3d6f7f2e: TMA route
+reads activation scales tile-contiguous) + PR #160 (545f64b0: TMA descriptor
+cache) onto the FIXED t22 line -> `t23-tma-pair @ a05618f7`, pushed. Gates before
+shipping: post-merge ctest + REPLAY/XHIGH battery AFTER T22 lands (stacked).
+
+**T18 (dylan wave 2) prepared:** cherry-picked dylan's P0 GDN chunked-prefill
+precision fix (`f25f5463`, state rel-err -79.2%) onto the current line ->
+`t18-dylan-wave2 @ 30a1f805`, pushed. Compile gate GREEN (build 0,
+ninfer_gated_delta_net_test target). Conflict resolution: plan file (kept our
+deletion) + test file (reconstructed merge). Scope note: dylan's commit is not
+self-contained — its `snapshot_case`/`batched_snapshot_case` tests call
+`gated_delta_net_snapshot`, an op we have NOT adopted (impl + declaration +
+runtime integration landed earlier on dylan's line, separate feature). T18 is
+scoped to the self-contained part: kernel fix + the `partition_case` FP64-oracle
+regression (dylan's new self-contained test) + our existing tests, all 4
+`batch_update_case` cases preserved. **Remaining gate at adoption: GPU ctest.**
+The `gated_delta_net_snapshot` op (impl in gated_delta_net.cpp, declaration in
+include/ninfer/ops/gated_delta_net.h, text_context_impl.h integration) + its
+tests = separate adoption item (T19 candidate) if the MTP/draft-state path is
+wanted.
