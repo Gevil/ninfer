@@ -633,3 +633,121 @@ opentrade-build; OWUI quadlet `DEFAULT_MODELS` + `webui.db` stock-analyst row + 
 `lane-ensure.json` + `lane_ensure.py` DEFAULTS + pycache purge), pipeline defaults (`ninfer-battery.sh`,
 `decode-gate.py`). Verified: lane probe OK on new id, `lane_ensure.py` rc=0 ready, opentrade
 `/lane-status` serving_model:true, OWUI `/api/models` lists `qwen3.8-27b`.
+
+## Audit 2026-09-05 — post-T-Q re-evaluation (fresh fetch, T28–T30 proposed)
+
+**Window:** 2026-09-04 → 2026-09-05. **Base:** lane on `t24-quasar-a` (T22 engine + QUASAR-QAT
+model `qwen3.8-27b`, INT8 KV, 225280 ctx, MTP3 + lm-head-draft, C=4, vision, preserve-thinking,
+built-in 8 GiB host-KV parking). Tree: 215 own commits, **1 behind upstream/master**
+(`ad0f3d38 chore: add project funding information` — docs-only).
+
+**Fetch deltas:**
+- **dylan/experimental** `7dd98fdc → a68667b9` (4 commits): `81f26a7f` feat: enable numerically
+  validated vision with dflash2; `b2b1b7e4` fix(dflash): stop extra-accept past a completed tool
+  call; `75faa830` fix(dflash): keep p-less only at hop 0 and isolate packed verify; `a68667b9`
+  fix(kv-cache): reuse disk entries with vision. → **T28**.
+- **dylan/qwen4** (new branch, `d5863070`): Qwen4 architecture verifier — off-lane (we serve
+  qwen3.8-27b); watch for future model support.
+- **gzenz/local/combined** `08636ed3 → d205c52a` (19 commits): host-KV safety-net hardening —
+  pinned-entry eviction, spill guards, pre-check eviction feasibility, safety-find count cap,
+  compact_prefix fixes, session-key → response_id fix, `d205c52a` materialize real rewrite
+  checkpoint at finish (Option A) (= the #170 halt class — already fixed in-tree via T22's
+  `b8786751`, so this is a fork-side parallel, not a gap). gzenz now 76 ahead / 25 behind
+  master. → re-derives **T24**.
+- **mirko** (QUASAR engine repo, first fetch in this clone): `feat/dynamic-mtp` (4 perf commits:
+  `a1e04606` price adaptive widths by context depth, `08d0d444` eliminate wide MTP decode cliff,
+  `f52125a2` tune wide MTP projection, `0e6dd8bd` vectorize e8 packed decode);
+  `perf/nvfp4-swiglu-m16n256` (`81e685fc` optimize swiglu for small batches — decode-band
+  micro-opt); `feat/kvarn-production` (41 commits: KVaRN mtp3 score production pipeline);
+  `fix/mtp-greedy-parity` (`56dfda80` = our Tier 7 content, his line); `integration/upstream-master`
+  (`44495ec8` — he is absorbing upstream). His lines are 261–357 behind our lane (different
+  base) — adopt by cherry-pick, not merge.
+- **eason / cometkim:** no movement (fully upstreamed, dormant).
+- **md / upstream PRs:** #167 + #160 (the T23 TMA pair) still OPEN upstream; #173 (rk2v4-e8
+  compressed KV) REJECTED per the KV precision floor (E8 family); #163 (serve progress timings)
+  + #162 (llama.cpp-compatible /v1/models metadata) small watch items (the latter is useful for
+  OWUI display); #152 (automatic shared-prefix write at the system frontier) watch (agent
+  workload); #148 (Responses API) watch; #159 CLOSED unmerged.
+- **Upstream issues:** #174 (Q4G64 full-vocabulary MTP proposal head — proposal only; pairs
+  with T28/T29), #172 (resumable output-limit generations; pairs with #169), #171 (NIAH judge
+  strategy — eval tooling), #170 resolved in-tree (T22 `b8786751`), #169 (output-limit
+  truncation stops the agent loop) + #168 (strict:true opt-out) open — watch.
+
+**In-tree re-verification (lane):** `b8786751` (#170) IN, `719d56ef` (#158) IN, `a140e7ae` IN;
+`ad0f3d38` ABSENT (docs-only delta, rides the next convergence). Queued branches:
+`t23-tma-pair @ a05618f7` (2 own commits) and `t18-dylan-wave2 @ 269cf431` (3 own) are both
+7 behind the lane — the QUASAR port + docs moved the lane past them, so **re-stack onto
+`t24-quasar-a` before shipping either**.
+
+### New tiers (numbered after T27)
+
+**T28 — dylan dflash2 wave (PROBE-GATED, new 2026-09-05).** dylan's dflash/dflash2 line is
+maturing on the active experimental branch: `81f26a7f` enables numerically validated vision
+with dflash2, `b2b1b7e4` + `75faa830` fix the verify acceptance boundary (extra-accept past a
+completed tool call; p-less only at hop 0; isolated packed verify), `a68667b9` reuses disk KV
+entries with vision. This is the successor to the T8 question (spec decode beyond MTP3) via
+dylan's active line instead of the dead cometkim/taylor-shift lines (native dflash is already
+in-tree via T22). Probe design: cherry-pick the dflash2 enablement set onto a re-stacked
+branch → free-GPU ctest → A/B vs the MTP3 QUASAR baseline (151.9/150.2 tok/s): gate on
+acceptance (drafts/round) as a first-class metric + net decode at 98k/225k quiet window (R2)
++ tool-call boundary regression (the extra-accept fix is exactly our agent-loop class). Merge
+only if net decode beats MTP3.
+
+**T29 — Mirko dynamic-MTP decode wave (candidate, new 2026-09-05).** Mirko's `feat/dynamic-mtp`
+prices adaptive MTP widths by context depth + eliminates the wide-MTP decode cliff + tunes the
+wide MTP projection (+ `0e6dd8bd` e8 packed decode vectorization). Our lane runs fixed
+`--draft-tokens 3` + `--lm-head-draft` at C=4; adaptive widths are the decode lever on the
+exact silicon Mirko ships (5090). Cherry-pick the 4 perf commits (+ `81e685fc` small-batch
+SwiGLU from `perf/nvfp4-swiglu-m16n256`) onto a re-stacked branch → decode A/B vs the
+151.9/150.2 baseline (fresh + 8k, quiet window) + quality battery. Numbers are from his line
+(QAT recipe included) — re-verify on our artifact.
+
+**T30 — Mirko KVaRN line (TRIAGE, new 2026-09-05).** `feat/kvarn-production` (41 commits):
+KVaRN mtp3 score production (balanced score production, pipelined keys/paired-value decode,
+score-warp reuse, low-width fused projection tuning). Large port on a diverged base. Adopt
+only if triage shows it precision-neutral + decode-positive on our profile; otherwise watch.
+If it turns out to be KV compression, the precision floor still applies (no lower-precision
+KV without E2E quality evidence) — pairs with issue #164.
+
+### TIERED PLAN (re-evaluated 2026-09-05)
+
+| Tier | What | Status (2026-09-05) |
+|---|---|---|
+| 1 | decode & serve quality (#55 #67 #69 #65 #57 #61) | DONE 08-23 (`tier1`, PR #1) |
+| 2 | xhigh track (Sharp v22.3.1 + `reasoning_effort` kwargs) | DONE 08-23 (`tier2`, PR #2) |
+| 3 | community cherry-picks + Wave B1 decode perf | DONE 08-24 (`tier3`/`tier3-waveb`, PR #3/#4) |
+| 4 | upstream convergence + agent-workload (C1–C3, host-KV opt-in) | DONE 08-24 (`tier4`, PR #5) |
+| 5 | Wave C (MoE-decode perf, response_format json, Sharp v22.3.2) | DONE 08-24 (`tier5`, PR #6) |
+| 6 | portability (SM-count persistent grids) | DONE 08-25 (`tier6`, PR #7) |
+| 7 | MTP width-invariant greedy verification | DONE 08-26 (re-adopted, PR #8; first adopt reverted — 50% decode regression) |
+| 8 | cometkim DFlash2 probe | CLOSED — probe rolled back 08-31 (4 boot bugs); superseded: native dflash in-tree via T22, dflash2 now lives on dylan's active line → **T28** |
+| 9 | dylan XAttention prefill | DEFERRED — DFlash2 decision + prefill/TTFT evidence first |
+| 10 | upstream/dev sync | RESOLVED — dev merged into master 08-29, consumed by T12 |
+| 11 | quasar re-verification on the T10 merge | CLOSED — rolled back (vision 400); superseded by T12 |
+| 12 | upstream convergence wave | DONE 08-30 (lane `t12-4567363e`, battery 16/16) |
+| 13 | #98 wave (#107/#97/#72 + pressure fixes) | FAIL 08-31 → DEFERRED — `3d9fda22`/`5e4bf313` are 503-bad under load (auto-rollback); only the 3 bench/docs commits worth; skip until the lane-perf wave lands |
+| 14 | host-KV content cache (#73) | RE-SCOPED — premise killed by #98 (upstream scheduler supersedes #64/#73/#90); now = validate the new in-tree #98 architecture on the T14 probe (hot + 45s-idle branch switch) |
+| 15 | gzenz NVFP4 KV + YaRN (2.12, 400k ctx) | SHIPPED 09-02 in tree (`t15-yarn`) — **not live**: the T-Q quadlet re-pinned INT8 KV 225280 ctx; config flip pending if long-context agent work is the priority |
+| 16 | upstream convergence wave 1 | DONE 09-02 (absorbed in the `t15-yarn` line; pulled md micro-opts + GDN fix for free) |
+| 17 | pv-f16acc (md) | DONE 09-02 (`t15-yarn`); T25c 64k-needle PASS 09-04 — the 35B caveat did not reproduce on our 27B lane |
+| 18 | dylan wave 2 (GDN chunked-prefill precision `f25f5463`) | PREPARED — `t18-dylan-wave2 @ 269cf431`, compile GREEN; gates: GPU ctest + MTP/dflash accuracy battery; re-stack onto `t24-quasar-a` first |
+| 19 | `gated_delta_net_snapshot` op + tests (dylan) | NOT STARTED — candidate if the MTP/draft-state path is wanted (separate feature; not self-contained in T18) |
+| 20 | watch: open upstream PRs (08-30/09-04 plan) | WATCH — #167/#160 promoted to T23; current set: #152 shared-prefix write, #148 Responses API, #163 timings, #162 metadata |
+| 21 | watch: upstream issues (08-30/09-04 plan) | WATCH — #169 output-limit truncation, #168 strict:true opt-out, #164 KV precision tail, #166 context-cache 503 |
+| 22 | upstream convergence wave 2 (`863aa8a5`: #170 fix + tool parser + prefix reuse) | DONE 09-04/05 — LANDED via the T-Q ship (`t24-quasar-a` subsumes `t22-converge` @ `1eff9672`) |
+| 23 | md TMA prefill pair (#167 fp8-A8 TMA + #160 nvfp4 blocked scales) | QUEUED — `t23-tma-pair @ a05618f7` prepared (both PRs still OPEN upstream); re-stack onto `t24-quasar-a` + post-merge ctest + battery = **next ship** |
+| 24 | gzenz host-KV safety net | RE-DERIVE from `d205c52a` — 19 new commits (spill guards, eviction caps, session-key fix, rewrite-checkpoint Option A); #170 class already in-tree via T22 → scope = host-KV hardening only; gated on the host-KV re-enable decision (pairs with T14) |
+| 25 | probe wave (09-04 plan) | PARTIAL — T25c 64k-needle PASS (validates T17); remaining probes per the 09-04 plan |
+| 26 | watch slot (09-04 plan) | WATCH — open-PR watch set |
+| 27 | watch slot (09-04 plan) | WATCH — open-PR watch set |
+| 28 | dylan dflash2 wave (vision-validated dflash2 + verify-boundary fixes) | NEW — PROBE-GATED: A/B vs the MTP3 baseline on acceptance + net decode (quiet window) |
+| 29 | Mirko dynamic-MTP decode wave (adaptive widths + small-batch swiglu) | NEW — candidate decode A/B vs the 151.9/150.2 baseline |
+| 30 | Mirko KVaRN line (mtp3 score production) | NEW — TRIAGE: adopt only if precision-neutral + decode-positive; KV floor applies |
+
+**Sequencing (2026-09-05):** (1) **T23** — prepared, re-stack + ctest + battery (next ship);
+(2) **T18** — prepared, GPU ctest + accuracy battery; (3) **T14 probe + T24 re-derive** —
+together, gated on the host-KV re-enable decision; (4) **T25** remaining probes; (5) **T28**
+dflash2 probe if spec decode beyond MTP3 is wanted; (6) **T29** dynamic-MTP decode wave;
+(7) **T30** triage. Standing config decision: T15 (NVFP4 KV + YaRN 400k) sits in tree, not
+live — flip the quadlet only if long-context sessions outrank the 8–14% native-context decode
+penalty.
