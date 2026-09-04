@@ -384,3 +384,46 @@ Re-verified in-tree this window (all on `tier4`/`tier5` + `gevil/master`): #85 `
 **Deferred from this wave (recorded 2026-08-25):** the MirkoCovizzi MTP width-invariant fix (`7d566547`) — deep merge conflict with our perf work (staged-smem GQA reduce, cooperative GDN, T=4 swiglu, fused gate, and a bf16-vs-FP32 Int8-partial divergence). Plan: dedicated wave gated on the MTP greedy-parity test (first confirm our tree has the width-variance bug, then merge).
 
 Public review: [Gevil/ninfer PR #7](https://github.com/Gevil/ninfer/pull/7) (`tier6` -> `qwen3.8-nvfp4full`, stacked on PR #6).
+## T22 in progress (2026-09-04, post-audit)
+
+**#170 fix verified:** the user's pointer was correct — `b8786751`
+(fix(runtime): correct aliased state ownership, 356-line program_impl.h rewrite +
+state_image_store/request_plan/resource_projection changes) is the fix, and it adds the
+`shared-rewrite-materialization` regression scenario to `test_engine_prefix_real.cpp`
+("shared/private rewrite alias did not materialize through its active Fork") — the exact
+#170 halt class. It rides the T22 wave; the wave's ctest + REPLAY/XHIGH battery cover it.
+
+**T25c needle gate (T17 validation, user-approved): PASS.** 64k-needle probe
+(`probes/t25c-needle-64k.py`) on the live t15-yarn image (T17 pv-f16acc live): 66.4k-token
+prompt, needle at ~50% — retrieved (`ZQX-7741`, 11.3s, http 200). The md-catalogue caveat
+("pv-f16acc fails the 64k needle") was measured on their 35B-A3B target and did NOT
+reproduce on our qwen3.8-27b lane. **T17 stays shipped.** (First run was a probe-side
+artifact: max_tokens=60 was fully consumed by reasoning tokens — empty content, no
+retrieval verdict; re-ran with max_tokens=1024.)
+
+**T22 merge complete:** branch `t22-converge` @ `9b148057` = t15-yarn `0d49ac8f` +
+upstream master `863aa8a5` (9 commits). 7 conflict files resolved:
+- `apps/perplexity/main.cpp`: kept our T15 rope-scaling fields + upstream `--log-level`.
+- `apps/serve/main.cpp`: kept `log_terminate` (set_terminate stays) + our webui
+  `<filesystem>` includes; dropped our `log_engine_capacity`/`kv_capacity_mode_name`
+  (dead — upstream's `OperationalLog::engine_capacity` supersedes; the LEDGER marker is
+  preserved by the 6e2786c5 log restore).
+- `src/runtime/engine/engine_core.h`: kept both includes (`<iostream>` ours,
+  `<limits>` theirs).
+- `src/targets/qwen3_6/impl/frontend/frontend.cpp`: kept our `state.raw_output`
+  (upstream dropped raw_output entirely — our raw path still needs it) + upstream
+  `prefix_execution.tracking` (719d56ef).
+- `tests/CMakeLists.txt`: dropped the upstream `ninfer_cli_options_test` block —
+  duplicate of our existing target (ours already compiles `apps/cli/options.cpp`).
+- `tests/targets/qwen3_6/test_frontend.cpp`: kept both helpers (our `poison_resources`
+  + upstream `fixture_tokenizer`).
+- `tests/targets/qwen3_6_27b/test_engine_prefix_real.cpp`: kept both blocks (our
+  empty-reasoning checkpoint checks + upstream `shared-rewrite-materialization`
+  degradation stats check).
+
+**Ship scheduled:** `ninfer-ship.sh --branch t22-converge --tag t22converge-9b148057`,
+delayed start (lane stop at G4 is by design; G7 auto-rollback retags :quasar back to
+`28623fdc57dd` + restart + ImageID verify). Pre-ship: vllm inactive, quadlet pinned to
+:quasar, clone clean at 9b148057, buildstage-merge present. ctest-baseline: watch for
+new skips from the new upstream test scenarios — if G4 reports NEW_SKIPS, triage and
+`--refresh-baseline` if legitimate.
