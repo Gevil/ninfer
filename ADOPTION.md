@@ -427,3 +427,24 @@ delayed start (lane stop at G4 is by design; G7 auto-rollback retags :quasar bac
 :quasar, clone clean at 9b148057, buildstage-merge present. ctest-baseline: watch for
 new skips from the new upstream test scenarios — if G4 reports NEW_SKIPS, triage and
 `--refresh-baseline` if legitimate.
+
+**First ship attempt (17:15) FAILED at G4 — auto-rolled back, lane back on the old image.** The ctest gate caught two post-merge bugs:
+1. `tests/CMakeLists.txt`: the merged `apps/cli/options.cpp` calls `product::parse_log_level`, but the merged `ninfer_cli_options_test` target lacked `ninfer_product_logging` in LIBRARIES → link error. Fix `c8ba7c2a`.
+2. `tests/targets/qwen3_6/test_frontend.cpp`: upstream 5973313d ("test(frontend): make fixtures self-contained", #156) renamed `official_tokenizer()` to `fixture_tokenizer()` — the auto-merge kept our wave's callers (empty-reasoning checkpoint test) and dropped the definition → compile error at line 642. Fix `1eff9672` restores `official_tokenizer()` (our tests need the real 27B tokenizer; the ctest container mounts it at the /home/neroued path).
+
+**Pre-check (2026-09-04, post-fix): GREEN.** Free-GPU build + full ctest on t22-converge @ `1eff9672` (lane stopped like G4): BUILD_EXIT=0, CTEST_EXIT=0, 100% of 106 tests (real-model tests Skipped per baseline). Lane restarted.
+
+**Reship scheduled:** `ninfer-ship.sh --branch t22-converge --tag t22converge-1eff9672` at 19:45 CEST (systemd timer `ninfer-ship-t22v2.timer`; same gates, G7 auto-rollback verified).
+
+## T23 — upstream TMA wave (queued, `t23-tma-pair` branch)
+Stacked on the fixed t22-converge. Cherry-picks from open upstream PRs (MichaelDementii/ninfer):
+- `7eb52dba` — PR #167 (`3d6f7f2e`): stage the fp8 A8 GEMM operands through TMA.
+- `c4cbcbbc` — PR #160 (`545f64b0`): make the TMA route read NVFP4 activation scales tile-contiguous (1-line include conflict in `nvfp4_linear_swiglu_w4a4_tma.cu`: kept our `#include "op_tester.h"` + their TMA include).
+Gates before shipping: post-merge compile + full ctest + battery (after T22 lands).
+
+## T18 — dylan wave 2 (queued, `t18-dylan-wave2` branch)
+Stacked on t23. Cherry-pick of dylan's P0 GDN chunked-prefill precision fix (`f25f5463`, "fix(gdn): improve chunked prefill numerical accuracy" — FP16 private normalized Q/K + chunk workspaces, state rel-err −79.2%, output rel-err −52%):
+- `plans/qwen3.8-27b-performance.md` (DU conflict): kept our deletion (fork hygiene — no dylan plan files in our tree).
+- `tests/ops/test_gated_delta_net.cpp` (UU): dylan's commit replaced `batch_update_case` with a new `partition_case` test + a refactored `batched_snapshot_case` whose BODY differs (they are NOT one shared-body function — a plain 3-way merge left a dangling opening that would not compile). Resolved as the union: their complete `partition_case` + their complete `batched_snapshot_case` + our complete `batch_update_case`, with all three call-site sets in main() (2 partition + 3 batched_snapshot + 4 batch_update).
+- Kernel files (launch.cu/h, output.cu/cuh, prepare_wy_wu.cu/cuh, state_passing.cu/cuh, gated_delta_net.cpp, launch.h) auto-merged clean.
+Gates before promotion: GPU ctest (`ninfer_gated_delta_net_test`) + MTP/dflash accuracy battery on the lane.
