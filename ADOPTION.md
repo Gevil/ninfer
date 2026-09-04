@@ -559,3 +559,35 @@ within ±5% of A → keep A.
 loser's model dir kept (NOT deleted); ADOPTION.md verdict entry with both
 batteries' numbers; the engine port stays in the tree regardless of outcome
 (profile + converter serve future QUASAR artifacts).
+
+**T-Q2 ship 21:30 CEST — G1–G5 GREEN, G6 battery pass=14 fail=2, ship script
+crashed before G7 (no auto-rollback ran):**
+- G1 push, G2 build (`4b4c1198`, tags t24quasar-78d74df5/:quasar/:latest),
+  G4 free-GPU ctest **PASS** (rc=0, 106 tests, skips within baseline),
+  G5 restart + tag/container match **PASS** — all green.
+- G6 battery: 12/14 gates PASS (vision x3, replay x4, schema, tool-call/reject/
+  retry, xhigh, think, quality, soak 5/5, 4xx-watch). The 2 FAILs are
+  DECODE-FRESH (128.6 vs gate 132.4) + DECODE-8K (6.9 vs gate 130.5 tok/s) —
+  the 8k probe ran while the user's active OMP session was hammering the same
+  lane (R6 caveat signature: ~3-7 tok/s under load vs ~140 idle). No engine
+  regression evidence.
+- Crash root cause: the pipeline script `ninfer-ship.sh` was edited (the `-j4`
+  ctest patch) at 21:50:14 WHILE the 21:30 ship was still executing it —
+  bash re-read the byte-shifted file and hit a phantom syntax error at the
+  G6 echo line (line 228, `($BV)` parens), killing the script before G7.
+  The ctest gate itself is unaffected (it ran in the podman container from
+  the mounted source tree).
+- Process fixes applied: (a) the G6 echo line de-parenthesized;
+  (b) `NINFER_PIPELINE` env override added so timer services run a
+  snapshot copy of the pipeline dir (in-flight edits can no longer corrupt a
+  running ship); (c) rule: never edit pipeline files while a ship is
+  `is-active` — verify with `systemctl --user is-active` first.
+- Lane left on `4b4c1198` (new engine, our model): ctest green + 12/14
+  battery gates green + the 2 decode fails are load artifacts.
+**Resolution path (scheduled):** 23:15 CEST `ninfer-qab-phasea.timer` runs a
+quiet-window battery on the same engine (model qwen3.8-27b-quasar); any gate
+FAIL in the quiet window -> auto-rollback to `28623fdc` + ABORT marker.
+23:30 CEST `ninfer-qab-phaseb.timer` runs the A/B swap (gated on the clean A
+reference from 23:15; aborts on the ABORT marker). NOTE: both windows need a
+QUIET session (no active OMP chat on the lane) or the decode gates will fail
+again under load.
