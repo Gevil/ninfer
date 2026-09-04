@@ -200,7 +200,7 @@ ninfer_add_test(ninfer_serve_options_test
 ninfer_add_test(ninfer_cli_options_test
   SOURCES test_cli_options.cpp
           ${PROJECT_SOURCE_DIR}/apps/cli/options.cpp
-  LIBRARIES ninfer_core)
+  LIBRARIES ninfer_core ninfer_product_logging)
 target_include_directories(ninfer_cli_options_test PRIVATE ${PROJECT_SOURCE_DIR}/apps/cli)
 ninfer_add_test(ninfer_request_log_test
   SOURCES test_request_log.cpp
