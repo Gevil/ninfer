@@ -591,3 +591,36 @@ FAIL in the quiet window -> auto-rollback to `28623fdc` + ABORT marker.
 reference from 23:15; aborts on the ABORT marker). NOTE: both windows need a
 QUIET session (no active OMP chat on the lane) or the decode gates will fail
 again under load.
+
+**T-Q2 clean-window resolution (23:15–23:32 CEST) — GREEN:** the scheduled quiet-window
+battery (detached chain, auto-rollback on gate fail) passed all 16 gates (log
+`~/.local/share/ninfer/logs/battery-qab-phase-a-clean-2026-09-04.log`): vision x3,
+replay 10/10, xhigh, think, quality, soak 5/5, 4xx-watch, plus DECODE-FRESH=147.1 and
+DECODE-8K=140.7 tok/s. The 21:30 G6 decode fails are confirmed load artifacts (active
+OMP session on the lane: ~3–7 tok/s under load vs ~140 idle). A-clean reference written
+to `quasar-ab/A-clean.txt` (`AFRESH=147.1 A8K=140.7`); Phase B unblocks from it.
+
+**T-Q3 Phase B (23:55–00:07 CEST) — KEEP B (QUASAR-QAT wins):** quadlet swap to Mirko's
+artifact on the same `t24quasar-78d74df5` engine image (no rebuild), battery 16/16 PASS
+(log `battery-qab-phase-b-2026-09-04.log`), decode fresh 147.1→151.9 tok/s (+3.3%), 8k
+140.7→150.2 tok/s (+6.8%) — clear win both probes, no ±5% tie rule engaged. Lane now
+pinned to `mirko-quasar-nvfp4/qwen3_8_27b_nvfp4.ninfer` with public model id
+**`qwen3.8-27b`**; our artifact's id `qwen3.8-27b-quasar` is no longer served — clients
+pinned to the old id must use the new one (or get an alias entry on the same :8002
+base_url). Rollback path intact: A-state quadlet backup at
+`ninfer-nvfp4.container.bak-ab`, our model dir kept (T-Q4: loser not deleted).
+
+**quasar-ab/phase-b.sh bug fixes (all pre-relaunch, 23:46–23:55):** four latent bugs fixed
+in `~/.local/share/ninfer/quasar-ab/phase-b.sh`:
+1. model-id swap python `str.replace` silently no-opped — the search string's first
+   occurrence was a *comment* line above the Exec line, so the live flag never changed
+   (lane restarted on A's artifact under B's expectations); now targets the unique
+   Exec-line context and asserts the replacement happened.
+2. `$BATTERY` referenced but never defined (crash under `set -u`) — defined
+   (`$DIR/pipeline/ninfer-battery.sh`).
+3. `toks()` called but never defined — B's decode numbers would have silently zeroed and
+   forced KEEP_A; defined (copies the battery's `N tok in T s = R tok/s` regex).
+4. `grep -c … || echo 0` double-count — on zero matches `grep -c` prints `0` *and* exits 1,
+   so the fallback also fired (`0\n0`), making `[ "$BFAIL" != "0" ]` always true and
+   forcing a false revert-to-A on a perfect run; replaced with an explicit file check.
+(The double-count pattern in phase-a-clean.sh was already fixed at 23:30.)
