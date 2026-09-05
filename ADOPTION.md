@@ -948,3 +948,17 @@ undercount for resumed vision sequences) must preserve this contract — the tes
 on a regression that loosens the inconsistency check or breaks single-destination growth.
 T31 status unchanged: still NOT shippable until Bug 2's undercount is confirmed in the e2e
 window and fixed.
+
+The `owned > slots` throw itself is **intentional and stays** — it exists to catch exactly
+this class of accounting mismatch. Bug 2 is the planner's `state_slots` undercount for a
+resumed vision sequence (the check fires correctly on a real undercount); the fix belongs in
+the caller/planning code, not in relaxing this check.
+
+**Bug 2 e2e probe (scheduled 2026-09-05):** `~/.local/share/ninfer/t31-bug2-probe.sh` —
+waits for the `t31debug` image (built from the branch with the diagnostic throw messages:
+the inconsistent/destination throws now print `owned=`/`slots=`), then in a quiet window
+stops the lane, boots the parked `t31hostkv-92bca578`-era image as the ephemeral `t31-debug`
+container (same quadlet flags, `:8002`), replays the battery VISION-HIST payload twice
+(establish resident prefix, then reuse it carrying the vision slot), captures the
+`owned`/`slots` values from the engine log, and restores the lane (trap-guaranteed,
+VRAM-free check, tag/container match + smoke probe at the end).

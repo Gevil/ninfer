@@ -10,6 +10,7 @@
 #include <new>
 #include <optional>
 #include <stdexcept>
+#include <string>
 
 // NINFER_QWEN36_RUNTIME_NS must be defined before this header (see instance.h), and program.h
 // must be included first: the bodies below need the complete SequenceState/LongAnchorCheckpoint
@@ -117,17 +118,25 @@ inline void reserve_state_entitlement(StateImageStore& store, SequenceState& seq
     const std::uint32_t owned =
         sequence_exclusive_state_resources(store, sequence).device.state_slots;
     if (slots == 0 || owned > slots) {
-        throw std::logic_error("sequence StateImage entitlement is inconsistent");
+        throw std::logic_error("sequence StateImage entitlement is inconsistent (owned=" +
+                               std::to_string(owned) + " slots=" + std::to_string(slots) + ")");
     }
     if (owned == slots) { return; }
     if (slots - owned != 1 || sequence.reserved_state) {
-        throw std::logic_error("sequence StateImage reservation is not a single destination");
+        throw std::logic_error(
+            "sequence StateImage reservation is not a single destination (owned=" +
+            std::to_string(owned) + " slots=" + std::to_string(slots) +
+            " reserved=" + std::string(sequence.reserved_state ? "yes" : "no") + ")");
     }
     std::optional<StateImageHandle> reserved = store.reserve_destination();
     if (!reserved) { throw std::bad_alloc(); }
     sequence.reserved_state = *reserved;
-    if (sequence_exclusive_state_resources(store, sequence).device.state_slots != slots) {
-        throw std::logic_error("sequence StateImage entitlement did not materialize exactly");
+    const std::uint32_t materialized =
+        sequence_exclusive_state_resources(store, sequence).device.state_slots;
+    if (materialized != slots) {
+        throw std::logic_error("sequence StateImage entitlement did not materialize exactly "
+                               "(materialized=" + std::to_string(materialized) + " slots=" +
+                               std::to_string(slots) + ")");
     }
 }
 
