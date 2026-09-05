@@ -428,7 +428,7 @@ public:
                 for (std::uint32_t slot = 0; slot < catalog_count_; ++slot) {
                     const CatalogEntry& entry = catalog_[slot];
                     if (entry.state != CatalogState::Catalogued || !entry.handle ||
-                        entry.active_references != 0) {
+                        private_has_active_edge(slot)) {
                         continue;
                     }
                     if (!entry.session || *entry.session != *base.context_cache().session_key) {
@@ -442,7 +442,10 @@ public:
                     // must handle.
                     bool selected = false;
                     for (const Candidate& c : candidates) {
-                        if (c.source_slot == slot) { selected = true; break; }
+                        if (c.selected_observation && !c.selected_observation->shared &&
+                            c.selected_observation->slot == slot) {
+                            selected = true; break;
+                        }
                     }
                     if (selected) { continue; }
                     // Try the endpoint checkpoint first. If thinking mode
@@ -459,7 +462,7 @@ public:
                             .frontier = entry.summary.endpoint->ref.frontier,
                             .ordinal  = 0};
                         plan = program.inspect_admission(prompt, base, *destination, &*entry.handle,
-                                                         nullptr, checkpoint, false, cost_model_);
+                                                         nullptr, checkpoint, false);
                     }
                     if ((!plan || plan->summary().reusable_prompt_tokens == 0) &&
                         entry.summary.rewrite) {
@@ -468,7 +471,7 @@ public:
                             .frontier = entry.summary.rewrite->ref.frontier,
                             .ordinal  = entry.summary.rewrite->ref.ordinal};
                         plan = program.inspect_admission(prompt, base, *destination, &*entry.handle,
-                                                         nullptr, checkpoint, false, cost_model_);
+                                                         nullptr, checkpoint, false);
                     }
                     if (plan) { plan->set_session_key(base.context_cache().session_key); }
                     if (!plan || plan->summary().reusable_prompt_tokens == 0) { continue; }
@@ -484,9 +487,7 @@ public:
                     candidates.push_back(Candidate{
                         .plan                    = std::move(*plan),
                         .current_session_binding = current_session_binding,
-                        .source_slot             = slot,
-                        .source_id               = entry.id,
-                        .source_revision         = entry.revision,
+                        .private_source          = private_capability(slot),
                         .selected_observation =
                             PolicyObservationKey{
                                 .shared     = false,
