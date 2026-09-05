@@ -230,27 +230,69 @@ public:
             incumbent        = std::move(*identity_best);
             incumbent.target = session.identity_target(candidates[incumbent.candidate_index].id);
         } else {
-            PressureTargetHandle root_maximal =
-                session.root_maximal_target(candidates[root_candidate_index].id);
-            AssessedPressureTarget assessed            = session.assess(root_maximal);
-            const PressureTargetAssessment& assessment = assessed.assessment();
-            if (assessment.candidate != candidates[root_candidate_index].id) {
-                throw std::logic_error("maximal pressure target changed admission candidate");
+            // Try guided_closure first — it prefers demote (preserves
+            // continuations on host for h2d restore). Only fall back to
+            // root_maximal (eviction) if guided_closure fails.
+            bool have_incumbent = false;
+            if (const std::optional<PressureTargetHandle> early_closure =
+                    session.guided_closure_target(candidates[root_candidate_index].id,
+                                                  std::span<const PlanningOwnerId>{})) {
+                AssessedPressureTarget assessed          = session.assess(*early_closure);
+                const PressureTargetAssessment& assessment = assessed.assessment();
+                if (assessment.candidate != candidates[root_candidate_index].id) {
+                    throw std::logic_error("guided closure target changed admission candidate");
+                }
+                ++targets_evaluated;
+                planning_saturating_add(projection_work, assessment.projection_work);
+                std::optional<LogicalGoal> goal;
+                if (assessment.physical_status == MaterializationPhysicalStatus::Feasible) {
+                    goal = logical_goal(assessment.candidate, assessment.source_mode,
+                                        assessment.owner_outcomes);
+                }
+                if (goal) {
+                    const FoldedCost cost =
+                        fold_assessment(candidates[root_candidate_index], assessment,
+                                        pressure.owner_policy, pressure.checkpoint_policy,
+                                        machine_cost);
+                    incumbent = make_incumbent(*early_closure, root_candidate_index, assessment,
+                                               std::move(assessed), cost, *goal);
+                    mark_target(assessment.stable_target_ordinal, kTargetDiscovered | kTargetAssessed);
+                    have_incumbent = true;
+                }
             }
-            ++targets_evaluated;
-            planning_saturating_add(projection_work, assessment.projection_work);
-            std::optional<LogicalGoal> goal;
-            if (assessment.physical_status == MaterializationPhysicalStatus::Feasible) {
-                goal = logical_goal(assessment.candidate, assessment.source_mode,
-                                    assessment.owner_outcomes);
+            if (!have_incumbent) {
+                // Guided closure failed. If there are no catalogued owners, defer
+                // instead of evicting — the pressure situation may improve
+                // when the active session completes. Only use root_maximal
+                // (eviction) as last resort when there is a victim to evict.
+                if (pressure.private_owners.empty() && pressure.shared_owners.empty()) {
+                    // No catalogued continuations to pressure. The matching
+                    // continuation may not be catalogued yet (streaming race).
+                    // Defer — it will be catalogued when the active session completes.
+                    return std::nullopt;
+                }
+                PressureTargetHandle root_maximal =
+                    session.root_maximal_target(candidates[root_candidate_index].id);
+                AssessedPressureTarget assessed            = session.assess(root_maximal);
+                const PressureTargetAssessment& assessment = assessed.assessment();
+                if (assessment.candidate != candidates[root_candidate_index].id) {
+                    throw std::logic_error("maximal pressure target changed admission candidate");
+                }
+                ++targets_evaluated;
+                planning_saturating_add(projection_work, assessment.projection_work);
+                std::optional<LogicalGoal> goal;
+                if (assessment.physical_status == MaterializationPhysicalStatus::Feasible) {
+                    goal = logical_goal(assessment.candidate, assessment.source_mode,
+                                          assessment.owner_outcomes);
+                }
+                if (!goal) { return std::nullopt; }
+                const FoldedCost cost =
+                    fold_assessment(candidates[root_candidate_index], assessment, pressure.owner_policy,
+                                    pressure.checkpoint_policy, machine_cost);
+                incumbent = make_incumbent(root_maximal, root_candidate_index, assessment,
+                                           std::move(assessed), cost, *goal);
+                mark_target(assessment.stable_target_ordinal, kTargetDiscovered | kTargetAssessed);
             }
-            if (!goal) { return std::nullopt; }
-            const FoldedCost cost =
-                fold_assessment(candidates[root_candidate_index], assessment, pressure.owner_policy,
-                                pressure.checkpoint_policy, machine_cost);
-            incumbent = make_incumbent(root_maximal, root_candidate_index, assessment,
-                                       std::move(assessed), cost, *goal);
-            mark_target(assessment.stable_target_ordinal, kTargetDiscovered | kTargetAssessed);
         }
 
         const Clock::time_point search_started = Clock::now();

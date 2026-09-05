@@ -892,7 +892,13 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         }
         reasoning = trim_ascii_whitespace(reasoning);
 
-        const bool keep_thinking = preserve_thinking || (static_cast<long>(i) > last_query_index);
+        // When preserve_thinking=false, drop reasoning from ALL assistant messages to keep
+        // prompt tokens stable across turns. The only exception is the classic
+        // (non-reasoning-effort) template with thinking disabled: the generation prologue
+        // is an empty think block that must be kept for token consistency.
+        const bool keep_thinking = preserve_thinking ||
+                                   (!effort_template && !options.enable_thinking &&
+                                    reasoning.text.empty());
         const std::size_t turn_begin = rendered.size();
         if (!preserve_thinking && !effort_template && !rewrite_checkpoint &&
             static_cast<long>(i) > last_query_index) {
