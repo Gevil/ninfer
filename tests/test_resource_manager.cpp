@@ -108,6 +108,7 @@ struct FakeCacheSessionKey {
 struct FakeShortlistKey {
     std::uint32_t digest   = 0;
     std::uint32_t frontier = 0;
+    std::uint32_t identity_tag = 0;
 
     friend bool operator==(FakeShortlistKey, FakeShortlistKey) = default;
 };
@@ -313,6 +314,7 @@ struct FakeAdmissionCandidate {
     identity_assessment() const noexcept {
         return identity;
     }
+    void set_session_key(std::optional<FakeCacheSessionKey>) noexcept {}
 };
 
 struct FakeTargetDecision {
@@ -619,6 +621,8 @@ private:
 class FakeProgram {
 public:
     friend class FakePressurePlanningSession;
+
+    [[nodiscard]] std::uint64_t safety_net_restore_count() const noexcept { return 0; }
 
     enum class TransactionKind : std::uint8_t {
         None,

@@ -1351,8 +1351,19 @@ private:
             throw std::logic_error("prefill unit exceeded the admitted prompt suffix");
         }
         request->computed_prompt_tokens += progress.processed_prompt_tokens;
-        if (progress.complete && request->computed_prompt_tokens != suffix_tokens) {
-            throw std::logic_error("completed prefill did not reach the admitted prompt frontier");
+        // The transparent host-KV safety-net restore (a Root admission whose prefix is
+        // restored from host RAM) advances the staged prefill base after the admission
+        // was sealed, so the runtime reports more reuse than the plan committed and
+        // computes a correspondingly shorter frontier. Compare against the runtime's
+        // actual reuse (never below the committed one; enforced below), not the committed
+        // suffix. For a normal prefill (runtime reuse == committed reuse) this is
+        // identical to the committed-suffix check.
+        if (progress.complete) {
+            const std::uint32_t runtime_reused = progress.summary.reused_prompt_tokens;
+            if (runtime_reused > begin.prompt_tokens ||
+                request->computed_prompt_tokens != begin.prompt_tokens - runtime_reused) {
+                throw std::logic_error("completed prefill did not reach the admitted prompt frontier");
+            }
         }
         if (progress.processed_prompt_tokens != 0) { publish_prompt_progress(request); }
         if (progress.capture) {
