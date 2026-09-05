@@ -20,9 +20,12 @@
 #include <cstdint>
 #include <deque>
 #include <exception>
+#include <csignal>
+#include <cstdio>
 #include <future>
 #include <iostream>
 #include <limits>
+#include <unistd.h>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -82,6 +85,8 @@ public:
             !options.context_cache.max_shared_prefixes) {
             throw std::logic_error("target admission capacity does not match the Engine");
         }
+        std::signal(SIGSEGV, [](int sig) { const char msg[] = "[engine] CRASH: SIGSEGV\n"; ::write(2, msg, sizeof(msg)-1); std::signal(sig, SIG_DFL); ::raise(sig); });
+        std::signal(SIGABRT, [](int sig) { const char msg[] = "[engine] CRASH: SIGABRT\n"; ::write(2, msg, sizeof(msg)-1); std::signal(sig, SIG_DFL); ::raise(sig); });
         std::promise<void> startup;
         std::future<void> started = startup.get_future();
         worker_                   = std::thread([this, startup = std::move(startup)]() mutable {
@@ -1363,7 +1368,15 @@ private:
         if (!request->lane || !progress.pending) {
             throw std::logic_error("completed prefill has no lane or pending token");
         }
-        if (!request->admitted_begin || progress.summary != *request->admitted_begin) {
+        // The prompt and reuse path must match the committed admission exactly.
+        // reused_prompt_tokens may only grow: the transparent host-KV safety-net
+        // restore (a Root admission whose prefix is restored from host RAM)
+        // advances the staged prefill base after the admission was sealed, so
+        // the runtime legitimately reports more reuse than the plan committed.
+        if (!request->admitted_begin ||
+            progress.summary.prompt_tokens != request->admitted_begin->prompt_tokens ||
+            progress.summary.prefix_reuse_path != request->admitted_begin->prefix_reuse_path ||
+            progress.summary.reused_prompt_tokens < request->admitted_begin->reused_prompt_tokens) {
             throw std::logic_error("runtime Begin summary differs from committed admission");
         }
         const std::uint32_t lane = request->lane->value;
