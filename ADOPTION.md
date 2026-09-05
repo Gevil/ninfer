@@ -878,3 +878,52 @@ upstream/master (the behind commit is `ad0f3d38`, a non-code funding chore).
   from `46275617`; **T32 → new watch tier** (#176–#181 cluster). T26 = upstream-PR watch,
   T27 = community-fork watch (re-mapped).
 - No new tracked fork remotes needed this window.
+
+## Round 4 (2026-09-05) — T31 host-KV safety-net port: 2 latent bugs, NOT shippable yet
+
+Branch `t31-hostkv-quasar`. Ported the gzenz host-KV safety net (justified by the T14
+idle-prefix-loss probe). Commits: `db49bd6a` (port), `c5ee0e81` (session-key fallback → lane
+Candidate/CatalogEntry API), `92bca578` (frontier fix + test fakes). Both T31 ship attempts
+failed and auto-rolled back; the live lane stays on the T18 baseline (`e858f88b` =
+`t18gdn-49400365`).
+
+**Ship attempt 1 (`t31hostkv-c5ee0e81`):** G4 ctest FAILED — `test_resource_manager` did not
+compile (the T31 API added members the test fakes lacked: `FakeShortlistKey::identity_tag`,
+`FakeAdmissionCandidate::set_session_key`, `FakeProgram::safety_net_restore_count`). Rollback.
+
+**Ship attempt 2 (`t31hostkv-92bca578`):** G4 ctest **PASSED 106/106** (frontier fix + test
+fakes verified). G6 battery FAILED on a second, distinct bug → rollback to T18 baseline.
+
+### Bug 1 — "completed prefill did not reach the admitted prompt frontier" — FIXED, verified
+`engine_core.h resolve_prefill_progress`: the safety-net restore advances the staged prefill
+base *after* admission, so the runtime reports more reuse than the committed plan and computes
+a shorter frontier. The invariant compared `computed_prompt_tokens` against the **committed**
+suffix, so a legitimate restore fataled the engine (all requests 503). Fix: compare against the
+runtime's actual reuse (`progress.summary.reused_prompt_tokens`, guarded to never exceed
+prompt and never fall below committed via the summary check). No-op for a normal prefill.
+Verified by ctest 106/106.
+
+### Bug 2 — "sequence StateImage entitlement is inconsistent" — DIAGNOSED, NOT fixed
+`program_impl.h:11241 reserve_state_entitlement` throws when `owned > slots`:
+- `owned = sequence_exclusive_state_resources(seq).device.state_slots` — the sequence's
+  exclusive device-resident StateImage handles (read/write/rewrite/anchors).
+- `slots = state_slots`, a **parameter of `start_sequence`** — the entitlement the request
+  planner reserved for this request.
+- Only called from the two resident-reuse paths: `PrivateEndpoint` (10505) and
+  rewrite-checkpoint-restore (10570).
+- Trigger: a request that **reuses a resident prefix** and carries a **vision image state
+  slot**. The resumed sequence owns an extra device StateImage slot (the image) the planner's
+  `state_slots` did not budget → `owned > slots` → fatal → engine fails all requests → 503
+  cascade. Battery repro: `VISION-HIST` (32 msgs, image in msg 1, reusing a resident prefix
+  shared with the battery's earlier vision probes).
+- Root cause (unconfirmed): the planner's `state_slots` undercounts the vision image state
+  slot for a resumed vision sequence; the fix lives in the caller/planning code that computes
+  the entitlement. Needs the runtime state values (the e2e/battery window) to confirm + fix.
+  **Not** attempted blind — a wrong "fix" risks masking a genuine inconsistency this check
+  exists to catch.
+
+**Status:** T31 NOT shippable. Bug 1 fixed + verified; Bug 2 needs the e2e window (GPU free +
+no active session on the lane) to confirm the undercount and land a verified fix. Image
+`t31hostkv-92bca578` parked on disk. Resume: re-verify lane health/traffic + GPU-free, launch
+the ephemeral `t31-debug` container (never created — nothing to clean up), run e2e/battery,
+fix Bug 2, clean ship.
