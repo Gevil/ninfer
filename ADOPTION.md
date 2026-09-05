@@ -1384,6 +1384,34 @@ commits) and `src/ops/linear/nvfp4` (10 of our commits).
 **T37 — chat-template switch to the artifact-embedded ReasoningEffort template at xhigh
 (PROBE-FIRST).** Full plan above. Config-only, engine-native, one-file rollback.
 
+**T37 result (2026-09-06) — ADOPTED.** The switch executed 2026-09-05 21:42 CEST (quadlet:
+`--chat-template-file` removed; the Sharp v22.4.0 file kept as `chat_template.sharp-v22.4.0-live.bak`
+and the mount retained for one-line rollback). Live engine verified on the artifact-embedded
+template (no flag in the container's `/proc/1/cmdline`; `engine ready`; no
+`unsupported frontend/chat_template.jinja`; xhigh kwargs accepted).
+
+- **A (Sharp v22.4.0, pre-switch 21:40):** decode 139.2 fresh / 149.8 @8k; xhigh 10-question
+  accuracy 10/10; quality 238 words; total thinking 2366 chars.
+- **B (embedded @xhigh):** accuracy 10/10; quality 216 words; thinking 2935 chars (native xhigh
+  default); 64k needle FOUND; quiet-window decode 140.6 fresh / 155.4 @8k (A/B ratio 1.01 / 1.04 —
+  render change is decode-neutral).
+- **Contamination correction:** the 21:42 battery (14/16: DECODE-FRESH/8K fail) and the 22:06 B
+  decode capture (14.8 / 41.0 tok/s) were contention artifacts — this session's own OMP requests
+  ran on the same lane during those windows (the T31 pattern). The stored script's
+  `RECOMMEND: KEEP-SHARP` line was driven solely by those numbers and is invalidated.
+- **Quiet-window re-battery (2026-09-06 00:43, `pipeline/logs/battery-2026-09-06.log`): 15/16** —
+  all functional gates PASS: DECODE-FRESH 166.0 tok/s (gate 132.4), DECODE-8K 149.3 tok/s
+  (gate 130.5), REPLAY 10/10, VISION ×3, XHIGH, THINK-SMOKE, QUALITY, SOAK 5/5, 4XX-WATCH zero
+  rejections. Sole FAIL = LEDGER ("no engine-ready marker in boot ledger window") — a window
+  artifact only: the boot (21:42) predates the battery's ledger window by ~3 h; UP/WARMUP/
+  4XX-WATCH confirm the engine healthy.
+- **Decision (plan 1f): adopt** — accuracy ≥ Sharp, decode within gates, battery functionally
+  green, native xhigh, no external template file. New decode baseline on this render path
+  (record only — the ship pipeline's `quasar-baseline-2026-08-26.json` is NOT overwritten and
+  remains the `--refresh-baseline` target): **fresh 140.6 / 8k 155.4 tok/s** (2026-09-06, quiet,
+  battery method: coastal-erosion, thinking off, max 512). Later tiers gate decode against
+  these numbers on the embedded-template render path.
+
 **T38 — upstream chat-template override + streaming-slot watch.** PR #183 / issue #182
 (`--chat-template FILE`): adopt-on-merge and reconcile our `--chat-template-file` naming; issue
 #184 (disconnected stream holds a slot during materialization): on-lane at C=4 — adopt the upstream
@@ -1447,13 +1475,13 @@ Verify portability (dylan's line historically carries 35B-only dflash assumption
 | 34 | **host-KV restore correctness (reframes T31)** | **NEW — ADOPT the mitigation shape**: host-RAM reuse = append-at-frontier only; do NOT relax the frontier invariant; port `ac60331d` as a guard |
 | 35 | **draft window k=3→5** | **NEW — PROBE (zero code)**: md measures +17.3% with higher acceptance; A/B at 3 vs 5 (+ `6870d530` enabler) |
 | 36 | **md dense-lane ops wave** | **NEW — PORT-CANDIDATE**: `8767dac7` decode-softmax-fold; `c735909b`+`16c66809` nvfp4-TMA (27B-measured); `ce71f787` sampled-draft probe |
-| 37 | **chat template → artifact-embedded ReasoningEffort @xhigh** | **NEW — PROBE-FIRST (config-only)**: drop `--chat-template-file`; deltas = effort medium→xhigh, loss of `terse`/tool-escalation, think-block bytes |
+| 37 | **chat template → artifact-embedded ReasoningEffort @xhigh** | **ADOPTED 09-06** — live since 09-05 21:42; quiet battery 15/16 (LEDGER window artifact only); decode-neutral vs Sharp (140.6/155.4); new render-path decode baseline recorded |
 | 38 | **upstream `--chat-template FILE` (#183/#182) + stream-slot (#184)** | **NEW — WATCH/adopt-on-merge**; reconcile flag naming with our `--chat-template-file` |
 | 39 | **Astrangemaninhere/ninfer-fusion** | **NEW — WATCH**; sub-floor KV REJECT (perplexity-only); its DFlash2 < MTP3 by its own data |
 | 40 | **dylan `cdd1b6c1` C1-4 speculative decode** | **NEW — PROBE**: on-lane 27B NVFP4 at our exact C=4 |
 
 **Sequencing (round 6).** (1) **T37** chat-template switch — config-only, no build, immediate operator
-value, and it must settle BEFORE T33/T35 so decode A/Bs are measured against a stable render path.
+value, and it must settle BEFORE T33/T35 so decode A/Bs are measured against a stable render path. — **settled 2026-09-06: ADOPTED** (result block above).
 (2) **T35** draft-window probe — zero code, largest cheap decode upside. (3) **T33** DFlash2-on-QUASAR
 — the substantial wave; engine port + converter graft + acceptance-gated probe. (4) **T34** fold into
 T31 before any T31 re-ship (and re-derive the pick set from `5f23c37e`). (5) **T36** md dense ops
