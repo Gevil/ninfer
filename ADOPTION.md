@@ -709,9 +709,9 @@ only if triage shows it precision-neutral + decode-positive on our profile; othe
 If it turns out to be KV compression, the precision floor still applies (no lower-precision
 KV without E2E quality evidence) — pairs with issue #164.
 
-### TIERED PLAN (re-evaluated 2026-09-05)
+### TIERED PLAN (re-evaluated 2026-09-05, round 3)
 
-| Tier | What | Status (2026-09-05) |
+| Tier | What | Status (2026-09-05 r3) |
 |---|---|---|
 | 1 | decode & serve quality (#55 #67 #69 #65 #57 #61) | DONE 08-23 (`tier1`, PR #1) |
 | 2 | xhigh track (Sharp v22.3.1 + `reasoning_effort` kwargs) | DONE 08-23 (`tier2`, PR #2) |
@@ -726,31 +726,32 @@ KV without E2E quality evidence) — pairs with issue #164.
 | 11 | quasar re-verification on the T10 merge | CLOSED — rolled back (vision 400); superseded by T12 |
 | 12 | upstream convergence wave | DONE 08-30 (lane `t12-4567363e`, battery 16/16) |
 | 13 | #98 wave (#107/#97/#72 + pressure fixes) | FAIL 08-31 → DEFERRED — `3d9fda22`/`5e4bf313` are 503-bad under load (auto-rollback); only the 3 bench/docs commits worth; skip until the lane-perf wave lands |
-| 14 | host-KV content cache (#73) | RE-SCOPED — premise killed by #98 (upstream scheduler supersedes #64/#73/#90); now = validate the new in-tree #98 architecture on the T14 probe (hot + 45s-idle branch switch) |
+| 14 | host-KV content cache (#73) | PROBE DONE 09-05 — T14 probe confirmed idle prefix loss (45 s/120 s evictions) → port recorded as **T31** |
 | 15 | gzenz NVFP4 KV + YaRN (2.12, 400k ctx) | SHIPPED 09-02 in tree (`t15-yarn`) — **not live**: the T-Q quadlet re-pinned INT8 KV 225280 ctx; config flip pending if long-context agent work is the priority |
 | 16 | upstream convergence wave 1 | DONE 09-02 (absorbed in the `t15-yarn` line; pulled md micro-opts + GDN fix for free) |
 | 17 | pv-f16acc (md) | DONE 09-02 (`t15-yarn`); T25c 64k-needle PASS 09-04 — the 35B caveat did not reproduce on our 27B lane |
-| 18 | dylan wave 2 (GDN chunked-prefill precision `f25f5463`) | PREPARED — `t18-dylan-wave2 @ 269cf431`, compile GREEN; gates: GPU ctest + MTP/dflash accuracy battery; re-stack onto `t24-quasar-a` first |
-| 19 | `gated_delta_net_snapshot` op + tests (dylan) | NOT STARTED — candidate if the MTP/draft-state path is wanted (separate feature; not self-contained in T18) |
-| 20 | watch: open upstream PRs (08-30/09-04 plan) | WATCH — #167/#160 promoted to T23; current set: #152 shared-prefix write, #148 Responses API, #163 timings, #162 metadata |
-| 21 | watch: upstream issues (08-30/09-04 plan) | WATCH — #169 output-limit truncation, #168 strict:true opt-out, #164 KV precision tail, #166 context-cache 503 |
+| 18 | dylan wave 2 (GDN chunked-prefill precision) | SHIPPED 09-05 (`t18gdn-49400365`, image `e858f88b`, battery 16/16, GDN coverage gate green) — **live lane** |
+| 19 | `gated_delta_net_snapshot` op + tests (dylan) | NOT STARTED — candidate if the MTP/draft-state path is wanted (T18 shipped cleanly; no new signal) |
+| 20 | watch: open upstream PRs | WATCH — no in-window activity; #167/#160 still OPEN upstream (in-tree via T23 cherry-pick); #152 shared-prefix, #148 Responses API, #163 timings, #162 metadata |
+| 21 | watch: upstream issues | WATCH — #169 output-limit, #168 strict:true, #164 KV tail, #166 context-cache 503 unchanged; new #176–#181 cluster → **T32** |
 | 22 | upstream convergence wave 2 (`863aa8a5`: #170 fix + tool parser + prefix reuse) | DONE 09-04/05 — LANDED via the T-Q ship (`t24-quasar-a` subsumes `t22-converge` @ `1eff9672`) |
-| 23 | md TMA prefill pair (#167 fp8-A8 TMA + #160 nvfp4 blocked scales) | QUEUED — `t23-tma-pair @ a05618f7` prepared (both PRs still OPEN upstream); re-stack onto `t24-quasar-a` + post-merge ctest + battery = **next ship** |
-| 24 | gzenz host-KV safety net | RE-DERIVE from `d205c52a` — 19 new commits (spill guards, eviction caps, session-key fix, rewrite-checkpoint Option A); #170 class already in-tree via T22 → scope = host-KV hardening only; gated on the host-KV re-enable decision (pairs with T14) |
-| 25 | probe wave (09-04 plan) | PARTIAL — T25c 64k-needle PASS (validates T17); remaining probes per the 09-04 plan |
-| 26 | watch slot (09-04 plan) | WATCH — open-PR watch set |
-| 27 | watch slot (09-04 plan) | WATCH — open-PR watch set |
-| 28 | dylan dflash2 wave (vision-validated dflash2 + verify-boundary fixes) | NEW — PROBE-GATED: A/B vs the MTP3 baseline on acceptance + net decode (quiet window) |
-| 29 | Mirko dynamic-MTP decode wave (adaptive widths + small-batch swiglu) | NEW — candidate decode A/B vs the 151.9/150.2 baseline |
-| 30 | Mirko KVaRN line (mtp3 score production) | NEW — TRIAGE: adopt only if precision-neutral + decode-positive; KV floor applies |
+| 23 | md TMA prefill pair (#167 fp8-A8 TMA + #160 nvfp4 activation scales) | SHIPPED 09-05 (`t23tma-bb535075`, image `60c00b73`, battery 16/16) — prefill-side wave, decode gates held |
+| 24 | gzenz host-KV safety net | SUPERSEDED → **T31** (T14 probe justified; pick set re-derived from gzenz/local/combined @ `46275617`) |
+| 25 | probe wave | PARTIAL — T25c 64k-needle PASS (validates T17); T14 probe completed 09-05 → T31; remaining probes per the 09-04 plan |
+| 26 | watch slot | WATCH — upstream-PR watch set (re-mapped each audit) |
+| 27 | watch slot | WATCH — community-fork watch set (re-mapped each audit) |
+| 28 | dylan dflash2 wave (vision-validated dflash2 + verify-boundary fixes) | BLOCKED 09-05 — no 27B dflash possible (dflash 35B-only, artifact carries no DFlashPayload); dylan line grew again in-window (`631333aa`) but non-portable; revisit on a 27B dflash artifact |
+| 29 | Mirko dynamic-MTP decode wave (adaptive widths + small-batch swiglu) | DECIDED 09-05 — T29a port required (`81e685fc` swiglu scheduling conflict; `f52125a2` mechanical); T29b levers no-win (dt4: 8k -2.1%; prefill-chunk 4096: -4.97%) |
+| 30 | Mirko KVaRN line (mtp3 score production) | DEFERRED 09-05 — revisit only once a Mirko port lands cleanly (T29a showed his base conflicts with the lane's routing) |
+| 31 | gzenz host-KV safety-net port (idle-prefix-loss justified) | NEW 09-05 — pick set re-derived from `46275617` (5 rewrite-checkpoint commits added in-window); gated on the host-KV re-enable decision (pairs with #166) |
+| 32 | upstream prefix/context-cache cluster (#176–#181, #142) | NEW 09-05 — WATCH: 6 fresh issues (planner charging, cache saturation, materialization budget, single-slot eviction); #181 independently mirrors our T14 finding; adopt upstream fixes when they land (convergence-wave style); may shrink T31 scope |
 
-**Sequencing (2026-09-05):** (1) **T23** — prepared, re-stack + ctest + battery (next ship);
-(2) **T18** — prepared, GPU ctest + accuracy battery; (3) **T14 probe + T24 re-derive** —
-together, gated on the host-KV re-enable decision; (4) **T25** remaining probes; (5) **T28**
-dflash2 probe if spec decode beyond MTP3 is wanted; (6) **T29** dynamic-MTP decode wave;
-(7) **T30** triage. Standing config decision: T15 (NVFP4 KV + YaRN 400k) sits in tree, not
-live — flip the quadlet only if long-context sessions outrank the 8–14% native-context decode
-penalty.
+**Sequencing (2026-09-05, round 3):** (1) **T31** — gzenz host-KV safety-net port from `46275617`,
+gated on the host-KV re-enable decision; (2) **T29a port** — mechanical gdn micro-opt; needs the
+swiglu scheduling decision; (3) **T25** remaining probes (if any); (4) **T32** adopt-on-merge
+watch; (5) T15 config flip only if long-context sessions outrank the 8–14% native-context decode
+penalty. Blocked/deferred: T28 (no 27B dflash), T30 (until a Mirko port lands cleanly), T9/T13
+(deferred), T19 (candidate, no signal).
 
 ## t23tma-bb535075 ship (2026-09-05) - t23-tma-quasar @ bb535075
 
@@ -828,3 +829,52 @@ workspaces; state rel-err -79.2%, output rel-err -52%.
   them, never parallel waves.
 - T30 (Mirko KVaRN, 41 commits) - deferred: revisit only once a Mirko port lands cleanly;
   T29a established his base conflicts with the lane's routing, so the bar is a port, not a pick.
+
+## Round 3 (2026-09-05) — 12h re-audit (upstream + forks, 2026-09-04T20:33Z..09-05T08:33Z)
+
+Lane state: `t18-gdn-quasar` @ `cd47dc7f` (image `e858f88b`), **222 ahead / 1 behind**
+upstream/master (the behind commit is `ad0f3d38`, a non-code funding chore).
+
+### Upstream (Neroued/ninfer)
+- Zero in-window commits on master/dev/feat/kv-nvfp4-k8v4; zero PRs created/updated/merged.
+- **#167/#160 (T23 pair) still OPEN upstream** — already cherry-picked in-tree; no re-sync
+  needed.
+- #173 (rk2v4-e8 sub-floor KV, 208 B/head-token) unchanged; remains rejected by the KV floor.
+- **6 new issues (prefix/context-cache planner cluster)**: #176 materialization search 5 ms
+  budget cap; #177 private continuation cache permanent saturation; #178 planner charges
+  private_transition_loss on already-unreachable checkpoints; #179 physically-infeasible shared
+  captures without pressure_evidence; #180 proposal: opt-in rolling context-cache retention;
+  **#181 single-slot turn checkpoint evicts the conversation prefix cache (full re-prefill per
+  chat turn)** — an independent upstream echo of our T14 idle-prefix-loss finding. Plus #142
+  updated (sibling prefix gap, prompt_cache_breakpoint). → recorded as **T32** (watch/adopt).
+
+### Forks (in-window)
+- **dylan**: `631333aa` on experimental+master ("perf(runtime): aggregate C<=4 verify kernels")
+  — T28 family, dflash2/35B-only numbers (DFlash C2/C3/C4 161→220 tok/s), non-portable — T28
+  stays BLOCKED. New `dylan/qwen4` branch (tip `2f51a0be`, 6 in-window commits): Qwen4 model
+  target (sparse-MoE/QSA/PLE/GGML, NVFP4-G16 KV, architecture verifier, batched chunked
+  prefill) — different model than the pinned qwen3.8-27b; watch only.
+- **gzenz**: `local/combined` `d205c52a`→`46275617`, 5 new commits — all in
+  `src/targets/qwen3_6/impl/runtime/` (program_impl.h / request_plan_impl.h): rewrite-checkpoint
+  materialization at finish + start_sequence, capture group at the reuse_base frontier,
+  capture-group derivation from source, preserve rewrite flag. No tests. → **T31 pick set
+  re-derived from `46275617`**.
+- **md**: dormant (newest 09-04T03:02Z, pre-window); T23 source branches unchanged.
+- **eason**: dormant (newest 08-22).
+- **mirko**: no in-window commits (newest tip `c853622c` kvarn-production 09-04T10:12Z,
+  pre-window).
+- **cometkim**: dormant.
+
+### Untracked forks (in-window)
+- 6 pushed: kybrcore / Little-Star888 / Sha1rholder (mirror `ad0f3d38`), igorls (PR-author
+  re-push), andrewleech/ninfer-v100 (off-lane v10.0 Volta port) — all skipped.
+- 1 unique: sunnyyangyangyang `d8e2a27a` "raise prompt vision envelope to full context (262144
+  tokens)" — single commit on the upstream tip; one-line envelope change, only meaningful at
+  full native context (lane pins 225280) — watch.
+
+### Tier table update
+- T23/T18 → SHIPPED (live lane = T18 image); T25 → T14 probe completed; T24 → SUPERSEDED by
+  T31; T28 → BLOCKED; T29 → DECIDED (T29a port / T29b no-win); T30 → DEFERRED; T31 → re-derived
+  from `46275617`; **T32 → new watch tier** (#176–#181 cluster). T26 = upstream-PR watch,
+  T27 = community-fork watch (re-mapped).
+- No new tracked fork remotes needed this window.
