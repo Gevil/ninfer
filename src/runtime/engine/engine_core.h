@@ -730,7 +730,11 @@ private:
         const BeginSummary& begin = *request->admitted_begin;
         if (begin.reused_prompt_tokens > begin.prompt_tokens ||
             request->computed_prompt_tokens > begin.prompt_tokens - begin.reused_prompt_tokens) {
-            throw std::logic_error("prompt progress exceeds the admitted prompt frontier");
+            throw std::logic_error(
+                "prompt progress exceeds the admitted prompt frontier (computed=" +
+                std::to_string(request->computed_prompt_tokens) +
+                " frontier=" + std::to_string(begin.prompt_tokens - begin.reused_prompt_tokens) +
+                " committed_reused=" + std::to_string(begin.reused_prompt_tokens) + ")");
         }
         const PromptProgress progress{
             .total_prompt_tokens     = begin.prompt_tokens,
@@ -1362,7 +1366,14 @@ private:
             const std::uint32_t runtime_reused = progress.summary.reused_prompt_tokens;
             if (runtime_reused > begin.prompt_tokens ||
                 request->computed_prompt_tokens != begin.prompt_tokens - runtime_reused) {
-                throw std::logic_error("completed prefill did not reach the admitted prompt frontier");
+                throw std::logic_error(
+                    "completed prefill did not reach the admitted prompt frontier "
+                    "(computed=" + std::to_string(request->computed_prompt_tokens) +
+                    " prompt=" + std::to_string(begin.prompt_tokens) +
+                    " committed_reused=" + std::to_string(begin.reused_prompt_tokens) +
+                    " runtime_reused=" + std::to_string(runtime_reused) +
+                    " expected_suffix=" +
+                    std::to_string(begin.prompt_tokens - runtime_reused) + ")");
             }
         }
         if (progress.processed_prompt_tokens != 0) { publish_prompt_progress(request); }
