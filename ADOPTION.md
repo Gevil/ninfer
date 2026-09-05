@@ -1124,3 +1124,338 @@ Next (both bugs must be fixed before any T31 ship):
 - Re-ship gate: unmodified battery in an ENFORCED quiet window + the 3-fixture Bug 3
   repro (`~/.local/share/ninfer/t31-b3-probe.sh` + `probes/t31b3-repro.py`), plus a
   74k-restore live-traffic soak.
+
+## Round 6 (2026-09-05, evening re-audit) — gpillon DFlash2 line, md perf-branch flood,
+ninfer-fusion, chat-template switch plan (T33–T40)
+
+Window: 2026-09-05T08:33Z → ~19:00Z. New tracked remote added: `gpillon`
+(https://github.com/gpillon/ninfer). Highest tier before this round: T32 → new tiers T33–T40.
+
+### Where we stand (roll-up)
+
+- **Live lane:** T18-gdn image `e858f88b` (= `:quasar` = `:latest` = `t18gdn-49400365`), artifact
+  `mirko_quasar.ninfer` (identity `qwen3.8-27b`/`nvfp4`, recipe `qwen3_8_27b_quasar_nvfp4-v2`,
+  17,555,331,072 B, sha `93181637…`), INT8 KV @ 225,280 ctx, C=4, MTP3 + `--lm-head-draft`,
+  vision, `--preserve-thinking`, Sharp v22.4.0 template. Decode baseline 151.9 fresh / 150.2 @8k.
+- **Shipped/in tree:** T1–T7, T12, T15 (in tree, not live), T16, T17, T18 (live), T22, T23.
+- **Parked/blocked:** T31 (2 bugs, image parked), T13 (503-bad under load), T9, T19, T25 remainder,
+  T28 (see below — now unblocked in principle), T29b (no-win), T30 (deferred).
+- **Upstream remaining:** `t31-hostkv-quasar` is **237 ahead / 1 behind** `upstream/master`; the one
+  behind commit is `ad0f3d38` (funding chore, docs-only). **No in-window upstream code commits** —
+  there is nothing left to converge on code-wise. Open upstream PRs: **#183 (NEW)**, #173
+  (rejected by KV floor), #167/#160 (already in-tree via T23), #163, #162, #152, #148, #107, #97,
+  #84/#59 (Windows, off-lane), #61, #54.
+
+### gpillon/ninfer — the DFlash2 line that actually runs (our T8 lineage, continued)
+
+Fork chain: **Neroued → natpate/ninfer-windows → cometkim/ninfer → gpillon/ninfer.** So this is the
+direct continuation of the line our T8 probe rolled back on 2026-08-31. Default branch
+`gpillon/coding` @ `a00648cb`; the artifact-matching branch is `feat/dflash2-local` @ `43b03ea5`.
+Divergence vs our lane: 378 ours / 99–103 theirs. No in-window commits (newest 2026-09-03).
+
+**The T28/T8 blocker is genuinely removed — but by a DIFFERENT mechanism than we assumed.** Our
+27B target keeps DFlash **v1** unsupported on their branch too; they added a *separate* module:
+
+```
+ours   src/targets/qwen3_6_27b/impl/config.h:73-91
+       DFlashConfig{ supported = false; ... };  kMaximumDFlashDraftTokens = 0
+theirs src/targets/qwen3_6_27b/impl/config.h:79-124
+       DFlashConfig{ supported = false; ... }        // "DFlash v1 never ships on this target"
+       DFlash2Config{ artifact_module = true; execution = true; layers = 5;
+                      block_size = 8; feature_rows = 25600; hidden = 5120;
+                      intermediate = 17408; query_heads = 32; kv_heads = 8;
+                      head_dim = 128; local_capacity = 2048; }   // all-SWA-2048 drafter
+       kMaximumDFlashDraftTokens = 0;  kMaximumDFlash2DraftTokens = 7
+       kNativeContext = 1048576                      // cometkim 1M envelope — OFF-LANE, do not port
+```
+
+**The artifact question — the module is GRAFTED, not reconverted.** `gpillon/…-dflash2-NInfer` ships
+`qwen3_8_27b_nvfp4full-v2.ninfer` (18.07 GiB, sha `abb1e120…`) = cometkim v1's 1,259 base objects
+**byte-for-byte** plus **66 appended DFlash2 objects** (34 NVFP4 weight matrices + 32 BF16
+norm/conv-base tensors), produced by `tools/artifact/graft_dflash2_module.py` (`41231998`). The
+drafter is a 5-layer sliding-window(2048) block-diffusion model at target hidden width 5120,
+`target_layer_ids = [5,19,33,47,61]`, `selector_rank = 256`, `selector_top_k = 16`,
+`block_size = 8`. Module quantized weight-only (rel. Frobenius err max 0.0959 / mean 0.0950).
+
+**Consequence for our constraint (keep QUASAR weights, add DFlash2 on top): the mechanism exists,
+but the tool as written refuses our artifact.** `graft_dflash2_module.py:_validate_source_artifact`
+hard-checks `identity.model_id == inventory_nvfp4full.MODEL_ID` **and**
+`identity.weights_id == inventory_nvfp4full.WEIGHTS_ID` and requires the object list to equal the
+module-less `nvfp4full` image; ours is `qwen3.8-27b`/**`nvfp4`** (quasar recipe). The module payload
+itself is base-independent (it is the drafter's own tensors at target width, encoded by
+`convert_nvfp4full.materialize_dflash2_object` from a `--dflash2-model` checkpoint directory), and
+the tool's own comment states *"Shape/format/layout equality is what makes the payloads
+transferable"*. **The drafter checkpoint is publicly available upstream of gpillon:
+`z-lab/Qwen3.8-27B-DFlash2` (241k downloads; also `incoai/Qwen3.8-27B-DFlash2`)** — so we do NOT
+need gpillon's nvfp4full artifact at all; we can encode the module ourselves against QUASAR.
+
+Why this is accuracy-safe: speculative decoding is **verified** against the target model, so a
+drafter trained on nvfp4full hidden states grafted onto QUASAR weights costs *acceptance rate*, not
+output quality — provided greedy/verification parity holds (the T7 lesson: gate on drafts/round,
+never on net tok/s alone). Module is validated at load but not materialized on device unless
+`--spec dflash2` is selected, so it costs no VRAM when unused. The card confirms the module runs
+with **BF16 or INT8 group-64 KV** — no hyperquant dependency, so our KV floor is satisfied.
+
+**Counter-evidence that forces a probe rather than an adopt:** `ninfer-fusion`'s own
+`docs/SPEC-STRATEGY.md` measures *its* DFlash2 path losing to MTP3 at every context — acceptance
+24.7% → 12.7% (1.5K → 12K), decode 70.6 → 37.5 tok/s vs MTP3 43–47% / 96.9 → 83.2 tok/s. gpillon
+reports native acceptance **3.4–3.7 tok/round** at `block_size 8`. Different implementations,
+opposite conclusions → the probe must measure acceptance at 1.5K / 8K / 32K on OUR artifact.
+
+**Bonus finding — a T31 correctness input (see T34).** gpillon carries two silent KV-corruption
+fixes. `f4b128c6 fix(kv-ram-cache): stop offering rewrite-checkpoint restores from host RAM`
+(26 lines, 1 file) documents that a rewrite-checkpoint restore sourced from a host-RAM record
+**answers one request with another request's state** — reproduced with strictly sequential sibling
+traffic, verified not a race, not wrong record selection ("the selected record's ledger and identity
+verify token-for-token"), and reproducing on `aa8b5dd7` *before* their host-RAM work. Their fix
+restricts host-RAM records to append-at-frontier reuse only; measured cost on a 135-request trace =
+11 requests (~8%) fall back to `full_reset`. They call it explicitly *"a mitigation, not a cure —
+the underlying packed-checkpoint defect remains"*. Also `eaf2037b` (hyperquant exact-key side
+store — off-lane KV) and `ac60331d test(kv): compare MTP RAM restores to VRAM`.
+
+Other gpillon content: host-RAM KV tier with probation/protected eviction, prefix-reuse admission,
+**tagged request lanes** (`@main`/`@agents`/`@classifier`) so a long-lived conversation is not
+evicted by short-lived traffic, streaming/tool-call hardening, adaptive MTP verification-width
+calibration. Off-lane: Windows port, 1M-context envelope, hq-e8-2b hyperquant KV (sub-floor).
+
+### Astrangemaninhere/ninfer-fusion — WATCH
+
+Standalone re-imported mirror (not a GitHub fork; no shared ancestry → cherry-pick only), branch
+`main` @ `c0f2d27`, 40 commits, created 2026-09-01. On-lane hardware/model (5090 sm_120a, Qwen3.8-27B
+NVFP4) and it does touch `src/targets/qwen3_6_27b/**`. Headline is **sub-floor KV compression**
+(per-layer 4-bit E8Kv, NVFP4-tier KV, rANS entropy cold pool, NVMe cold tier) shipping *perplexity
+only, no E2E quality* → **REJECT** under the KV floor. It also enables 27B DFlash **v1**
+(`DFlashConfig::supported = true`, `kMaximumDFlashDraftTokens = 7`, new
+`WeightsProfile::Qwen38Nvfp4DFlash2` requiring its own converter run + new artifact) — the nominal
+T28 trigger, but its own numbers say DFlash2 loses to MTP3 everywhere, and it would require
+abandoning our QUASAR artifact. Everything else (YaRN, GDN, host-KV, prefix-sharing) is already
+in-tree via T15/T18/T22/T31 or arriving upstream via #152. `RESEARCH-EXTERNAL.md` is V100/vLLM
+notes — off-lane.
+
+### md (MichaelDementii) — 48 branches, one cumulative stack, mostly OFF-LANE
+
+md pushed a large perf stack checkpointed across many branches, all based on `upstream/master`
+`ad0f3d38` (237 behind our tip). **Decisive triage axis: md edits `src/targets/qwen3_6/**` — the
+35B-A3B sparse-MoE target — plus shared `src/ops/**`. Our 27B is the separate DENSE
+`src/targets/qwen3_6_27b/**` target, which md leaves untouched except `6870d530`.** md's decode
+numbers are measured on `qwen3_6_35b_a3b.ninfer` (~3B active experts, ~770 tok/s MTP3 baseline vs our
+~150) on a 500W-capped vast.ai 5090, and its hot path is the small-T sparse-MoE route (43% of md's
+round) which our dense 27B does not have → **md decode tok/s do not transfer.**
+Already absorbed by us: decode-fusions, sigmoid-gate (`ed505ebc`, `b3814f6c`), q/k-rmsnorm fuse
+(`d3278b79`), fused-TMA-SwiGLU (`00369f63`), pv-f16acc (T17), our own T18 GDN + T23 TMA.
+On-lane shortlist: (1) **draft window k=3→5, measured +17.3% with higher acceptance** — a zero-code
+serve-flag probe (+ tiny 27B-aware enabler `6870d530`, 15-token window); (2) `8767dac7`
+decode-softmax-fold (shared `src/ops/softmax_attention`, clean port); (3) `c735909b` + `16c66809`
+nvfp4-TMA prefill extensions **measured on our exact 27B-nvfp4 model** (prefill −2.79…−3.71%) —
+extends T23; (4) `ce71f787` MTP sampled-draft (probe); (5) `6870d530`.
+REJECT: all `sparse_moe` branches (no MoE on 27B), `weight-stream-evict(-nc)` (evict-first measured
+zero), `draft-head-narrow` (35B head, net −1.7%), `q6-head-simt-threshold` (net-neutral in-round).
+
+### gzenz FORCE-PUSH — T31 pick set invalidated
+
+gzenz force-pushed at 17:30Z: `local/combined` `46275617` → **`5f23c37e`** (rebase/squash, merge-base
+`d17a5f1f`). The **5 rewrite-checkpoint commits our T31 port was derived from
+(`46275617`/`54ddff5c`/`93144e91`/`fb3ba1b8`/`906847d8`) were DROPPED and re-squashed into
+`d00e5f0b`.** Net content is close (22 files, +358/−105), so the port is salvageable, but **T31's
+pick set MUST be re-derived from `5f23c37e`** before any further T31 work.
+
+### Other tracked forks
+
+- **mirko**: `feat/kvarn-production` `c853622c` → **`114b0fcb`** (+2 KVaRN commits, incl. an in-window
+  greedy-parity fix) — feeds deferred T30.
+- **dylan**: `experimental` **`cdd1b6c1` "accelerate C1-4 speculative decode"** — NEW and on-lane
+  (27B-NVFP4, our exact C=4 concurrency) → probe candidate (T40). `dylan/qwen4` (13 commits) is a
+  different model → off-lane.
+- **eason, cometkim**: no in-window commits (cometkim's line now continues as gpillon).
+
+### Upstream PRs/issues — new in window
+
+- **PR #183 + issue #182 (NEW): `--chat-template FILE` operator-managed chat-template override.**
+  Upstream is converging on the capability our fork already has as `--chat-template-file` (T2 era).
+  Adopt-on-merge and align flag naming; directly relevant to T37.
+- **Issue #184 (NEW, 16:34Z): a disconnected streaming client still holds its slot during context
+  materialization** — on-lane risk at C=4 (a dropped OWUI/OMP stream can hold 1 of 4 slots).
+- T32 cluster (#176–#181, #142) unchanged otherwise; #181 still mirrors our T14 finding.
+
+### Chat-template switch (the operator ask) — T37
+
+Goal: drop the Sharp template and run the model's own default at xhigh. **Verified mechanism: simply
+REMOVE `--chat-template-file` from the quadlet Exec.** It is *not* a hard-fail and *not* a generic
+compiled default:
+
+- `frontend.cpp:compile_chat_template` (243-251): non-empty path → `compile_jinja(...)` (arbitrary
+  jinja via minja, capabilities probed by scanning the text for `reasoning_effort`/`terse`); empty
+  path → `CompiledChatTemplate::resolve(resources.chat_template_jinja)`.
+- `chat_template.cpp:685-693` `resolve()` sha256-hashes the **artifact-embedded** template and
+  accepts exactly two pinned digests: `kThinkingToggleTemplateDigest` or
+  `kReasoningEffortTemplateDigest`; anything else throws `unsupported frontend/chat_template.jinja`.
+- Our artifact embeds `frontend/chat_template.jinja` = 8,952 B, sha
+  `c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041` (extracted directly from
+  `mirko_quasar.ninfer`) = **`kReasoningEffortTemplateDigest`** = the official Qwen3.8-27B template
+  (also on host as `templates/chat_template.qwen-base.bak`). So omitting the flag loads the
+  **compiled-in ReasoningEffort semantics** — thinking/tools/media rendered in C++
+  (`RenderBuilder` + `append_media_placeholder`), no jinja.
+- xhigh is native there: `capabilities()` (708-714) reports `xhigh = true`,
+  `default_effort = XHigh`; `preserve_thinking.value_or(effort_template)` (814) keeps our
+  `--preserve-thinking` behavior. `validate_tokenizer_config` (218-227) already passes (artifact
+  self-consistent: embedded template == `tokenizer_config.json.chat_template`).
+- **Correction to the record:** the live template is Sharp **v22.4.0 "froggeric"** (29,063 B, sha
+  `180e7015…`), not the v22.1 the quadlet comment and ADOPTION.md:76,322 claim.
+
+Three behavioral deltas to A/B (this is why it is PROBE-FIRST, not a straight flip):
+1. **default effort flips medium (Sharp) → xhigh (official)** — longer thinking, more output tokens,
+   higher latency on *every* thinking turn regardless of accuracy;
+2. the Sharp **`terse` lead + tool-error-escalation** instructions are lost (official has no
+   `terse`; the kwarg stays in the server allowlist but is inert on the compiled path);
+3. think-block bytes differ (`<think>…` vs `<think>\n…\n\n\n`), though
+   `prompt_ends_in_open_reasoning` (1055-1077) matches both, so open-reasoning detection is
+   template-agnostic.
+
+Media contracts hold identically (the compiled path is the C++ clone of `append_media_placeholder`
+plus the strict count check), so the vision gates should pass — that is what makes this low-risk.
+
+Procedure (config-only; no rebuild, no image retag, rollback = one file + flag):
+```
+1. cp -a ~/.local/share/ninfer/templates/chat_template.jinja \
+         ~/.local/share/ninfer/templates/chat_template.sharp-v22.4.0-live.bak
+2. edit ~/.config/containers/systemd/ninfer-nvfp4.container: DELETE
+   `--chat-template-file /workspace/templates/chat_template.jinja` from Exec
+   (leave the template Volume mount; fix the stale "live file = v22.1" comment)
+3. systemctl --user daemon-reload && systemctl --user restart ninfer-nvfp4.service   (~2-3 min reload)
+4. curl -s http://127.0.0.1:8002/v1/models  -> 200 with id qwen3.8-27b; boot journal must show
+   NO `unsupported frontend/chat_template.jinja` and NO tokenizer_config mismatch
+5. ninfer-battery.sh --tag <current-running-image-ref>   -> all 15/16 verdicts PASS, 4XX-WATCH zero
+6. xhigh A/B (below). Rollback: restore the .bak and re-add the flag, daemon-reload + restart.
+```
+A/B method: run one fixed request set under both templates with
+`chat_template_kwargs:{"reasoning_effort":"xhigh"}` and compare (a) `reasoning_content` char length
+(thinking depth), (b) QUALITY gate 200-word probe word count + terseness (directly exposes the lost
+`terse` lead), (c) `probes/decode_tps.py` fresh + 8k vs `logs/quasar-baseline-2026-08-26.json`
+(151.9 / 150.2 — guards against a spec-decode/MTP fallback induced by the render change),
+(d) `probes/t25c-needle-64k.py` (template-agnostic long-context correctness),
+(e) `probes/t31b2-repro.py` / `t31b3-repro.py` as regression sentinels, plus a one-off throwaway
+xhigh-correctness script (~10 math/logic/needle questions, score = exact-answer rate + mean
+`reasoning_content` length + decode tok/s).
+**Decision rule:** adopt the default template only if the A/B shows no accuracy drop at xhigh AND
+the full battery is green (esp. XHIGH, VISION-*, REPLAY, 4XX-WATCH); otherwise keep Sharp.
+
+### New tiers
+
+**T33 — DFlash2 drafter grafted onto the QUASAR artifact (PROBE-FIRST, top priority).** Operator
+constraint: the lane KEEPS the QUASAR-quantized weights (better accuracy); DFlash2 is added *on top*
+as a drafter module. Work: (a) cherry-pick the DFlash2 op layer from `gpillon/coding` — all NEW
+files, so conflict-free: `a5064a9d` (two-tap dynamic conv + selector transition scores),
+`b5f6a15a` (top-k + selector path walk), `6d962dba`/`92cdac97` (selector swizzle + `[K,P,L]`
+lattice addressing fixes), `9990b6b2` (context norm gains are plain `w` — the fix that reproduced
+3.4–3.7 tok/round); (b) engine integration `b4087269` (four `[d0,d1]` gather bugs fixed) +
+`34a33720` (engine-signature adaptation) + `1953f2f4` (27B `DFlash2Config`, new
+`qwen3_6_27b/impl/load/bindings.{h,cpp}`, `speculative_options`, `startup_features`, layouts) +
+`a14f0033` (GDN replay records + drafter wide-swiglu split); take `kMaximumDFlash2DraftTokens = 7`
+but **NOT** `kNativeContext = 1048576` and **NOT** the hq/hyperquant KV routes; (c) converter: add
+DFlash2 tensor specs to our quasar inventory and a graft variant that validates
+`qwen3.8-27b`/`nvfp4` + recipe `qwen3_8_27b_quasar_nvfp4-v2` instead of `nvfp4full`, mirroring
+`6b10d57e` + `41231998`; (d) fetch drafter `z-lab/Qwen3.8-27B-DFlash2`, encode the module, graft onto
+a COPY of `mirko_quasar.ninfer` (never in place), verify sha + object count 1,259+66. Gates:
+**acceptance rate (drafts/round) measured at 1.5K / 8K / 32K** — must beat MTP3's observed
+~65% of 3 (~1.95 accepted/round) and must not collapse with context the way ninfer-fusion's DFlash2
+did (24.7%→12.7% by 12K); decode A/B vs 151.9/150.2; greedy/verification parity (T7 lesson);
+full battery 16/16; INT8 KV retained. Kill switch: `--spec mtp` still works on a grafted artifact,
+and the module costs no VRAM unless `--spec dflash2` is selected.
+
+**T34 — host-KV restore correctness (reframes T31).** gpillon's `f4b128c6` shows the packed
+rewrite-checkpoint restore from host RAM serves one request with another's state — silent
+contamination on the same path T31 enables. **Therefore T31 must NOT relax the completed-prefill
+frontier invariant; our Bug 3 fatal is plausibly that invariant correctly refusing a corrupt
+restore.** Adopt the shape of their mitigation (offer host-RAM records for append-at-frontier reuse
+only; leave the VRAM-resident checkpoint restore path untouched) and port `ac60331d`
+(MTP RAM-vs-VRAM restore comparison test) as a permanent guard. Expected cost ≈8% of restores fall
+back to `full_reset`. Skip `eaf2037b` (hyperquant, off-lane).
+
+**T35 — draft-window k=3→5 (zero-code probe).** md measures +17.3% with *higher* acceptance at k=5.
+Our lane pins `--draft-tokens 3`. Probe: serve-flag A/B at 3 vs 5 (and the `6870d530` 15-token-window
+enabler if the ceiling blocks it), gated on acceptance/round + decode fresh/8k + battery.
+Cheapest plausible decode win in this round.
+
+**T36 — md dense-lane ops wave.** `8767dac7` decode-softmax-fold; `c735909b` + `16c66809` nvfp4-TMA
+prefill extensions (27B-nvfp4-measured, extends T23); `ce71f787` MTP sampled-draft (probe).
+Cherry-pick onto the current lane branch; watch overlap in `src/ops/softmax_attention` (6 of our
+commits) and `src/ops/linear/nvfp4` (10 of our commits).
+
+**T37 — chat-template switch to the artifact-embedded ReasoningEffort template at xhigh
+(PROBE-FIRST).** Full plan above. Config-only, engine-native, one-file rollback.
+
+**T38 — upstream chat-template override + streaming-slot watch.** PR #183 / issue #182
+(`--chat-template FILE`): adopt-on-merge and reconcile our `--chat-template-file` naming; issue
+#184 (disconnected stream holds a slot during materialization): on-lane at C=4 — adopt the upstream
+fix when it lands, or reproduce if we see slot starvation.
+
+**T39 — Astrangemaninhere/ninfer-fusion (WATCH).** Sub-floor KV REJECT (perplexity-only evidence);
+its 27B DFlash v1 profile needs a new artifact and its own data says DFlash2 < MTP3 — superseded by
+T33's graft-onto-QUASAR approach. Re-check only if it publishes E2E quality for the KV tiers.
+
+**T40 — dylan `cdd1b6c1` "accelerate C1-4 speculative decode" (PROBE).** On-lane (27B NVFP4, C=4).
+Verify portability (dylan's line historically carries 35B-only dflash assumptions), then decode A/B.
+
+### Status changes this round
+
+- **T28 → SUPERSEDED by T33**: the blocker is not "no 27B dflash artifact" but that DFlash **v1** is
+  permanently off the 27B target; DFlash**2** is a separate module and is graftable onto our own
+  artifact. dylan's dflash2 work stays non-portable.
+- **T31 → pick set INVALID (gzenz force-push, re-derive from `5f23c37e`) and approach REFRAMED by
+  T34** (do not relax the frontier check; restrict host-RAM reuse instead).
+- **T30 → still deferred**, but `114b0fcb` adds a greedy-parity fix worth reading if T30 revives.
+- **T32 → extended**: #184 added to the cluster watch; #183/#182 split out as T38.
+- **T8 → CLOSED, lineage note**: the cometkim line now continues as gpillon and is the T33 source.
+
+### TIERED PLAN (re-evaluated 2026-09-05, round 6)
+
+| Tier | What | Status (2026-09-05 r6) |
+|---|---|---|
+| 1 | decode & serve quality (#55 #67 #69 #65 #57 #61) | DONE 08-23 (`tier1`, PR #1) |
+| 2 | xhigh track (Sharp v22.3.1 + `reasoning_effort` kwargs) | DONE 08-23 (`tier2`, PR #2) |
+| 3 | community cherry-picks + Wave B1 decode perf | DONE 08-24 (`tier3`/`tier3-waveb`) |
+| 4 | upstream convergence + agent-workload (C1–C3, host-KV opt-in) | DONE 08-24 (`tier4`) |
+| 5 | Wave C (MoE-decode perf, response_format json, Sharp v22.3.2) | DONE 08-24 (`tier5`) |
+| 6 | portability (SM-count persistent grids) | DONE 08-25 (`tier6`) |
+| 7 | MTP width-invariant greedy verification | DONE 08-26 (re-adopted; first adopt reverted, −50% decode) |
+| 8 | cometkim DFlash2 probe | CLOSED 08-31 (4 boot bugs) — lineage continues as gpillon → **T33** |
+| 9 | dylan XAttention prefill | DEFERRED — prefill/TTFT evidence first |
+| 10 | upstream/dev sync | RESOLVED 08-29 (consumed by T12) |
+| 11 | quasar re-verification on the T10 merge | CLOSED — rolled back (vision 400) |
+| 12 | upstream convergence wave | DONE 08-30 (battery 16/16) |
+| 13 | #98 wave (#107/#97/#72 + pressure fixes) | DEFERRED — `3d9fda22`/`5e4bf313` 503-bad under load |
+| 14 | host-KV content cache (#73) | PROBE DONE 09-05 (idle prefix loss @45s/120s) → **T31** |
+| 15 | gzenz NVFP4 KV + YaRN (400k ctx) | IN TREE 09-02, **not live** (quadlet pins INT8 @225,280) |
+| 16 | upstream convergence wave 1 | DONE 09-02 |
+| 17 | pv-f16acc (md) | DONE 09-02; T25c 64k-needle PASS 09-04 |
+| 18 | dylan wave 2 (GDN chunked-prefill precision) | SHIPPED 09-05 — **live lane** (`e858f88b`) |
+| 19 | `gated_delta_net_snapshot` op + tests (dylan) | NOT STARTED — no new signal |
+| 20 | watch: open upstream PRs | WATCH — #183 NEW; #167/#160 in-tree; #163/#162/#152/#148/#107/#97 open |
+| 21 | watch: upstream issues | WATCH — #184 NEW (stream holds slot); #164/#166/#168/#169/#142 unchanged |
+| 22 | upstream convergence wave 2 | DONE 09-04/05 (landed via the T-Q ship) |
+| 23 | md TMA prefill pair (#167 + #160) | SHIPPED 09-05 (`t23tma-bb535075`) — extended by **T36** |
+| 24 | gzenz host-KV safety net | SUPERSEDED → T31 |
+| 25 | probe wave | PARTIAL — T25c PASS, T14 done; remainder open |
+| 26 | watch slot | WATCH — upstream-PR watch set (re-mapped) |
+| 27 | watch slot | WATCH — community-fork watch set (re-mapped; +gpillon, +ninfer-fusion) |
+| 28 | dylan dflash2 wave | **SUPERSEDED by T33** — DFlash v1 is permanently off the 27B target |
+| 29 | Mirko dynamic-MTP decode wave | DECIDED 09-05 — T29a port pending; T29b levers no-win |
+| 30 | Mirko KVaRN line | DEFERRED — `114b0fcb` adds a greedy-parity fix if revived |
+| 31 | gzenz host-KV safety-net port | **BLOCKED** — 2 bugs (B2 entitlement, B3 frontier); pick set INVALID (re-derive from `5f23c37e`); approach reframed by **T34** |
+| 32 | upstream prefix/context-cache cluster (#176–#181, #142) | WATCH — +#184; #181 mirrors our T14 finding |
+| 33 | **DFlash2 drafter grafted onto the QUASAR artifact** | **NEW — PROBE-FIRST, top priority.** Engine port from `gpillon/coding` + quasar-side graft using `z-lab/Qwen3.8-27B-DFlash2`; keeps QUASAR weights; gate on acceptance/round @1.5K/8K/32K |
+| 34 | **host-KV restore correctness (reframes T31)** | **NEW — ADOPT the mitigation shape**: host-RAM reuse = append-at-frontier only; do NOT relax the frontier invariant; port `ac60331d` as a guard |
+| 35 | **draft window k=3→5** | **NEW — PROBE (zero code)**: md measures +17.3% with higher acceptance; A/B at 3 vs 5 (+ `6870d530` enabler) |
+| 36 | **md dense-lane ops wave** | **NEW — PORT-CANDIDATE**: `8767dac7` decode-softmax-fold; `c735909b`+`16c66809` nvfp4-TMA (27B-measured); `ce71f787` sampled-draft probe |
+| 37 | **chat template → artifact-embedded ReasoningEffort @xhigh** | **NEW — PROBE-FIRST (config-only)**: drop `--chat-template-file`; deltas = effort medium→xhigh, loss of `terse`/tool-escalation, think-block bytes |
+| 38 | **upstream `--chat-template FILE` (#183/#182) + stream-slot (#184)** | **NEW — WATCH/adopt-on-merge**; reconcile flag naming with our `--chat-template-file` |
+| 39 | **Astrangemaninhere/ninfer-fusion** | **NEW — WATCH**; sub-floor KV REJECT (perplexity-only); its DFlash2 < MTP3 by its own data |
+| 40 | **dylan `cdd1b6c1` C1-4 speculative decode** | **NEW — PROBE**: on-lane 27B NVFP4 at our exact C=4 |
+
+**Sequencing (round 6).** (1) **T37** chat-template switch — config-only, no build, immediate operator
+value, and it must settle BEFORE T33/T35 so decode A/Bs are measured against a stable render path.
+(2) **T35** draft-window probe — zero code, largest cheap decode upside. (3) **T33** DFlash2-on-QUASAR
+— the substantial wave; engine port + converter graft + acceptance-gated probe. (4) **T34** fold into
+T31 before any T31 re-ship (and re-derive the pick set from `5f23c37e`). (5) **T36** md dense ops
+wave. (6) **T40** dylan spec-decode probe. (7) **T38**/T32/T39 watch. Deferred: T29a, T30, T9, T13,
+T19, T15 config flip.
