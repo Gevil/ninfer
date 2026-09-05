@@ -1054,13 +1054,17 @@ battery:**
 Battery verdict: pass=7 (UP, IMAGE, MODELS, LEDGER, WARMUP, VISION, 4XX-WATCH) /
 fail=9 (VISION-HIST, VISION-POISONED, REPLAY, THINK-SMOKE, XHIGH, DECODE-FRESH,
 DECODE-8K, QUALITY, SOAK) -> G6 rc=1 -> G7 SHIP VERDICT FAIL -> rollback, verified
-on e858f88b. The battery log captured the entitlement error text on its own
-VISION-HIST probe (http=500, t=0.2s) - the Round 4 VISION-HIST repro firing inside
-the live G6 battery. Micro-attribution of the throwing request is ambiguous from
-the journal (the fatal line names no request; it fired in the 56ms after the
-battery's VISION single completed - its StateImage becomes resident - with the
-battery VISION-HIST probe and the external 127-msg/5-media stream both in flight;
-the concurrent external image session is a confounder for the repro).
+on e858f88b. Trigger = the battery's own VISION-HIST probe (req#5): admitted
+12:28:59.465 - 56ms after the battery's VISION single (req#3) completed and its
+StateImage became resident - and the journal's fatal line immediately follows
+req#5's start line. The battery log captured the entitlement error text on the
+probe's own response (http=500, t=0.2s) - the Round 4 VISION-HIST repro firing
+inside the live G6 battery. req#4 (external 127-msg/5-media OMP stream) was
+in-flight collateral, not a co-trigger: it was admitted .375, BEFORE req#3's
+StateImage was resident, so it could not have hit the resident-reuse throw path
+at admission, and no fatal line appears in its .375-.465 setup window; both
+req#4 and req#5 show 500 at .620 only because "failing all requests" 500s
+in-flight requests.
 
 Corrections to the original Round 5b claims:
 
