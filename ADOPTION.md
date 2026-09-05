@@ -973,3 +973,63 @@ The repro missed: hist #2 was byte-identical to #1, so the engine took the 100%
 endpoint state image`) - the vision state was never re-executed, so the entitlement check
 was never reached. Run 2 uses differentiated tails (fresh execution forced on prefix
 reuse).
+
+**Run 2 (19:54-20:01 CEST): NOT-REPRODUCED.** Differentiated tails forced fresh
+execution (all 200, `cache 0%`), but the shortlist rejected every candidate before
+inspect (`key MISS`, `tag_match=-1`, `candidates=1`, no `[safety-find] match=hit`) -
+the probe's synthetic 32-message histories share no resident prefix, so the
+resume path was never entered. Both runs confirm: the VISION-HIST shape is not the
+trigger.
+
+## Round 5b (2026-09-05) - Round-4 ground truth: the ship fatal was the host-KV
+restore path (Bug 3), not VISION-HIST
+
+Journal forensics on the G6 battery of the `t31hostkv-92bca578` ship attempt
+(12:05-12:07 CEST) corrected the trigger attribution:
+
+```
+12:05:25  req#1  external 30-msg session (5 media, 14 tools), 72,727 tok
+          -> completes (output 1,092), becomes resident
+12:05:40  req#6  REPLAY fixture (310 msg, 5 media, 15 tools), 168,716 tok
+12:05:44  req#7  arrives (168k tok) -> device-KV pressure -> BULK
+          [safety-spill] OK of ALL 5 resident compact prefixes to host-KV
+          (index=0: frontier=73818 ckpt_frontier=72727 ledger=73819 identity=73819)
+12:06:53  req#8  REPLAY fixture (311 msg, 74,031 tok) ->
+          [safety-find] entries=5 match=hit frontier=72727
+          [restore] frontier=72727 entry=pinned checkpoint=0
+          [restore] KV+state copied, syncing transfer_stream
+          -> FATAL "completed prefill did not reach the admitted prompt frontier"
+          (engine_core.h) -> req#7/#8 500, all following requests 503
+```
+
+Corrections to the Round-4 record:
+
+- VISION (req#3), VISION-HIST (req#4, output 52) and VISION-POISONED (req#5)
+  ALL PASSED in the G6 battery. The fatal was a REPLAY-phase request (req#8).
+- The shared 72,727-token prefix is the OMP system prompt (every captured
+  fixture and every live OMP session on this lane shares it); the 5 media are
+  incidental to the trigger.
+- Bug 2 (StateImage entitlement) remains real but is NOT the ship blocker.
+  **Bug 3 (the ship blocker): the transparent host-KV safety-net restore
+  fails the completed-prefill frontier check.** The admission is sealed as a
+  fresh Root (committed_reused=0); the runtime then restores the spilled
+  checkpoint transparently and reports `runtime_reused` - and
+  `computed_prompt_tokens != prompt_tokens - runtime_reused` at
+  `engine_core.h` (`progress.complete` check). The spill entry's
+  `exec_frontier` (73,818) includes the spilling request's OUTPUT tokens
+  (72,727 prompt + 1,092 output - 1) while its KV checkpoint is 72,727
+  (`ckpt_frontier`) - if the runtime reports reuse from the exec_frontier
+  (or the ledger, 73,819) instead of the checkpoint frontier, the
+  expected suffix is short by ~1,092 tokens and the check throws. The
+  instrumented throw now prints `computed=/prompt=/committed_reused=/
+  runtime_reused=/expected_suffix=` (commit `b3bf63a4`, image
+  `t31debug-b3bf63a4`) to nail down which frontier the runtime reports.
+
+**Bug 3 e2e probe:** `~/.local/share/ninfer/t31-b3-probe.sh` +
+`probes/t31b3-repro.py` - same image/boot/restore discipline as the bug2
+probe; repro = three on-disk REPLAY fixtures in order: R1 = 310-msg fixture
+(large resident), R2 = 313-msg fixture (largest - device-KV pressure, bulk
+safety-spill), R3 = 311-msg fixture (continuation of R1's conversation ->
+`[safety-find] match=hit` -> host-KV `[restore]` -> expect the instrumented
+fatal). `stream=False`, `max_tokens=4096` (the fatal fires at
+restore+prefill, before decode).
