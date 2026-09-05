@@ -767,3 +767,64 @@ Image `e858f88b907e` (tags: `t18gdn-49400365`, :quasar, :latest); previous
 - Free-GPU ctest: rc=0, skips within baseline (6 expected).
 - Battery: 16 PASS / 0 FAIL: VERDICT UP: PASS VERDICT IMAGE: PASS VERDICT MODELS: PASS VERDICT LEDGER: PASS VERDICT WARMUP: PASS VERDICT VISION: PASS VERDICT VISION-HIST: PASS VERDICT VISION-POISONED: PASS VERDICT REPLAY: PASS VERDICT THINK-SMOKE: PASS VERDICT XHIGH: PASS VERDICT DECODE-FRESH: PASS VERDICT DECODE-8K: PASS VERDICT QUALITY: PASS VERDICT SOAK: PASS VERDICT 4XX-WATCH: PASS
 - State: lane `ninfer-nvfp4` runs the new image; :quasar/:latest pinned (verified match).
+
+## Round 2 (2026-09-05) — T23 + T18 shipped; T29 wave and T14 probe decided
+
+### T23 — t23tma-bb535075 (branch t23-tma-quasar @ bb535075) — SHIPPED, LIVE
+Upstream PR #167 (fp8 A8 GEMM operands through TMA) + PR #160 (NVFP4 TMA activation-scales
+tile-contiguous) cherry-picked onto t24-quasar-a; ops-side tree byte-identical to prepared
+t23-tma-pair. ctest rc=0 (skips within baseline); battery 16/16. Decode gates held as expected
+for the prefill-side wave (+1.4% @chunk 1024, +2.6% @4096; bitwise-identical outputs).
+
+### T18 — t18gdn-49400365 (branch t18-gdn-quasar @ 49400365) — SHIPPED, LIVE
+Dylan GDN chunked-prefill accuracy fix (269cf431) cherry-picked on T23. ctest rc=0 with the GDN
+coverage gate verified: ninfer_gated_delta_net_test ran and passed (2.73 s); full GDN family
+green (gating, gating_proj, input_proj x3, replay_record, replay_fold, replay_records); 106
+tests, 0 failures. Battery 16/16. Expected effect: FP16 private normalized Q/K + chunk
+workspaces; state rel-err -79.2%, output rel-err -52%.
+
+### T29a (Mirko kernel micro-opts) — PORT REQUIRED, NOT PICKED
+- f52125a2 (gdn wide-MTP projection): conflicts mechanical only (pure additions:
+  nvfp4_gdn_input_w4a4.cu aliases + dispatch branches; test_gdn_input_proj.cpp cases).
+- 81e685fc (nvfp4 swiglu small-batch): semantic conflict - removes the lane's T<=3
+  SmallTFusedA16 fused route and extends the small-batch threshold (max_tokens >= 2 vs >= 4)
+  in nvfp4_linear_swiglu_plan.cpp. A scheduling choice, not a merge.
+- Per plan: wave recorded as "conflicts with the lane's TMA/scale routing - needs a port, not a
+  pick". No branch created; no lane change.
+
+### T29b (quadlet config levers) - both measured no-win
+- 4.2 --draft-tokens 3 -> 4: artifact-legal (mtp_num_hidden_layers=1; engine unrolls the single
+  MTP layer; kMaximumMtpDraftTokens=5). Restart clean; memory gate passed (free-after-startup
+  2.08 GiB, ~9 MiB VRAM delta). Battery 16/16: DECODE-FRESH 154.4 (+1.6% vs 151.9) but
+  DECODE-8K 146.8 (-2.1% vs 150.2) - fails the keep rule (both >= +1%) -> reverted to 3.
+  (Battery JSON 139.4/137.4 is the regression floor; the keep rule uses the live references.)
+- 4.3 --prefill-chunk 1024 -> 4096: 65k-prompt TTFT 6.44 s -> 6.12 s = -4.97% (below the 5%
+  keep bar, single sample, borderline); probe decode flat-to-worse. The md 35B -19.8% does not
+  transfer (quiet 27B prefill already ~10k tok/s). Flag removed.
+- No flag survived; quadlet left at T18 ship state.
+
+### T14 probe - idle prefix loss confirmed -> T24 justified
+- Probe: probes/t14-prefix-retention.py - 76k-token shared prefix, A/B 32-token suffixes, TTFT
+  triples, quiet window, capacity pressure ~282k tokens vs the 225280 pool.
+- hot: [7.35, 7.35, 0.10, 0.10] s - A/B cold first pass; warm = 0.10 s. Cross-conversation
+  non-sharing is by design (PrefixReusePath::PrivateEndpoint is per-sequence,
+  request_plan_impl.h:508).
+- 45 s idle: [46.56, 0.18, 15.48, 0.14] s - A evicted (re-prefill 46.6 s, then 15.5 s), B
+  retained.
+- 120 s idle (true idle): [7.33, 10.17, 0.09, 0.10] s - both evicted.
+- Rule "any post-idle TTFT >= 10 s" fires (46.56 / 15.48 / 10.17) -> T24 justified; matches the
+  third-party #98 benchmark (45 s coin-flip, 22 s re-prefill).
+- T31 (next tier, not started this round): port the gzenz host-KV safety-net pick set from
+  d205c52a (spill guards, eviction-feasibility pre-check, safety-find cap, session-key ->
+  response_id mapping).
+
+### Closures
+- T28 (dylan dflash2) - BLOCKED, no work this round: DFlashConfig::supported=false
+  (config.h:74), kMaximumDFlashDraftTokens=0; dflash is 35B-only in the tree; the QUASAR
+  artifact carries no DFlashPayload (model_view.h:99). Watch for a 27B dflash artifact.
+  Future-round note: the full dflash2 wave (3 of its 4 new commits) and the full dynamic-mtp
+  branch (4 commits) both edit src/targets/qwen3_6/impl/runtime/program_impl.h +
+  layouts_impl.h - a future port of both is one ordered sequence with a conflict pass between
+  them, never parallel waves.
+- T30 (Mirko KVaRN, 41 commits) - deferred: revisit only once a Mirko port lands cleanly;
+  T29a established his base conflicts with the lane's routing, so the bar is a port, not a pick.
