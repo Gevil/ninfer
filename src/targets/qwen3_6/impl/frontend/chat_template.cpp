@@ -900,7 +900,7 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
                                    (!effort_template && !options.enable_thinking &&
                                     reasoning.text.empty());
         const std::size_t turn_begin = rendered.size();
-        if (!preserve_thinking && !effort_template && !rewrite_checkpoint &&
+        if (!preserve_thinking && !effort_template &&
             static_cast<long>(i) > last_query_index) {
             // Closing the current turn may rewrite everything beginning with this assistant
             // segment. Keep the stable history before the opener recoverable; retaining the
@@ -910,7 +910,7 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
                 .kind = RewriteCheckpointKind::TurnClosure, .offset = turn_begin};
         }
         rendered.append_template("<|im_start|>assistant\n");
-        if (effort_template && !preserve_thinking && !rewrite_checkpoint &&
+        if (effort_template && !preserve_thinking &&
             static_cast<long>(i) > last_query_index) {
             // The reasoning-effort opener is a complete deterministic sequence, so the
             // closure checkpoint may sit just past it and let the opener replay verbatim.
@@ -918,13 +918,6 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
                 .kind = RewriteCheckpointKind::TurnClosure, .offset = rendered.size()};
         }
         add_rewrite_execution_boundary();
-        if (!preserve_thinking && !rewrite_checkpoint && effort_template &&
-            static_cast<long>(i) > last_query_index) {
-            // Reasoning-effort template: checkpoint after the deterministic opener so a
-            // reconstructed tool-call turn can replay the wrapper the C++ clone omits.
-            rewrite_checkpoint = RewriteCheckpointByteSpec{
-                .kind = RewriteCheckpointKind::TurnClosure, .offset = rendered.size()};
-        }
         // Official Qwen3.8 Jinja still wraps whenever keep_thinking. The C++ clone
         // omits an empty reasoning wrapper so history does not inject the
         // no-thinking cue `<think>\n\n</think>\n\n`.
@@ -959,7 +952,7 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         // opener; placing it after the deterministic prologue makes the complete history
         // unrecoverable for the branch case merely to save a handful of prompt tokens.
         const std::size_t generation_begin = rendered.size();
-        if (!preserve_thinking && !rewrite_checkpoint) {
+        if (!preserve_thinking) {
             rewrite_checkpoint = RewriteCheckpointByteSpec{
                 .kind = RewriteCheckpointKind::TurnClosure, .offset = generation_begin};
         } else if (preserve_thinking && !options.enable_thinking && !effort_template) {

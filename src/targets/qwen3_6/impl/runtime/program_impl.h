@@ -10501,10 +10501,9 @@ void ProgramImplCore::start_sequence(std::uint32_t lane, SequenceState& sequence
             reserve_state_entitlement(sequence, state_slots);
             refresh_state_views(sequence);
         } else if (is_rewrite_checkpoint_restore(request_plan.reuse)) {
-            if (!sequence.kv || sequence.text_kv_valid < base) {
-                throw std::logic_error("resident rewrite checkpoint has no complete KV allocation");
-            }
-            if (!sequence.rewrite_state || !state_store->valid(*sequence.rewrite_state) ||
+          try {
+            if (!sequence.kv || sequence.text_kv_valid < base ||
+                !sequence.rewrite_state || !state_store->valid(*sequence.rewrite_state) ||
                 state_store->role(*sequence.rewrite_state) != StateImageRole::CheckpointImmutable ||
                 (sequence.endpoint_valid &&
                  (!state_store->valid(sequence.state.read) ||
@@ -10538,6 +10537,17 @@ void ProgramImplCore::start_sequence(std::uint32_t lane, SequenceState& sequence
                     state_store->freeze(*new_rewrite);
                     state_store->retain_checkpoint_reference(*new_rewrite);
                     sequence.rewrite_state = *new_rewrite;
+                    // If the new rewrite_state would exceed the slot budget,
+                    // release it and drop the checkpoint. The prefill will
+                    // proceed without a rewrite checkpoint for this turn.
+                    if (state_footprint(sequence) + 1 > state_slots) {
+                        state_store->release_checkpoint_reference(*new_rewrite);
+                        if (!state_store->release(*new_rewrite)) {
+                            std::fprintf(stderr, "[rewrite-restore] WARNING: leaked state slot\n");
+                        }
+                        sequence.rewrite_state.reset();
+                        sequence.rewrite_checkpoint = {};
+                    }
                 } else {
                     sequence.rewrite_checkpoint = {};
                 }
@@ -10565,6 +10575,10 @@ void ProgramImplCore::start_sequence(std::uint32_t lane, SequenceState& sequence
             sequence.prefix_digests.truncate(base);
             reserve_state_entitlement(sequence, state_slots);
             refresh_state_views(sequence);
+          } catch (const std::exception& e) {
+            std::fprintf(stderr, "[rewrite-restore] FAILED: %s\n", e.what());
+            throw;
+          }
         } else {
             throw std::logic_error("request plan has an invalid prefix reuse path");
         }
@@ -11197,6 +11211,48 @@ StateImageSelectors ProgramImplCore::state_selectors(const SequenceState& sequen
         throw std::logic_error("sequence has no active StateImage binding");
     }
     return state_store->selectors(sequence.state.read, sequence.state.write);
+}
+
+std::uint32_t ProgramImplCore::state_footprint(const SequenceState& sequence) const noexcept {
+    if (!state_store) { return 0; }
+    std::array<StateImageHandle, 4> unique{};
+    std::uint32_t count = 0;
+    const auto add      = [&](StateImageHandle handle) {
+        if (!state_store->valid(handle)) { return; }
+        const StateReplicaResidency residency = state_store->residency(handle);
+        if (residency != StateReplicaResidency::DeviceOnly &&
+            residency != StateReplicaResidency::Both) {
+            return;
+        }
+        for (std::uint32_t index = 0; index < count; ++index) {
+            if (unique[index] == handle) { return; }
+        }
+        unique[count++] = handle;
+    };
+    add(sequence.state.read);
+    add(sequence.state.write);
+    if (sequence.rewrite_state) { add(*sequence.rewrite_state); }
+    if (sequence.reserved_state) { add(*sequence.reserved_state); }
+    for (std::size_t anchor_index = 0; anchor_index < sequence.long_anchors.size();
+         ++anchor_index) {
+        const StateImageHandle handle = sequence.long_anchors[anchor_index].state;
+        if (!state_store->valid(handle)) { continue; }
+        const StateReplicaResidency residency = state_store->residency(handle);
+        if (residency != StateReplicaResidency::DeviceOnly &&
+            residency != StateReplicaResidency::Both) {
+            continue;
+        }
+        bool seen = false;
+        for (std::uint32_t index = 0; index < std::min<std::uint32_t>(count, unique.size());
+             ++index) {
+            if (unique[index] == handle) { seen = true; }
+        }
+        for (std::size_t prior = 0; !seen && prior < anchor_index; ++prior) {
+            if (sequence.long_anchors[prior].state == handle) { seen = true; }
+        }
+        if (!seen) { ++count; }
+    }
+    return count;
 }
 
 std::uint32_t ProgramImplCore::owned_checkpoint_references(const SequenceState& sequence,

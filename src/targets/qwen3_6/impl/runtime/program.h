@@ -1214,6 +1214,7 @@ private:
     void clear_lane_best_effort(SequenceState& sequence, RequestControl& request) noexcept;
     void ordered_reset(SequenceState& sequence);
     [[nodiscard]] StateImageSelectors state_selectors(const SequenceState& sequence) const;
+    [[nodiscard]] std::uint32_t state_footprint(const SequenceState& sequence) const noexcept;
     [[nodiscard]] detail::PhysicalResources
     sequence_exclusive_state_resources(const SequenceState& sequence) const;
     [[nodiscard]] std::uint32_t owned_checkpoint_references(const SequenceState& sequence,
