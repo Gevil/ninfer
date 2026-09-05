@@ -1,5 +1,6 @@
 #include "targets/qwen3_6/impl/runtime/instance.h"
 #include "targets/qwen3_6/impl/runtime/program.h"
+#include "targets/qwen3_6/impl/runtime/state_image_entitlement.h"
 #include "targets/qwen3_6/impl/runtime/rebuild_work.h"
 
 #include "core/nvtx.h"
@@ -7115,72 +7116,7 @@ ProgramImplCore::sequence_exclusive_state_resources(const SequenceState& sequenc
     if (!state_store) {
         throw std::logic_error("sequence StateImage resources have no physical store");
     }
-    detail::PhysicalResources out;
-    std::array<StateImageHandle, 4> states{};
-    std::uint32_t state_count = 0;
-    const auto add_state      = [&](StateImageHandle handle) {
-        if (!state_store->valid(handle)) {
-            throw std::logic_error("sequence owner has a stale StateImage");
-        }
-        if (!state_exclusive_to_sequence(sequence, handle)) { return; }
-        for (std::uint32_t index = 0; index < state_count; ++index) {
-            if (states[index] == handle) { return; }
-        }
-        states[state_count++]                 = handle;
-        const StateReplicaResidency residency = state_store->residency(handle);
-        if (residency == StateReplicaResidency::DeviceOnly ||
-            residency == StateReplicaResidency::Both) {
-            ++out.device.state_slots;
-        }
-        if (residency == StateReplicaResidency::HostOnly ||
-            residency == StateReplicaResidency::Both) {
-            ++out.host.state_slots;
-        }
-    };
-    const bool has_read_state  = sequence.state.read.valid();
-    const bool has_write_state = sequence.state.write.valid();
-    if (has_read_state != has_write_state) {
-        throw std::logic_error("sequence owner has a partial primary StateImage pair");
-    }
-    if (sequence.state.borrows_read() &&
-        (!sequence.state.fork_pending || sequence.state.read == sequence.state.write)) {
-        throw std::logic_error("sequence has an invalid borrowed StateImage source");
-    }
-    if (has_read_state) {
-        if (!sequence.state.borrows_read() || sequence.state.read == sequence.state.write) {
-            add_state(sequence.state.read);
-        }
-        add_state(sequence.state.write);
-    }
-    if (sequence.rewrite_state) { add_state(*sequence.rewrite_state); }
-    if (sequence.reserved_state) { add_state(*sequence.reserved_state); }
-    for (std::size_t anchor_index = 0; anchor_index < sequence.long_anchors.size();
-         ++anchor_index) {
-        const StateImageHandle handle = sequence.long_anchors[anchor_index].state;
-        if (!state_store->valid(handle)) {
-            throw std::logic_error("sequence owner has a stale long-anchor StateImage");
-        }
-        if (!state_exclusive_to_sequence(sequence, handle)) { continue; }
-        bool seen = false;
-        for (std::uint32_t index = 0; index < std::min<std::uint32_t>(state_count, states.size());
-             ++index) {
-            if (states[index] == handle) { seen = true; }
-        }
-        for (std::size_t prior = 0; !seen && prior < anchor_index; ++prior) {
-            if (sequence.long_anchors[prior].state == handle) { seen = true; }
-        }
-        if (seen) { continue; }
-        const StateReplicaResidency residency = state_store->residency(handle);
-        if (residency == StateReplicaResidency::DeviceOnly ||
-            residency == StateReplicaResidency::Both) {
-            ++out.device.state_slots;
-        }
-        if (residency == StateReplicaResidency::HostOnly ||
-            residency == StateReplicaResidency::Both) {
-            ++out.host.state_slots;
-        }
-    }
-    return out;
+    return NINFER_QWEN36_RUNTIME_NS::sequence_exclusive_state_resources(*state_store, sequence);
 }
 
 detail::PhysicalResources
@@ -11205,19 +11141,13 @@ StateImageSelectors ProgramImplCore::state_selectors(const SequenceState& sequen
 
 std::uint32_t ProgramImplCore::owned_checkpoint_references(const SequenceState& sequence,
                                                            StateImageHandle state) const noexcept {
-    std::uint32_t references = 0;
-    if (sequence.rewrite_state && *sequence.rewrite_state == state) { ++references; }
-    for (const LongAnchorCheckpoint& anchor : sequence.long_anchors) {
-        if (anchor.state == state) { ++references; }
-    }
-    return references;
+    return NINFER_QWEN36_RUNTIME_NS::owned_checkpoint_references(sequence, state);
 }
 
 bool ProgramImplCore::state_exclusive_to_sequence(const SequenceState& sequence,
                                                   StateImageHandle state) const noexcept {
-    if (!state_store || !state_store->valid(state)) { return false; }
-    return state_store->checkpoint_references(state) ==
-           owned_checkpoint_references(sequence, state);
+    if (!state_store) { return false; }
+    return NINFER_QWEN36_RUNTIME_NS::state_exclusive_to_sequence(*state_store, sequence, state);
 }
 
 void ProgramImplCore::refresh_state_views(SequenceState& sequence) {
@@ -11239,20 +11169,10 @@ void ProgramImplCore::refresh_state_views(SequenceState& sequence) {
 }
 
 void ProgramImplCore::reserve_state_entitlement(SequenceState& sequence, std::uint32_t slots) {
-    const std::uint32_t owned = sequence_exclusive_state_resources(sequence).device.state_slots;
-    if (slots == 0 || owned > slots) {
-        throw std::logic_error("sequence StateImage entitlement is inconsistent");
+    if (!state_store) {
+        throw std::logic_error("sequence StateImage resources have no physical store");
     }
-    if (owned == slots) { return; }
-    if (slots - owned != 1 || sequence.reserved_state) {
-        throw std::logic_error("sequence StateImage reservation is not a single destination");
-    }
-    std::optional<StateImageHandle> reserved = state_store->reserve_destination();
-    if (!reserved) { throw std::bad_alloc(); }
-    sequence.reserved_state = *reserved;
-    if (sequence_exclusive_state_resources(sequence).device.state_slots != slots) {
-        throw std::logic_error("sequence StateImage entitlement did not materialize exactly");
-    }
+    NINFER_QWEN36_RUNTIME_NS::reserve_state_entitlement(*state_store, sequence, slots);
 }
 
 void ProgramImplCore::settle_state_fork(SequenceState& sequence) {
