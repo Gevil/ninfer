@@ -926,7 +926,9 @@ Verified by ctest 106/106.
 no active session on the lane) to confirm the undercount and land a verified fix. Image
 `t31hostkv-92bca578` parked on disk. Resume: re-verify lane health/traffic + GPU-free, launch
 the ephemeral `t31-debug` container (never created — nothing to clean up), run e2e/battery,
-fix Bug 2, clean ship.
+fix Bug 2, clean ship. (See Round 5b rev 2: both bugs fired across the two 92bca578 ship
+attempts — Bug 2 killed the verdict-deciding G6 battery, Bug 3 fataled live production
+traffic pre-ship.)
 
 ## Round 5 (2026-09-05) — entitlement contract pinned by a GPU test (guard for Bug 2)
 
@@ -981,55 +983,136 @@ the probe's synthetic 32-message histories share no resident prefix, so the
 resume path was never entered. Both runs confirm: the VISION-HIST shape is not the
 trigger.
 
-## Round 5b (2026-09-05) - Round-4 ground truth: the ship fatal was the host-KV
-restore path (Bug 3), not VISION-HIST
+## Round 5b (2026-09-05, rev 2 - CORRECTED) - the 12:05 window was NOT the G6 battery;
+both bugs are live ship blockers on e6cec0284
 
-Journal forensics on the G6 battery of the `t31hostkv-92bca578` ship attempt
-(12:05-12:07 CEST) corrected the trigger attribution:
+The original Round 5b forensics analyzed the 12:05:38-12:06:54 journal window and
+concluded "all G6 probes that completed returned 200; the ship fatal was external
+traffic (Bug 3), not a G6 probe regression; Bug 2 is not the ship blocker". That is
+RETRACTED. Ground truth (battery log header + ship log + podman + journal
+cross-check):
+
+- The ship job that decided the verdict started 12:18:13 (`ship job (log phase) start
+  2026-09-05T12:18:13+02:00`); G4 ctest with the lane stopped 12:21:32 (gate PASS);
+  G5 restart 12:27:44 (container 729da28d, :quasar re-tagged to e6cec0284, listening
+  12:27:52, PID 2442448).
+- The verdict-deciding G6 battery ran 12:27:52+ (battery log: `=== battery start
+  2026-09-05T12:27:52+02:00 ... lane already healthy - no restart ===`). The battery
+  log file for an earlier attempt was overwritten by this run's file (same
+  tag+date name, no per-run timestamp in the path).
+- The 12:05:38-12:06:54 window belongs to container 9fe32b0b (PID 2367301) - an
+  earlier t31hostkv-92bca578 engine instance from a pre-ship live window (the
+  12:18:13 ship job did not exist yet). Every request in that window is by definition
+  live external traffic (OMP sessions on this lane); the original "REPLAY fixture"
+  labels for req#6/#7/#8 were a misattribution - e.g. req#7 is a streaming 64k-xhigh
+  32-msg session turn, the shape of live OMP chat, not a captured REPLAY payload.
+
+**Pre-ship live window (12:05:25-12:06:54, container 9fe32b0b) - Bug 3 on production
+traffic:**
 
 ```
-12:05:25  req#1  external 30-msg session (5 media, 14 tools), 72,727 tok
-          -> completes (output 1,092), becomes resident
-12:05:40  req#6  REPLAY fixture (310 msg, 5 media, 15 tools), 168,716 tok
-12:05:44  req#7  arrives (168k tok) -> device-KV pressure -> BULK
-          [safety-spill] OK of ALL 5 resident compact prefixes to host-KV
+12:05:38  req#2  16 tok -> 200 (12.5s queue behind req#1 prefill)
+12:05:39  req#3  129 tok media 1 -> 200 (output 60)
+12:05:39  req#4  625 tok 32 msg media 1 -> 200 (output 52)
+12:05:40  req#6  live session, 310 msg, 168,716 tok -> prefilling
+12:05:44  req#7  live stream session, 32 msg, 168k tok, 5 media, 14 tools -> prefilling
+12:05:45  [compact-prefix] bulk [safety-spill] OK x5 resident prefixes to host-KV
           (index=0: frontier=73818 ckpt_frontier=72727 ledger=73819 identity=73819)
-12:06:53  req#8  REPLAY fixture (311 msg, 74,031 tok) ->
+12:06:53  req#8  live session, 311 msg, 74,031 tok, admitted 12:06:53.2
           [safety-find] entries=5 match=hit frontier=72727
           [restore] frontier=72727 entry=pinned checkpoint=0
           [restore] KV+state copied, syncing transfer_stream
-          -> FATAL "completed prefill did not reach the admitted prompt frontier"
-          (engine_core.h) -> req#7/#8 500, all following requests 503
+          -> 12:06:53.796 FATAL "completed prefill did not reach the admitted
+             prompt frontier" (engine_core.h) -> engine fatal, all requests 503
 ```
 
-Corrections to the Round-4 record:
+Bug 3 firing on real user traffic - the strongest Bug 3 signal yet: no probe, no
+fixtures, just a 74k-token session continuation restored from the host-KV safety
+net. (This window's small vision-shaped probes - 16/129/625/200 tok - all returned
+200; the window's tail went 503 after the fatal, battery-shaped: 313/71/72/2-msg
+requests.)
 
-- VISION (req#3), VISION-HIST (req#4, output 52) and VISION-POISONED (req#5)
-  ALL PASSED in the G6 battery. The fatal was a REPLAY-phase request (req#8).
-- The shared 72,727-token prefix is the OMP system prompt (every captured
-  fixture and every live OMP session on this lane shares it); the 5 media are
-  incidental to the trigger.
-- Bug 2 (StateImage entitlement) remains real but is NOT the ship blocker.
-  **Bug 3 (the ship blocker): the transparent host-KV safety-net restore
-  fails the completed-prefill frontier check.** The admission is sealed as a
-  fresh Root (committed_reused=0); the runtime then restores the spilled
-  checkpoint transparently and reports `runtime_reused` - and
-  `computed_prompt_tokens != prompt_tokens - runtime_reused` at
-  `engine_core.h` (`progress.complete` check). The spill entry's
-  `exec_frontier` (73,818) includes the spilling request's OUTPUT tokens
-  (72,727 prompt + 1,092 output - 1) while its KV checkpoint is 72,727
-  (`ckpt_frontier`) - if the runtime reports reuse from the exec_frontier
-  (or the ledger, 73,819) instead of the checkpoint frontier, the
-  expected suffix is short by ~1,092 tokens and the check throws. The
-  instrumented throw now prints `computed=/prompt=/committed_reused=/
-  runtime_reused=/expected_suffix=` (commit `b3bf63a4`, image
-  `t31debug-b3bf63a4`) to nail down which frontier the runtime reports.
+**Ship G6 battery (12:27:52+, container 729da28d, PID 2442448) - Bug 2 kills the
+battery:**
 
-**Bug 3 e2e probe:** `~/.local/share/ninfer/t31-b3-probe.sh` +
-`probes/t31b3-repro.py` - same image/boot/restore discipline as the bug2
-probe; repro = three on-disk REPLAY fixtures in order: R1 = 310-msg fixture
-(large resident), R2 = 313-msg fixture (largest - device-KV pressure, bulk
-safety-spill), R3 = 311-msg fixture (continuation of R1's conversation ->
-`[safety-find] match=hit` -> host-KV `[restore]` -> expect the instrumented
-fatal). `stream=False`, `max_tokens=4096` (the fatal fires at
-restore+prefill, before decode).
+```
+12:27:52  WARMUP (16 tok) -> 200 (133ms)
+12:27:52  req#1  EXTERNAL live OMP session: 124 msg, 184,545 tok, 5 media, 14 tools,
+          stream, 64k xhigh -> prefilling CONCURRENTLY with the battery
+12:27:53  battery VISION single (129 tok, media 1) -> 200 at 12:28:59 (t=66.3s:
+          queued behind the 184k external prefill + first-vision warmup)
+12:28:59.375  req#4  EXTERNAL live OMP stream admitted (127 msg, 5 media, 14 tools)
+12:28:59.4xx  ninfer: engine fatal error, failing all requests:
+              sequence StateImage entitlement is inconsistent   (Bug 2)
+12:28:59.465  req#5  battery VISION-HIST (32 msg, media 1, 625 tok) admitted
+12:28:59.620  req#4 + req#5 -> 500 internal error (both in flight at the fatal)
+12:28:59+  every remaining probe 503 "inference engine is unavailable":
+          VISION-POISONED, REPLAY 0/10, THINK-SMOKE, XHIGH, DECODE x2, QUALITY,
+          SOAK x5
+```
+
+Battery verdict: pass=7 (UP, IMAGE, MODELS, LEDGER, WARMUP, VISION, 4XX-WATCH) /
+fail=9 (VISION-HIST, VISION-POISONED, REPLAY, THINK-SMOKE, XHIGH, DECODE-FRESH,
+DECODE-8K, QUALITY, SOAK) -> G6 rc=1 -> G7 SHIP VERDICT FAIL -> rollback, verified
+on e858f88b. The battery log captured the entitlement error text on its own
+VISION-HIST probe (http=500, t=0.2s) - the Round 4 VISION-HIST repro firing inside
+the live G6 battery. Micro-attribution of the throwing request is ambiguous from
+the journal (the fatal line names no request; it fired in the 56ms after the
+battery's VISION single completed - its StateImage becomes resident - with the
+battery VISION-HIST probe and the external 127-msg/5-media stream both in flight;
+the concurrent external image session is a confounder for the repro).
+
+Corrections to the original Round 5b claims:
+
+- "VISION-HIST PASSED in G6" - wrong for the verdict-deciding G6 (it received the
+  500 entitlement). The 200 was from the pre-ship window's earlier probe sequence
+  on the other engine instance.
+- "the ship fatal was external traffic (REPLAY fixtures)" - wrong as G6
+  attribution: the G6 fatal was the Bug 2 entitlement fatal in the VISION-HIST
+  phase. The external-traffic fatal was real but belonged to the pre-ship live
+  window (Bug 3) - a separate engine instance and event.
+- "Bug 2 is NOT the ship blocker" - RETRACTED. Round 4's framing is restored: both
+  bugs are live on e6cec0284 and both are ship blockers (Bug 2 killed the
+  verdict-deciding G6 battery; Bug 3 killed a live production session pre-ship).
+
+Still valid from the original Round 5b (mechanism, unchanged):
+
+- Bug 3 mechanism: admission sealed as fresh Root (committed_reused=0); runtime
+  transparently restores the spilled checkpoint and reports runtime_reused; the
+  spill entry's exec_frontier (73,818) includes the spilling request's OUTPUT
+  tokens (72,727 prompt + 1,092 output - 1) while its KV checkpoint is 72,727
+  (ckpt_frontier); if the runtime reports reuse from exec_frontier (or the ledger,
+  73,819) instead of the checkpoint frontier, the expected suffix is short by
+  ~1,092 tokens and the `progress.complete` check throws.
+- The shared 72,727-token prefix is the OMP system prompt (every OMP session and
+  captured fixture on this lane shares it).
+
+Gate gaps found:
+
+- 4XX-WATCH reported PASS ("zero engine rejections since battery start") while the
+  engine fataled with 500/503 - it only watches 4xx. Extend it to fail on
+  `engine fatal error` / 5xx engine-unavailable.
+- The "quiet window" is advisory only: live OMP traffic ran concurrently in both
+  windows (184k/127-msg streams during G6; 72k/168k/74k turns pre-ship). Enforce
+  it: verify the lane has zero active requests before G6, or fatal attribution
+  and decode gates are confounded.
+
+Current state (20:1x CEST): lane on the T18-gdn baseline (e858f88b =
+t18gdn-49400365 = :quasar = :latest) after the G7 rollback; healthy (/v1/models
+200, chat probe 82ms, decode 170.5 tok/s). The 19:48:49->20:00:53 stop was a clean
+managed restart (`server stopped`), not a crash; engine back at 20:01:15.
+
+Next (both bugs must be fixed before any T31 ship):
+
+- Bug 2: the `329a8ac4` entitlement refactor is proven insufficient - the same
+  throw fataled the G6 battery. Confirm the state_slots undercount with runtime
+  state values in a controlled e2e window (no concurrent traffic), then fix the
+  planner's vision state budget for resumed sequences.
+- Bug 3: reconcile the restore-reported reuse to the checkpoint frontier
+  (ckpt_frontier=72,727), not exec_frontier (73,818) / ledger (73,819); the
+  instrumented throw (`b3bf63a4`, image t31debug-b3f63a4) prints
+  computed=/prompt=/committed_reused=/runtime_reused=/expected_suffix= to nail
+  which frontier the runtime reports.
+- Re-ship gate: unmodified battery in an ENFORCED quiet window + the 3-fixture Bug 3
+  repro (`~/.local/share/ninfer/t31-b3-probe.sh` + `probes/t31b3-repro.py`), plus a
+  74k-restore live-traffic soak.
