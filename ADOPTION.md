@@ -1042,9 +1042,13 @@ battery:**
 12:27:53  battery VISION single (129 tok, media 1) -> 200 at 12:28:59 (t=66.3s:
           queued behind the 184k external prefill + first-vision warmup)
 12:28:59.375  req#4  EXTERNAL live OMP stream admitted (127 msg, 5 media, 14 tools)
+12:28:59.409  req#3  battery VISION single done (output 60) -> its StateImage
+              becomes resident
+12:28:59.465  req#5  battery VISION-HIST (32 msg, media 1, 625 tok) admitted
 12:28:59.4xx  ninfer: engine fatal error, failing all requests:
               sequence StateImage entitlement is inconsistent   (Bug 2)
-12:28:59.465  req#5  battery VISION-HIST (32 msg, media 1, 625 tok) admitted
+              [journal order: this line FOLLOWS req#5's start -> req#5 is the
+               trigger; req#4 was in-flight collateral]
 12:28:59.620  req#4 + req#5 -> 500 internal error (both in flight at the fatal)
 12:28:59+  every remaining probe 503 "inference engine is unavailable":
           VISION-POISONED, REPLAY 0/10, THINK-SMOKE, XHIGH, DECODE x2, QUALITY,
