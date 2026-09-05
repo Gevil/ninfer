@@ -954,11 +954,22 @@ this class of accounting mismatch. Bug 2 is the planner's `state_slots` undercou
 resumed vision sequence (the check fires correctly on a real undercount); the fix belongs in
 the caller/planning code, not in relaxing this check.
 
-**Bug 2 e2e probe (scheduled 2026-09-05):** `~/.local/share/ninfer/t31-bug2-probe.sh` —
-waits for the `t31debug` image (built from the branch with the diagnostic throw messages:
-the inconsistent/destination throws now print `owned=`/`slots=`), then in a quiet window
-stops the lane, boots the parked `t31hostkv-92bca578`-era image as the ephemeral `t31-debug`
-container (same quadlet flags, `:8002`), replays the battery VISION-HIST payload twice
-(establish resident prefix, then reuse it carrying the vision slot), captures the
-`owned`/`slots` values from the engine log, and restores the lane (trap-guaranteed,
-VRAM-free check, tag/container match + smoke probe at the end).
+**Bug 2 e2e probe (running 2026-09-05):** `~/.local/share/ninfer/t31-bug2-probe.sh` —
+waits for the `t31debug-329d8ac4` image (built from the branch with the diagnostic throw
+messages: the inconsistent/destination throws now print `owned=`/`slots=`/`reserved=`),
+then in a quiet window (journal-based: no in-flight requests, 15-min abort if traffic
+persists) stops the lane, boots the t31debug image as the ephemeral `t31-debug` container
+(same quadlet flags, `:8002`), replays the VISION-HIST sequence (fresh image request,
+then 32-message histories with image in msg 1 and DIFFERENT final questions per request -
+identical payloads take the response-replay fast path and never re-execute the vision
+state), captures the `owned`/`slots` values from the engine log, and restores the lane
+(trap-guaranteed, VRAM-free check, tag/container match + smoke probe at the end).
+
+**Run 1 (19:42-19:49 CEST): NOT-REPRODUCED.** All gates + restore verified (the script
+itself works: build 2m15s from layer cache, quiet-window gate waited out the in-flight
+session, VRAM free-based wait, restore = readiness + smoke + tag match on T18 baseline).
+The repro missed: hist #2 was byte-identical to #1, so the engine took the 100%
+`response replay` fast path (`[inspect] prefix HIT (rewrite)`, `[safety-spill] SKIP: no
+endpoint state image`) - the vision state was never re-executed, so the entitlement check
+was never reached. Run 2 uses differentiated tails (fresh execution forced on prefix
+reuse).
