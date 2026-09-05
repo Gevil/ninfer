@@ -927,3 +927,24 @@ no active session on the lane) to confirm the undercount and land a verified fix
 `t31hostkv-92bca578` parked on disk. Resume: re-verify lane health/traffic + GPU-free, launch
 the ephemeral `t31-debug` container (never created — nothing to clean up), run e2e/battery,
 fix Bug 2, clean ship.
+
+## Round 5 (2026-09-05) — entitlement contract pinned by a GPU test (guard for Bug 2)
+
+Commit `5bf447a9` on `t31-hostkv-quasar`: extracted `sequence_exclusive_state_resources` /
+`state_exclusive_to_sequence` / `reserve_state_entitlement` out of `ProgramImplCore` into
+free functions over `(StateImageStore&, SequenceState&)` in
+`impl/runtime/state_image_entitlement.h` (members became delegators; semantics preserved
+exactly — including the `owned == slots` no-op early return). New GPU-gated test
+`ninfer_qwen3_6_state_image_entitlement_test` pins the Bug 2 invariant: exclusive-ownership
+accounting (primary pair, long anchors, borrowed reads excluded, per-owner reference
+equality) and the reservation contract (re-affirmation is a no-op; budget-below-owned — the
+exact Bug 2 / VISION-HIST trigger — is rejected as inconsistent; multi-step growth rejected;
+`owned + 1` materializes exactly one destination).
+
+Verified on-GPU in a disposable buildstage container (`--device nvidia.com/gpu=all`, lane
+left serving — test allocates a few MB): **PASS 0.20s, no skip**; full engine compiled
+alongside (both 27b/35b variants). Consequence: any fix for Bug 2 (planner `state_slots`
+undercount for resumed vision sequences) must preserve this contract — the test will fail
+on a regression that loosens the inconsistency check or breaks single-destination growth.
+T31 status unchanged: still NOT shippable until Bug 2's undercount is confirmed in the e2e
+window and fixed.
