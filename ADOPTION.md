@@ -2004,9 +2004,12 @@ Post-ship verification (live journal, 16:33-16:37 CEST, with two user OMP sessio
   tok/s across 70k-187k-token contexts; MTP accepted 61.5-71.9%.
 - **host-sync fix confirmed**: host CPU 0.2% (~10 ms per 5 s window) during decode;
   pre-fix behavior was 100% CPU spin during decode (gpillon's `5ebbb1ab`-lineage fix).
-- Battery DECODE-8K 146.2 vs 150.2 baseline (-2.7%) triaged: concurrent live long-context
-  decode is 150.6+ tok/s -> no regression; the 8k delta is shared-lane noise (T31 triage
-  rule: perf warning, not a rollback trigger).
+- Battery DECODE gates (from the G6 log): DECODE-FRESH 154.7 vs baseline 139.4
+  (gate >= 132.4) PASS; DECODE-8K 146.2 vs baseline 137.4 (gate >= 130.5) PASS — both
+  ABOVE baseline. The battery baseline is its hardcoded `quasar-baseline-2026-08-26.json`
+  (139.4/137.4). Correction: the "151.9/150.2 baseline" quoted in Round 6 was a misread
+  of that same file (it holds 139.4/137.4 + a stale 153.2/130.0) — there is no -2.7%
+  8k delta and no perf warning to triage.
 - Probe collision artifact (NOT a measurement): my two clean-window probes at 16:34
   returned fresh=58 tok @ 5.5 tok/s and 8k=0 tok @ 0.0 — both landed mid-prefill of two
   concurrent user sessions (183k + 70k tokens; C=4 saturated; req#49 queued 1m 0.1s then
