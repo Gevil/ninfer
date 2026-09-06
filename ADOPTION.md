@@ -1555,3 +1555,59 @@ Image `eaa60d8cb205` (tags: `t36mdops-29e628a7`, :quasar, :latest); previous
 - Free-GPU ctest: rc=0, skips within baseline (6 expected).
 - Battery: 16 PASS / 0 FAIL: VERDICT UP: PASS VERDICT IMAGE: PASS VERDICT MODELS: PASS VERDICT LEDGER: PASS VERDICT WARMUP: PASS VERDICT VISION: PASS VERDICT VISION-HIST: PASS VERDICT VISION-POISONED: PASS VERDICT REPLAY: PASS VERDICT THINK-SMOKE: PASS VERDICT XHIGH: PASS VERDICT DECODE-FRESH: PASS VERDICT DECODE-8K: PASS VERDICT QUALITY: PASS VERDICT SOAK: PASS VERDICT 4XX-WATCH: PASS
 - State: lane `ninfer-nvfp4` runs the new image; :quasar/:latest pinned (verified match).
+
+## t36mdops-29e628a7 REGRESSION — rolled back 11:37 CEST (supersedes the "shipped" entry above)
+
+- **Verdict: REGRESSED, rolled back.** The 16/16 battery result is a battery-vs-real-traffic
+  gap, not a ship PASS. The image failed under real traffic at 09:28:55 UTC (11:28:55 CEST):
+  engine fatal `materialization preparation state is invalid` on a 1.45M-token xhigh vision
+  request with a 137,887-token compacted prefix (req#26, 110-message session, 14,487-token
+  prefix match). All subsequent requests 503'd (`failed during prepare`) until the user's
+  manual restart at 11:29; the engine kept running and serving after the restart (health
+  endpoint 200), but the fatal class could recur on the same traffic shape, so the lane was
+  rolled back to `e858f88b` (t18gdn-49400365) at 11:37.
+- **Root cause (evidence-backed, hypothesis pending T31/T34 resolution).** The wave's base is
+  `t31-hostkv-quasar` @ `533e93fc` — the T31 branch, i.e. T31's **unshipped, unvalidated
+  host-KV safety-net code was carried into the wave base and shipped with it** (base-selection
+  error; the plan assumed a pure T18-lineage lane branch). The fatal site
+  (`program_impl.h` `materialization preparation state is invalid`) **pre-dates the wave** —
+  verified present in the T18 image source (`49400365`), so the invariant check itself is not
+  new; what is new is the T31 machinery that routes this traffic into it: the
+  `[compact-prefix]`/`[safety-spill]` path. On the 1.45M-token request the spill was SKIPPED
+  (`no endpoint state image`, `[shortlist] HIT` reuse 137,887 / frontier 141,480 /
+  ckpt_frontier=0), and the materialization of the 141,480 frontier then tripped the
+  pre-existing invariant → fatal. T18 has no compact-prefix path at all, so this traffic
+  shape could not reach the fatal there (it would full-reprefill or be rejected at
+  max-context 225,280). This is the third sibling fatal of the T31 Bug 2/3 family
+  (`sequence StateImage entitlement is inconsistent`, `completed prefill did not reach the
+  admitted prompt frontier`) — the safety net has at least three fatal checks in one class,
+  and real 1.4M-token compacted-prefix vision traffic exercises a fourth shape the battery
+  never sends (battery VISION = 5 media at most; VISION-HIST is single-shot).
+- **Corrections to earlier records (this session):**
+  - `2b4c050b`/`51e50654` claim "16c66809 already in base": **wrong for the TMA scale file.**
+    File-level diff (`git diff 16c66809 t36-mdops-quasar -- src/ops/linear_swiglu/nvfp4/`): the
+    wave's `nvfp4_linear_swiglu_u444_tma.{cu,cuh}` do not contain md's post-change
+    tile-contiguous-scale content; the wave files instead hold pre-existing WIN32 portability
+    code. 16c66809's functionality is **absent from the wave** (a ~25-line TMA micro-optim).
+    No correctness impact; the wave's measured prefill gain (-2.7%..-3.7% at exact-27B) is
+    therefore partly unaccounted-for. Consequence for any re-wave: re-pick 16c66809 properly.
+  - The earlier "16c66809 no-op" symbol check only covered `src/ops/linear/nvfp4/` (a
+    different, not-shipped file set) and was insufficient.
+- **What the user experienced:** "current version is unstable and broken" — the 503 storm on
+  trivial 2-message requests after the 09:28 fatal (engine process stayed up but failing
+  everything), persisting through the 11:29 manual restart because the restart re-launched
+  the **same** image (all three tags pointed at `eaa60d8c`; the restart was container-only,
+  not a rollback).
+- **State after rollback:** `:quasar`/`:latest` → `e858f88b907e` (T18); `t36mdops-29e628a7`
+  tag retained on `eaa60d8c` for forensics. Verified: image id match, `/v1/models` 200,
+  chat probe 200 (118.7 tok/s decode), unit active post daemon-reload.
+- **Next (before re-attempting md's perf wave):**
+  1. Re-wave from a base **without** T31's in-tree work (e.g. T18 line `t24-quasar-a`
+     + the md picks), or first fix T31 Bug 2/3 (fold into T34, pick set re-derived from
+     gzenz `5f23c37e` + gpillon `f4b128c6`).
+  2. Add a battery gate for the compacted-prefix / huge-context vision shape (≥1.4M-token
+     xhigh vision request, or at minimum a 100k+ token compacted-prefix restore probe) —
+     the battery's VISION/VISION-HIST shapes cannot expose it.
+  3. Re-pick 16c66809 (conflict-resolved, not `--3way -X theirs`-assumed-absent).
+  4. The 4XX-WATCH gate remains blind to 5xx/engine-fatal (T31-era gap, still open):
+     a mid-battery fatal must fail the battery, not pass.
