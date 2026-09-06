@@ -39,6 +39,8 @@ struct PagedKVBatchLayerView {
     std::int32_t head_dim     = 0;
     std::int32_t num_kv_heads = 0;
     KvCacheStorage storage    = KvCacheStorage::BFloat16;
+    DType dtype               = DType::BF16;
+    std::int32_t quant_group  = 0;
 };
 
 /** Rebinds one checked single-sequence table row as a one-row batched view. */
