@@ -2131,3 +2131,28 @@ live-service damage, no image needed replacing.
   CPU-limiting flag at all, no `:quasar`/`:latest` retag (probe build, not a ship). Rest of the
   window script (45s delivery sleep, lane stop, RAM gate, host ctest, always-restart) was correct
   and is unchanged. Agent re-running the same window with the corrected build command.
+
+## Round 15 (2026-09-06, ~18:20 CEST) - T33 Wave B build window v2 launched (2nd bug caught+fixed)
+
+Before relaunching, the agent self-verified and found a SECOND bug in its own window script
+that Round 14's fix did not surface: the ctest step used `podman run --entrypoint /bin/bash`,
+which fails with "cannot execute binary file" against this build image layout. Fixed to match
+the pipeline's proven G4 pattern exactly (no `--entrypoint`, `bash -lc` as the command, mounts
+the synced clone) instead of guessing a second time.
+- v2 launched: PID `2524216`, log `~/.local/share/ninfer/logs/t33waveb-build-window-2026-09-06.log`
+  (v2 section), started 18:18:04. Build command now verbatim-matches `ninfer-ship.sh` G2:
+  `podman -H unix:///run/user/1000/podman/podman.sock build -t
+  localhost/ninfer-nvfp4:t33dflash2-a7893d9 /home/gevil/containers/ninfer-github`, no CPU flag;
+  clone synced G1-style (fetch origin + checkout + hard-reset; pre-verified
+  `origin/t33-dflash2-quasar` = `a7893d93`, clean tree) before building.
+- Expected window length ~50-70 min (longer than the original ~20-40 min estimate) because the
+  agent's own reasoning backend IS the lane model — it cannot stay active while the lane it just
+  stopped is down, so it started a host-side hub-process watcher (`waveb-window-watch`, not a
+  lane-model subagent) polling for the script's completion marker; that watcher's delivery
+  revives the agent to report the final result. Main independently scheduled a redundant
+  host-side (non-lane) delayed log check as a second safety net.
+- Process note (session-wide): default `task`/`scout` subagents in this session inherit the
+  ninfer lane as their backend model unless a non-lane pattern (like the ship's `shipwatch`
+  supervisor) is deliberately used. Mid-session correction: stopped spawning read-only scouts
+  for prep work while the lane is shared with live user sessions and a build window; do that
+  kind of investigation directly instead.
