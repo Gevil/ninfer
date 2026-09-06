@@ -759,3 +759,35 @@ Image `60c00b73c4e3` (tags: `t23tma-bb535075`, :quasar, :latest); previous
 - Free-GPU ctest: rc=0, skips within baseline (6 expected).
 - Battery: 16 PASS / 0 FAIL: VERDICT UP: PASS VERDICT IMAGE: PASS VERDICT MODELS: PASS VERDICT LEDGER: PASS VERDICT WARMUP: PASS VERDICT VISION: PASS VERDICT VISION-HIST: PASS VERDICT VISION-POISONED: PASS VERDICT REPLAY: PASS VERDICT THINK-SMOKE: PASS VERDICT XHIGH: PASS VERDICT DECODE-FRESH: PASS VERDICT DECODE-8K: PASS VERDICT QUALITY: PASS VERDICT SOAK: PASS VERDICT 4XX-WATCH: PASS
 - State: lane `ninfer-nvfp4` runs the new image; :quasar/:latest pinned (verified match).
+
+## T33 Wave B (2026-09-06) — QUASAR DFlash2 drafter: port + graft (lane-branch record)
+
+**Goal (user):** keep the cherry-picked fixes on the new upstream AND generate the
+QUASAR+DFlash2 model — DFlash2 as a bolt-on drafter, never gpillon's nvfp4full weights.
+
+**Done + committed (branch `t33-dflash2-quasar`):**
+- **Engine port** (the 9-commit dflash2 port, adapted to the T41 tree) — committed;
+  compile-fix layer (5 commits, tip `4c2efb8c`) resolves the dense/paged gqa signature,
+  stale include blocks, `PagedKVBatchLayerView.dtype/quant_group`, and the
+  `layouts_impl.h` `else if (DFlash)` graph-allowance chain.
+- **QUASAR graft (4b+4c)** (`d7724e00`): the z-lab DFlash2 drafter
+  (`z-lab/Qwen3.8-27B-DFlash2`, 5-layer block-diffusion, target_layer_ids [5,19,33,47,61])
+  grafted onto the live QUASAR artifact, keeping the QUASAR weights + identity
+  (`qwen3.8-27b/nvfp4`). New: `inventory_quasar_dflash2.py` + `graft_dflash2_module_quasar.py`.
+  **Artifact generated**: `.../models/qwen3.8-27b-quasar-dflash2/qwen3_8_27b_quasar_dflash2.ninfer`
+  — 21.4 GB, **1334 objects (1268 QUASAR byte-identical + 66 DFlash2)**, identity `qwen3.8-27b/nvfp4`.
+  Graft driver materialization fixed to the T41 API (`convert.family_recipe_materialize` +
+  `encode_direct`, BF16 direct copy — the gpillon `materialize_dflash2_object` NVFP4
+  re-quantization is gone after the T41 merge); the nvfp4full graft driver got the same fix.
+
+**Deferred (lane-stop windows — `ninfer-ship.sh` G4 ctest KILLS the OMP session by design;
+not run with the user asleep/unreachable):**
+- **Build+ctest window**: build the `t33dflash2` image + the 4 dflash2 op tests (free-GPU).
+- **Acceptance probe (4d)**: `--spec dflash2` + NVFP4-KV headroom (`--kv-dtype nvfp4`, in-tree
+  via T15) for drafter VRAM; acceptance rate at 1.5K/8K/32K vs MTP3 (~1.95 accepted/round);
+  greedy/verification parity; full battery.
+
+**Next (when the user is back):** build+ctest window (verify the engine compiles + dflash2 op
+tests), then the acceptance probe. Gate: acceptance rate beats MTP3 and doesn't collapse with
+context; the QUASAR artifact stays the lane weights (the drafter is a bolt-on, `--spec mtp`
+is the kill switch).
