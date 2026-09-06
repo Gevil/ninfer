@@ -1375,6 +1375,14 @@ back to `full_reset`. Skip `eaf2037b` (hyperquant, off-lane).
 Our lane pins `--draft-tokens 3`. Probe: serve-flag A/B at 3 vs 5 (and the `6870d530` 15-token-window
 enabler if the ceiling blocks it), gated on acceptance/round + decode fresh/8k + battery.
 Cheapest plausible decode win in this round.
+**RESULT (2026-09-06, PROBE COMPLETE — REVERTED to k=3).** k=5 ran 01:26–09:08 CEST: quiet
+battery 16/16 PASS (all gates green, 4XX zero-reflections); decode fresh 152.5 tok/s vs k=3
+140.6 (+8.5%); decode 8k 144.8 vs k=3 155.4 (−6.8%); acceptance fresh 2.1–3.5/round (k=3 ~1.9)
+but 8k only 1.3–1.6/round (k=3 long-ctx held ~1.7–2.1). Plan rule: adopt only if acceptance AND
+both decode numbers improve AND battery green — 8k decode did not improve → REVERT. Reverted in
+the 09-06 09:08 restart (same restart applied the host-KV arena bump, operational note below).
+k=3 baseline re-confirmed live: fresh 140.6 / 8k 155.4 — the T33/T36 comparison baseline stays on
+k=3.
 
 **T36 — md dense-lane ops wave.** `8767dac7` decode-softmax-fold; `c735909b` + `16c66809` nvfp4-TMA
 prefill extensions (27B-nvfp4-measured, extends T23); `ce71f787` MTP sampled-draft (probe).
@@ -1473,7 +1481,7 @@ Verify portability (dylan's line historically carries 35B-only dflash assumption
 | 32 | upstream prefix/context-cache cluster (#176–#181, #142) | WATCH — +#184; #181 mirrors our T14 finding |
 | 33 | **DFlash2 drafter grafted onto the QUASAR artifact** | **NEW — PROBE-FIRST, top priority.** Engine port from `gpillon/coding` + quasar-side graft using `z-lab/Qwen3.8-27B-DFlash2`; keeps QUASAR weights; gate on acceptance/round @1.5K/8K/32K |
 | 34 | **host-KV restore correctness (reframes T31)** | **NEW — ADOPT the mitigation shape**: host-RAM reuse = append-at-frontier only; do NOT relax the frontier invariant; port `ac60331d` as a guard |
-| 35 | **draft window k=3→5** | **NEW — PROBE (zero code)**: md measures +17.3% with higher acceptance; A/B at 3 vs 5 (+ `6870d530` enabler) |
+| 35 | **draft window k=3→5** | **REVERTED 09-06** — probe complete: battery 16/16, fresh +8.5% but 8k −6.8% + long-ctx acceptance degraded → plan rule: revert to k=3 (baseline frozen for T33/T36) |
 | 36 | **md dense-lane ops wave** | **NEW — PORT-CANDIDATE**: `8767dac7` decode-softmax-fold; `c735909b`+`16c66809` nvfp4-TMA (27B-measured); `ce71f787` sampled-draft probe |
 | 37 | **chat template → artifact-embedded ReasoningEffort @xhigh** | **ADOPTED 09-06** — live since 09-05 21:42; quiet battery 15/16 (LEDGER window artifact only); decode-neutral vs Sharp (140.6/155.4); new render-path decode baseline recorded |
 | 38 | **upstream `--chat-template FILE` (#183/#182) + stream-slot (#184)** | **NEW — WATCH/adopt-on-merge**; reconcile flag naming with our `--chat-template-file` |
@@ -1487,3 +1495,25 @@ value, and it must settle BEFORE T33/T35 so decode A/Bs are measured against a s
 T31 before any T31 re-ship (and re-derive the pick set from `5f23c37e`). (5) **T36** md dense ops
 wave. (6) **T40** dylan spec-decode probe. (7) **T38**/T32/T39 watch. Deferred: T29a, T30, T9, T13,
 T19, T15 config flip.
+
+## Operational event 2026-09-06: host-KV arena 8 → 32 GiB + T35 revert (single restart 09:08 CEST)
+
+- **Context.** User symptom: one ~178k-token OMP session, every turn full re-prefill — journal:
+  `cache 0 (0.0%)` on ~178–180k prompts, TTFT 1m8s–1m48s, "host" column tiny. Boot ledger:
+  `host 8 states, 8.00 GiB KV` — slots sized ~1 GiB each (~32k sessions), while one 178k-token
+  INT8-KV state ≈ 2.8 GiB (16 KiB/token) → session state never fit a slot → nothing to restore
+  after T14's idle-prefix loss @45–120s → full re-prefill each turn. NOT a T35/k=5 regression:
+  the same `cache 0` re-prefills appear in the k=3-era journal (00:50–00:57, req#501–507).
+- **Change.** Quadlet `--host-kv-mib 8192 → 32768` (user request: was 32G before; MemAvailable
+  32 GiB pre-pin → 10 GiB post-pin) + `--draft-tokens 5 → 3` (T35 revert, above). Backup:
+  `ninfer-nvfp4.container.bak-2026-09-06-hostkv32g`. Boot 09:08:26 CEST: `host KV pinned |
+  32.0 GiB | 13.4s`, `host 8 states, 32.0 GiB KV` (slots now 4 GiB each — a 178k state fits).
+  `/v1/models` 200; post-restart follow-up request already hit `cache 81,077 (99.8%, private
+  endpoint)`.
+- **Verification pending:** decisive test is this session's NEXT turn after ≥1 min idle — expect
+  high cache % + TTFT in seconds. If re-prefill persists at 32 GiB, cause is the restore path /
+  state identity (T31/T34 class, not arena sizing) → escalate there.
+- **Corruption-exposure note (plan step 5a):** T18's restore path validates entries (corrupt entry
+  → loud `ResidentLost` → full reset; frontier-entitlement invariant rejects loudly — the 09-05
+  Bug 3 fatal is that rejection) and ran at 8 GiB since 09-05 with no silent corruption; the
+  bump changes capacity, not validation semantics.
