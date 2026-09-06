@@ -1856,3 +1856,48 @@ without the flag).
 Wave A: adopt only if the quiet-window battery is green and no TTFT/decode/cache-hit
 regression. Wave B: adopt only if acceptance beats MTP3 at all three contexts. Otherwise
 keep the lane as-is and record the results here.
+
+## Round 8 (2026-09-06, ~15:30 CEST) — master consolidation, branch cleanup, T33 Wave A launch
+
+**User directives this round:** (1) capture the re-scoped T33 wave plan (done above),
+(2) merge the done tier branches into `master` with the current ADOPTION.md + plans,
+(3) delete done branches once confirmed in master, (4) T41 deferred; use the proper
+skills/agents for any detach/test/ship (shipwatch supervisor + ops log watcher +
+lane-ship pipeline — pre-staged, see T33 Wave A ship gate).
+
+### Master consolidation (`gevil/master` @ 0aae7780)
+- Merged the done lane line (`t18-gdn-quasar` = live T18-gdn code, contains T1–T23) into
+  `master`; ADOPTION.md resolved to **this record line** (rounds 1–7 + T33 wave plan),
+  `THINKING_WALLTIME_PLAN.md` brought in.
+- **Incident + fix:** the pre-merge master doc line was NOT docs-only — it carried its own
+  real code merges (`c1bdf081` tier5 PR #6, `20798a3b`+`20ddbf0d` tier7 merge+**revert**,
+  `37bc977f` quasar-nvfp4, `721045e4` t12). The 3-way merge re-applied the doc line's tier7
+  revert on top of the lane line, **dropping the live `src/ops/common/device_info.{h,cu}`
+  SM-count code** (referenced by the GDN chunked `output.cu` persistent-grid sizing) and
+  re-editing `output.cu`/`src/CMakeLists.txt`. Fixed by restoring the full lane-line code
+  tree (`git checkout t18-gdn-quasar -- <code paths>`): master's code is now
+  **byte-identical to the live lane line**; only the two doc files differ. Verified:
+  `git diff t18-gdn-quasar master --stat` = ADOPTION.md + THINKING_WALLTIME_PLAN.md only.
+  The pre-incident doc line remains in history at `90df7a50`; its older tier-numbering
+  epoch (T13/T15/T19 shipped-vs-deferred contradictions) is preserved there, and the
+  `t13-converge`/`t15-yarn`/`tier13` branches are KEPT as pointers to it.
+- tier1's stray tip (`7e845d45`, patch-identical to the in-tree backport `22c46df7`) was
+  merged explicitly so all done tier tips are true ancestors of master.
+
+### Branch cleanup (archive-tagged, containment-verified, then deleted)
+- Deleted local: `tier1..tier7`, `t22-converge`, `t23-tma-quasar`. Deleted gevil remote:
+  `t16-converge`, `t17-pv-f16acc`, `t19-w8-moe`, `t22-converge`, `t23-tma-pair`,
+  `t23-tma-quasar` (the tier1–tier7 branches were local-only; gevil never had them).
+- Every deleted tip is pinned by a pushed `archive/*` tag (14 tags, `ls-remote` verified
+  before any delete). Kept: `t18-gdn-quasar` (live), `t24-quasar-a` (superseded intermediate),
+  `t18-dylan-wave2` (superseded intermediate — its 3 unique commits = the T23 TMA pair +
+  GDN fix, all already cherry-picked into the lane line), `t31*`, `t33*`, `t36`,
+  `t13-converge`/`t15-yarn`/`tier13` (numbering-contradiction pointers), `quasar-nvfp4`,
+  `mtp-sampled-draft`, `backup/pre-fork-430298a`, `fork/nvfp4full-merged`, `audit/*`, `pr-*`.
+
+### T33 Wave A (in progress)
+- Branch `t33-gpillon-quasar` cut off the T18 tip `49400365` (worktree `/tmp/t33-wave-a-wt`);
+  agent `T33WaveAPicks` running the 20-pick agentic-cluster sequence → buildstage host
+  build → host-runnable ctest. Result auto-delivers; no lane changes. Ship gate when the
+  wave is green: quiet-window check → shipwatch supervisor (non-lane model) + detached
+  `ninfer-ship.sh` + ops log watcher, all one batch; auto-rollback verified by ImageID.
