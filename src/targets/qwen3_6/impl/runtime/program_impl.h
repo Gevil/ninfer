@@ -6782,6 +6782,84 @@ ProgramImplCore::progress_materialization_transaction(runtime::CancellationFlagV
                 return out;
             }
         }
+    } catch (const std::logic_error& e) {
+        // Only handle source-state-evicted errors; rethrow other logic_errors
+        // (contract violations, invariant failures) so they surface as bugs.
+        // Use strstr to avoid heap allocation in the exception handler.
+        if (std::strstr(e.what(), "no resident state") == nullptr) { throw; }
+        // Source state was evicted between inspect and materialization.
+        // Fall back to root prefill (or safety-net restore if available)
+        // for this request instead of crashing the worker and nuking
+        // all continuations.
+        std::fprintf(stderr, "[materialize] %s — falling back to root prefill\n", e.what());
+        if (transaction.host_kv_restore_entry_index) {
+            host_kv_safety_net.unpin(*transaction.host_kv_restore_entry_index);
+            transaction.host_kv_restore_entry_index.reset();
+        }
+        transaction.host_kv_restore_frontier = 0;
+        // Reset the plan to root so prepare uses the root path.
+        // Reuse the source's continuation slot as the root destination.
+        if (transaction.has_source && transaction.source_index < continuation_capacity) {
+            const std::uint32_t src = transaction.source_index;
+            // Release the original root_continuation_index if it was reserved
+            // (e.g., Retained source had a separate destination slot).
+            if (transaction.root_continuation_index &&
+                *transaction.root_continuation_index != src) {
+                release_continuation_slot(*transaction.root_continuation_index);
+            }
+            release_continuation_slot(src);
+            continuation_slots[src].role = ContinuationSlotRole::ReservedMaterialization;
+            transaction.root_continuation_index = src;
+            transaction.root_waiting_for_victim = false;
+        }
+        transaction.has_source = false;
+        transaction.source_index = 0;
+        if (transaction.plan && transaction.plan->impl_) {
+            transaction.plan->impl_->reuse = ReusePath::Root;
+            transaction.plan->impl_->has_source = false;
+            transaction.plan->impl_->reuse_base = 0;
+        }
+        // Reset plan-level prefix fork flags so enqueue_materialization_transfers
+        // doesn't call prepare_prefix_forks for the (now root) plan.
+        if (transaction.plan && transaction.plan->impl_) {
+            transaction.plan->impl_->text_prefix_fork_required = false;
+            transaction.plan->impl_->backend_prefix_fork_required = false;
+        }
+        // Reset the prefill cursor so root prefill starts from token 0
+        // (the original reuse_base is stale — the source was evicted).
+        const std::uint32_t dest_lane = transaction.destination.value;
+        if (dest_lane < max_concurrency && requests[dest_lane].prefill) {
+            requests[dest_lane].prefill->base = 0;
+            requests[dest_lane].prefill->cursor = 0;
+            requests[dest_lane].prefill->reuse = ReusePath::Root;
+        }
+        // Try the safety net: the evicted source's KV and state may have
+        // been spilled to host. If found, the restore path in start_sequence
+        // will H2D copy them instead of doing a full root prefill.
+        if (host_kv_arena) {
+            const std::uint32_t lane = transaction.destination.value;
+            if (lane < max_concurrency && requests[lane].prefill) {
+                const PreparedPromptData& prompt = requests[lane].prefill->prompt;
+                const std::size_t max_count = static_cast<std::size_t>(prompt.token_ids.size());
+                if (const auto match = host_kv_safety_net.find(prompt, max_count, requests[lane].session_key)) {
+                    transaction.host_kv_restore_entry_index = host_kv_safety_net.pin(match->index);
+                    transaction.host_kv_restore_frontier = match->reuse_tokens;
+                    transaction.host_kv_restore_checkpoint = match->checkpoint;
+                    ++safety_net_restore_count_;
+                    std::fprintf(stderr,
+                                 "[materialize] safety-net HIT after source eviction: frontier=%u checkpoint=%d\n",
+                                 match->reuse_tokens, static_cast<int>(match->checkpoint));
+                }
+            }
+        }
+        if (!transaction.prepared) {
+            prepare_materialization(transaction);
+            enqueue_materialization_transfers(transaction);
+            if (transaction.transfer_submitted) {
+                out.status = runtime::ContextTransactionStatus::InProgress;
+                return out;
+            }
+        }
     }
     if (cancellation.requested()) {
         abort_transaction();
