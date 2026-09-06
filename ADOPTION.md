@@ -1906,3 +1906,64 @@ lane-ship pipeline — pre-staged, see T33 Wave A ship gate).
   build → host-runnable ctest. Result auto-delivers; no lane changes. Ship gate when the
   wave is green: quiet-window check → shipwatch supervisor (non-lane model) + detached
   `ninfer-ship.sh` + ops log watcher, all one batch; auto-rollback verified by ImageID.
+
+## Round 9 (2026-09-06, ~16:20 CEST) - T33 Wave A result, Wave B re-scoped, serve-fixes ship
+
+### T33 Wave A result (`t33-gpillon-quasar` @ 9737d75c, pushed to gevil)
+- **Landed 3/20** (self-contained serve/device robustness, no new flags, untagged-traffic
+  behavior-neutral):
+  - `f1989e98` - block host sync to fix 100% CPU during decode (adapt dylan `583d8e10` /
+    gpillon `adf494c2`): `cudaDeviceScheduleBlockingSync` + event-routed `synchronize()` on
+    `transfer_stream`.
+  - `382cf379` - warmup try/catch wrapper (gpillon `6a1b62c5`); deadline decoupling already
+    present in our tree via `DeadlinePolicy::UnboundedStartup` - hunks resolved to ours.
+  - `9737d75c` - warmup fail-fast + auto kv capacity bounds clarification (gpillon `27417ca2`).
+- **Skipped 17/20 - single root cause**: the RAM KV tier base pick `de386ad6` targets
+  `src/runtime/engine/concurrent_executor.h`, which our base already deleted (upstream
+  `d6af046a` split the executor into `engine_core.h`/`scheduler.h`/`resource_manager.h`). Every
+  pick that touches the executor (1,3,10,11,16,17,19,20) or the `kv_ram_cache*` files the base
+  pick creates (2,8,9,12,13,14,15) is structurally blocked. Their RAM tier also sits parallel
+  to our T18 host-KV extent store (`kv_ram_*` vs `host_kv_*` in `include/ninfer/types.h`) -
+  porting means re-architecting onto the refactored engine, not hunk adaptation. Pick 18
+  (`5f014910`, tool-call XML stream leak) has no counterpart class in our tree
+  (`ToolCallStreamFilter` absent) - separate audit of our serve streaming path, not a port.
+- **Build**: rc=0, fresh 321 s host build (buildstage-merge, `--entrypoint /bin/bash`, G4-style
+  python3 guard - no-GPU host build pattern recorded for the ship phase). **Host ctest 6/6
+  PASS** (qwen3_6 frontend, openai/anthropic schema, tool_call_parser, serve_options,
+  openai_responses - the Responses-API coverage target in our tree). GPU ctest deferred to the
+  ship G4 free-GPU window.
+- **T34 guard** (`f4b128c6`): skipped as a RAM-tier dependency; port by hand into
+  `src/targets/qwen3_6/impl/runtime/host_kv_safety_net.h` checkpoint branches per T34 step 5b.
+  Live quadlet runs `--host-kv-mib 32768`, so the T34 step-5a live-exposure question stays open.
+
+### T33 agentic cluster -> **T41 (hand-port, not cherry-pick)**
+- The cluster (RAM KV tier, sibling-prefix sharing, tagged request lanes, adaptive MTP widths,
+  KVRamCache sizing) cannot land via pick sequence: its base commit predates the upstream
+  executor refactor our lane absorbed. T41 = deliberate hand-port of the RAM tier onto
+  `scheduler.h`/`resource_manager.h` with an explicit design decision on the relationship to the
+  existing T18 host-KV extent store (integrate vs replace). Effort: weeks; gated by the same
+  acceptance gates (TTFT/decode/cache-hit) + quiet-window battery. The pick-18 streaming audit
+  is folded into T41 scope.
+
+### T33 Wave B re-scoped (DFlash2 on QUASAR): file-set port, not 9 picks
+- Structural pre-check on `b4087269` (engine integration, 56 files): 21 files absent from our
+  tree - the dflash2 ops layer (`dflash2_draft*`, `dflash2_selector_*`, tests), the `swa` op, the
+  `kv_cache_append_prefix` op, `bidirectional_gqa_attention.cuh` (introduced by earlier commits
+  on gpillon's line beyond the Round 6 9-pick list) plus the dflash2 runtime (`dflash2_impl.h`
+  456 lines, `dflash2_context*`, `workspace_recipe`, `layouts_impl` +133, `program_impl` +391,
+  `schedule` +39).
+- Present-but-conflicting: `cast.*` (4 files), `nvfp4_config/dispatch/gemv/small_t` (overlap
+  with the T23 TMA picks), `model_view.h`, `options.cpp`, `serve_options.cpp`.
+- Verdict: feasible as an agentic file-set port (same kind as Wave A, larger); conflicts
+  expected concentrated in the refactored runtime region + nvfp4 ops. Branch
+  `t33-dflash2-quasar` cut from `9737d75c` (verified serve fixes ride along; rebase to
+  `49400365` if the serve fixes roll back). Off-lane (REJECTED, unchanged): `kNativeContext`
+  1M, hq/hyperquant KV, the nvfp4full artifact - the drafter module is grafted onto the QUASAR
+  artifact via the ported `tools/artifact/graft_dflash2_module.py` (Round 6 plan).
+
+### Serve-fixes ship (t33serve-9737d75c) - launched
+- Quiet window enforced: zero lane requests in the prior 20 min (journal), `/v1/models` 200.
+  Launch order per supervisor pattern: shipwatch (non-lane model) first, then detached
+  `ninfer-ship.sh --branch t33-gpillon-quasar --tag t33serve-9737d75c`, plus ops log watcher.
+  Rollback target = prior `:quasar` ImageID (captured at launch). Decision rule: G6 battery
+  green with no TTFT/decode regression -> keep; else auto-rollback.
