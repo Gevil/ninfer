@@ -1509,6 +1509,7 @@ Verify portability (dylan's line historically carries 35B-only dflash assumption
 | 38 | **upstream `--chat-template FILE` (#183/#182) + stream-slot (#184)** | **NEW — WATCH/adopt-on-merge**; reconcile flag naming with our `--chat-template-file` |
 | 39 | **Astrangemaninhere/ninfer-fusion** | **NEW — WATCH**; sub-floor KV REJECT (perplexity-only); its DFlash2 < MTP3 by its own data |
 | 40 | **dylan `cdd1b6c1` C1-4 speculative decode** | **NEW — PROBE**: on-lane 27B NVFP4 at our exact C=4 |
+| 41 | **wall-time-to-accurate-answer (T2A) research & plan** (W0–W6; supersedes the token-ranking) | **NEW 09-06** — research complete on the live lane (P0–P6 sequencing); harness-side levers (W0/W1/W2/W3/E/W4) + engine-side half = the T33 gpillon cluster |
 
 **Sequencing (round 6).** (1) **T37** chat-template switch — config-only, no build, immediate operator
 value, and it must settle BEFORE T33/T35 so decode A/Bs are measured against a stable render path. — **settled 2026-09-06: ADOPTED** (result block above).
@@ -1642,3 +1643,147 @@ Image `eaa60d8cb205` (tags: `t36mdops-29e628a7`, :quasar, :latest); previous
   `1b11452c`** (worker recovery catch + slot guard + restore-after-consume). With the
   worker catch, this fatal class degrades to a per-request failure instead of a lane-wide
   503 storm — the difference between "unstable and broken" and "one request failed".
+
+## Round 7 (2026-09-06, ~14:25 CEST) — re-audit (gzenz delta), gpillon fork audit, T31 wave PAUSED, T41 wall-time tier
+
+Window: 2026-09-06 11:37 CEST (t36 rollback) → 14:25 CEST. Highest tier before this round:
+T40 → new tier T41.
+
+### Re-audit deltas
+
+- **gzenz — 1 new commit** since the t31rev wave was built (the wave picked the `0d4ee9b7` squash):
+  `1d2497c9` "wrap bad_alloc retry in try-catch, fail ONE request instead of nuking"
+  (`program_impl.h`, +19/−8, 13:55 CEST today, on `fix/materialization-root-fallback`). Wraps the
+  OOM-retry in the materialization path in a try-catch: if the retry also OOMs (device state slots
+  exhausted), `abort_transaction()` → `ContextTransactionStatus::Aborted`, failing the ONE request
+  instead of nuking the worker. Pairs with the worker-recovery catch (`1b11452c`): it closes the
+  remaining `bad_alloc` escape on the restore path. **`t31rev-quasar` is now one commit behind**
+  gzenz's fallback line — pick `1d2497c9` before re-deriving/re-shipping.
+- **gzenz/master:** unchanged (`c17de1cc`) — the new work is on the fix branch, not master.
+- **upstream:** `ad0f3d38` (funding-info chore, docs-only) — the only new commit since round 6.
+- **gpillon:** no new commits since round 6 (tips still `a00648cb` `gpillon/coding`, `43b03ea5`
+  `feat/dflash2-local`).
+- **cometkim/dylan/eason/md/mirko:** no on-lane movement this window.
+
+### Lane state (live, after operator restart 14:06 CEST)
+
+- Image `e858f88b` (`t18gdn-49400365`, T18-gdn); engine ready 17.8 s; `/v1/models` 200.
+- Quadlet: artifact-embedded template @xhigh (T37; no `--chat-template-file`), `--spec mtp
+  --draft-tokens 3` (T35 reverted), `--host-kv-mib 32768` (09:08 arena bump), INT8 KV 225,280, C=4,
+  vision, preserve-thinking.
+- Decode baseline (live render path, k=3, quiet): **140.6 fresh / 155.4 @8k tok/s**.
+
+### T31/T34 — wave built + gated, NOT shipped — **PAUSED (operator directive 09-06)**
+
+- `t31rev-quasar` @ `54b120ef` = 3 re-derived picks on the T18 tip `49400365`: `0b0ac916` (host-KV
+  safety-net unit, from `d00e5f0b`), `db47e3fc` (checkpoint advance / restore-after-consume /
+  worker recovery, from `1b11452c`), `d0807ece` (materialization root-fallback + host-KV e2e
+  phases 1–9, from `0d4ee9b7`; gzenz's BLAKE3 signature-verification subsystem deliberately NOT
+  ported — our tree's opaque-signature design is preserved; e2e phase 10 dropped with it)
+  + `54b120ef` docs (`THINKING_WALLTIME_PLAN.md`).
+- Gates passed pre-pause: conflict resolution clean (zero markers), G2-equivalent build PASS,
+  ctest rc=0 within baseline, quiet-window battery green on the T18 image, host-KV e2e phases 1–9
+  ported and passing in-container.
+- **Why paused:** gzenz keeps landing fixes (09-05 17:30Z force-push, the 4-commit squash into
+  `0d4ee9b7`, and `1d2497c9` today). Shipping now risks another re-derivation cycle; the stable
+  T18 lane stays live and untouched.
+- **On resume:** (1) pick `1d2497c9` onto `t31rev-quasar`; (2) re-check gzenz branch movement;
+  (3) rebuild + free-GPU ctest + quiet-window battery + compacted-prefix probe; (4) ship via the
+  supervised pipeline (G2-safe gate, non-lane shipwatch supervisor).
+- Note: this wave sits on the **T18 tip**, not on the t36-mdops base — deliberate. The T36
+  regression came from the wave base carrying T31's unshipped host-KV code (base-selection error);
+  this wave isolates the T31 fix set. The T36 md picks remain separately evaluable in
+  `t36-mdops-quasar` (rolled-back image `eaa60d8c` retained).
+
+### T41 — wall-time-to-accurate-answer (T2A) research & plan — **NEW TIER**
+
+Objective shift (operator): optimize **wall time to an accurate answer**, not thinking tokens.
+`T2A = queue + prefill·(1−cache_hit) + thinking_tokens/decode + P(zero-yield)·retry`.
+Measured on the live lane (n=244 OMP turns + journal, 09-06): the enemy is (a) re-prefill on cache
+miss (140k prompt: 44 s miss vs 0.3 s hit), (b) queueing behind any other consumer (one effective
+slot; waits 36–90 s), and only then (c) thinking tokens (41–161 on constrained tasks; 17–18k on
+hard open-ended, 84–152 s). Full data, method warnings (never benchmark on the interactive lane;
+nonce every A/B prompt — response replay is real), and primary sources:
+`THINKING_WALLTIME_PLAN.md` (committed on this line this round; supersedes the old
+"reduce overthinking" token-ranking in this file).
+
+| # | Lever | Class | Expected |
+|---|---|---|---|
+| W0 | lane exclusivity for the interactive session (bench/subagent fan-out off-lane or to cloud models) | ops policy | removes the 36–90 s queue term — largest single win |
+| W1 | prefix-cache hit engineering (immutable→volatile prompt ordering; kill/coarsen head clocks; ≥0.95 cache gate) | prompt ordering | 44 s → 0.3 s on long turns, zero model risk |
+| W2 | context budget vs KV pool (pin one 140k session; compaction, subagent offload, per-project MCP gating; answer the host-KV restore question) | config+hygiene | protects W1; lifts prefill rate + MTP acceptance |
+| W3 | thinking-shape stop-rule prompt guidance (no caps; xhigh held) | prompt layer | 17k → 6–9k thinking tokens on the hard slice |
+| E | one-clause xhigh template edit ("consider alternatives where a check has failed") | template (full battery + canary) | targets the enumeration tail |
+| W4 | zero-yield insurance: measure P(empty) at n≥30 first; adopt `frequency_penalty 0.3` only if non-zero | sampler (flagged as such) | removes the retry tail |
+| W6 | MTP/draft sweep on thinking-heavy traces (acceptance collapses to 40.7% on 5.9k-token thinking turns) | spec decode | −20–30 s on hard turns, zero accuracy risk |
+
+Red lines: no hard reasoning-token caps; no temperature change; no effort downgrade; nothing
+adopted at n<30 / easy-slice-only / medium-effort / llama.cpp-only evidence; never benchmark on
+the interactive lane; nonce every A/B prompt. Sequencing: P0 log-parser/dashboard → P1 W0+W1 →
+P2 W2 → P3 W6 → P4 W4 → P5 W3 then E → P6 TRS/template-family (only if hard-slice thinking still
+dominates).
+
+**Convergence with T33 (gpillon):** gpillon's agentic cluster attacks the same T2A terms on the
+engine side — host-RAM KV tier with active-lane sibling sharing (W1/W2), tagged request lanes
+`@main`/`@agents`/`@classifier` (W0), adaptive MTP verification width (W6). T41's harness-side
+levers (W1 ordering, W2 compaction, W3 stop-rules) and T33's engine-side cluster are the two halves
+of the same plan.
+
+### gpillon/ninfer — fork-changes.md audit (read in full, 09-06)
+
+Driving problem per the maintainer doc: **agentic coding traffic latency** — subagent bursts
+sharing most of the prompt serialize on a single prefill lane, producing multi-second TTFT
+ladders. The cluster (T33 source; cherry-pick only, never merge — diverged base):
+
+- **Host-RAM KV tier**: finished/active GPU lanes snapshotted to pinned RAM so later requests
+  restore instead of re-prefill. Two-tier probation/protected eviction (content lineage = hash of
+  leading tokens; a successful restore marks the lineage hot). Active-lane sharing for identical
+  concurrent requests (≥2048-token match; one snapshot serves every sibling in the burst — claim
+  tracking instead of a pinned flag; per-request remembered snapshot bases). System+tools
+  shared-prefix boundary capture (split at the first user message, 4096-byte-block aligned, no new
+  state slot). `KVRamCache::capture_bytes()` is the single sizing authority (preflight can never
+  disagree with the capture). `PreserveExisting` admission mode fails cleanly instead of evicting
+  (checked against real allocator first-fit span geometry, not aggregate free bytes).
+- **Two silent-corruption fixes** (root-caused from symptoms, not patched around):
+  (a) rewrite-checkpoint restores from host RAM answered one request with another request's state
+  — the T34 source; mitigated by offering host-RAM records for append-at-frontier reuse only; the
+  underlying packed-checkpoint defect is still open (next suspects `pack_slot_to_host` /
+  `unpack_slot_from_host`); (b) hyperquant side-store restore corruption — off-lane for us (INT8 KV).
+- **Tagged request lanes** (`@main`/`@agents`/`@classifier`): a trailing suffix on the wire model
+  id becomes a `RequestClass`; `@main`-owned retained lanes are ranked LAST among eviction victims
+  (reorder, never exclude) so short-lived agent/classifier bursts recycle younger lanes first
+  instead of evicting the long-lived main conversation; untagged traffic = `Agents`, schedules
+  exactly as today. Log schema v14 (`class=` field).
+- **Adaptive MTP verification width**: batch-stable window from request-local accepted-prefix
+  survival (sustained score + fresh tail evidence, to avoid widening churn on mixed streams), EWMA
+  per-(batch-size, ctx-band, width) round-cost calibration, K5–K8, exact-width CUDA Graph /
+  ReplaySSM state preserved. Verified against production traces where a flat cost curve left the
+  selector unable to narrow with acceptance swinging 40–96%.
+- **Serve robustness**: tool-call XML leak (malformed/unclosed `<tool_call>` remainder was appended
+  to visible content raw; a second bug replayed it on stream teardown → content-length invariant
+  crash in tool-capable streaming); warmup decoupled from `--pending-timeout-ms` + fail-fast
+  (already in-tree via #79 — verify on merge); **100%-CPU decode fix** (`cudaDeviceScheduleAuto`
+  resolves to spin on this box, so per-round `synchronize()` busy-waited a host core; now
+  `cudaDeviceScheduleBlockingSync` at context creation + event-routed waits).
+- **Off-lane**: 1M-context envelope, hyperquant KV, Windows/laptop-GPU portability.
+
+**Operator directive (09-06): adoption starts with the gpillon fork** — the biggest win for
+agentic coding on this lane. T33 re-scoped as the entry point: the agentic-serving cluster
+(host-RAM KV tier + tagged lanes + adaptive MTP + tool-call/warmup/CPU fixes) alongside the
+DFlash2 drafter graft onto QUASAR (hard constraint unchanged: the lane keeps QUASAR weights;
+spec decoding is verified, so the drafter costs acceptance rate, not quality). DFlash2's
+acceptance gate is unchanged: beat the incumbent at 1.5K/8K/32K, greedy/verification parity,
+battery 16/16. The cluster's corruption-fix half is T34's guard shape, so the two tiers land
+together.
+
+### Correction — t36mdops REGRESSION entry figures (journal-verified)
+
+The t36mdops REGRESSION entry (above) says "a 1.45M-token xhigh vision request with a 137,887-token
+compacted prefix (… 14,487-token prefix match) … frontier 141,480". Journal ground truth (09-06
+11:28:55 CEST, req#26, 110-message session, 5 media, 14 tools):
+`[prefix-match] SIZE FAIL: count=141487 prompt=145367 resident=137887`. Correct figures:
+**prompt 145,367 tokens; frontier/count 141,487; resident prefix 137,887** (the last one was already
+correct in the entry). "1.45M" was a 10× digit-transcription error; "141,480" and "14,487" were
+typos of 141,487. The trigger was a 110-message session whose 145,367-token prompt SIZE-FAILed
+against the resident 137,887 prefix (spill → `[safety-spill] SKIP: no endpoint state image` →
+materialization fatal), not a single 1.45M-token request.
