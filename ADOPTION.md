@@ -2054,3 +2054,42 @@ Port set: branch `t36-mdops2-quasar` cut from `9737d75c`, cherry-picked re-picks
 touched files byte-identical to the prior wave's (host-build-verified) post-image,
 pushed to gevil. Build + ctest + battery + decode A/B = a pre-stopped-lane window
 sequenced after the T33 Wave B verdict (batch or sequence the window).
+
+## Round 12 (2026-09-06, ~17:50 CEST) - T31/T34 re-derivation complete; port plan ready
+
+Scout re-derivation (T31T34ReDerive) against the clean base `t33-gpillon-quasar @ 9737d75c`:
+- **gzenz's line moved again**: master tip `c17de1cc` = `local/combined 5f23c37e` + `1b11452c`
+  (the "master == 5f23c37e" note is stale). The whole safety-net line is now ONE 25-file commit
+  `d00e5f0b` (+3877/-64; true merge-base with our base = `da49c0d6`, not the d17a5f1f recorded
+  earlier). `1b11452c` (5 files) is REQUIRED: it fixes the two prior ship blockers — the
+  slot-budget guard (root cause of Bug 2's StateImage entitlement fatal) and worker-level
+  `logic_error` recovery (Bug 3 frontier fatal blast radius: engine death -> bounded
+  per-request failure, livelock-guarded).
+- **T34 mitigation lands in gzenz's new `host_kv_safety_net.h`** (609 lines, taken verbatim):
+  close BOTH checkpoint-offer branches in `find()` (lines 311-329 + the session-key fallback
+  369-375), keep the execution-frontier prefix match; ~8% of restores fall back to full_reset
+  (gpillon's `kv_ram_cache.cpp` exists in neither the gzenz line nor our tree — the mitigation
+  targets gzenz's file shape, not gpillon's).
+- **Frontier invariant preserved, not relaxed**: engine_core.h:1350 ("completed prefill did
+  not reach the admitted prompt frontier") + related checks; the StateImage entitlement throw
+  at program_impl.h:10460 stays intact (the slot-budget guard fixes its root cause).
+- **Guard test**: port gpillon `ac60331d` -> new `tests/targets/qwen3_6_27b/test_host_kv_ram_guard.cpp`
+  (a host-RAM restore must reproduce EXACTLY the continuation the same checkpoint produced while
+  VRAM-resident; `kv_ram_restores` counter +1; adapt to our PrefixReusePath enum).
+- **Port shape**: hunk-by-hunk manual re-application (our engine files are 221-1569 lines diverged
+  from gzenz's): `cherry-pick -n d00e5f0b` -> resolve on the high-risk files (engine_core.h,
+  materialization_planner.h, resource_manager.h, program_impl.h, program.h, chat_template.cpp —
+  the froggeric-specific hunks re-derived against our post-T37 ReasoningEffort template; mostly
+  inert on the --preserve-thinking lane) -> apply the T34 mitigation -> `cherry-pick -n 1b11452c`
+  -> guard test. Skip: stats_json.cpp (no /stats endpoint in our serve layer), tools/monitor +
+  e2e (optional), all other gzenz-range commits (froggeric, NVFP4 KV, YaRN, ... — off-lane).
+  Do NOT touch host_kv_extent_store.h / host_kv_restore_transaction.h (coexist with the T18-line
+  evicting-restore machinery).
+- **Ship gates (7)**: ctest incl. the guard test; battery 16/16 + 4XX zero; Bug 2 signature absent
+  OR per-request recovery only (the throw must still be present in the built binary); Bug 3
+  large-restore completes AND the invariant still trips on a deliberately corrupt fixture; journal
+  shows no rewrite-checkpoint restore served from host RAM; render byte-identical under
+  --preserve-thinking; decode/prefill within the post-T37 band.
+
+Execution is sequenced after the T33 Wave B + T36 windows (plan order), on a fresh branch
+`t31-hostkv2-quasar` from the then-current live base. Reference material in /tmp/t3134/.
