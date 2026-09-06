@@ -1856,3 +1856,11 @@ without the flag).
 Wave A: adopt only if the quiet-window battery is green and no TTFT/decode/cache-hit
 regression. Wave B: adopt only if acceptance beats MTP3 at all three contexts. Otherwise
 keep the lane as-is and record the results here.
+
+## t33serve-9737d75c ship (2026-09-06) - t33-gpillon-quasar @ 9737d75c
+
+Image `2b17722dc2fb` (tags: `t33serve-9737d75c`, :quasar, :latest); previous
+`:quasar` `e858f88b907e` retained as rollback target.
+- Free-GPU ctest: rc=0, skips within baseline (6 expected).
+- Battery: 16 PASS / 0 FAIL: VERDICT UP: PASS VERDICT IMAGE: PASS VERDICT MODELS: PASS VERDICT LEDGER: PASS VERDICT WARMUP: PASS VERDICT VISION: PASS VERDICT VISION-HIST: PASS VERDICT VISION-POISONED: PASS VERDICT REPLAY: PASS VERDICT THINK-SMOKE: PASS VERDICT XHIGH: PASS VERDICT DECODE-FRESH: PASS VERDICT DECODE-8K: PASS VERDICT QUALITY: PASS VERDICT SOAK: PASS VERDICT 4XX-WATCH: PASS
+- State: lane `ninfer-nvfp4` runs the new image; :quasar/:latest pinned (verified match).
