@@ -798,7 +798,7 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
                 "MTP graph allowance");
             impl->graph_allowance_bytes = checked_mul(per_batch_allowance, impl->max_concurrency,
                                                       "MTP exact-b graph allowance");
-        } else {
+        } else if (impl->speculative_backend == SpeculativeBackend::DFlash) {
             const auto class_allowance = [&](std::uint32_t batch_size) {
                 const auto profiles =
                     dflash_graph_profiles(impl->capacity, impl->draft_window, batch_size);
