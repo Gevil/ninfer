@@ -1967,3 +1967,20 @@ lane-ship pipeline — pre-staged, see T33 Wave A ship gate).
   `ninfer-ship.sh --branch t33-gpillon-quasar --tag t33serve-9737d75c`, plus ops log watcher.
   Rollback target = prior `:quasar` ImageID (captured at launch). Decision rule: G6 battery
   green with no TTFT/decode regression -> keep; else auto-rollback.
+
+### Serve-fixes ship - first launch: G2 OOM-killed, re-ship scheduled
+- First launch (15:52 CEST) died at G2: the buildah build container `exited on killed`
+  at [263/319] with no compiler error - OOM-killed. Host RAM: the lane container holds
+  37.7GiB (incl. the 32GiB host-KV shmem pool, `--host-kv-mib 32768`) + 40GiB buff/cache
+  = only 1-4GiB available; the quadlet has no effective memory cap. Lane untouched
+  (G2 is pre-G4; :quasar still = e858f88b). Context: the lane itself was OOM-killed 3x
+  (15:35/15:41/15:44) while Wave A's host build ran concurrently (kernel oom-kill
+  15:35:02, shmem-rss 34.7GiB; kernel OOM prefers the lane via oom_score_adj=200).
+  lane-sentinel ruled out (no `t31-window.active` marker; no-op runs all afternoon).
+- Re-ship (scheduled ~20 s after this record, script `/tmp/t33serve-rerun.sh`): pre-stop
+  the lane to free the 32GiB pool (available -> ~40GiB), run G2 build, G4 ctest (lane
+  already down), G5 restarts the lane, G6 battery, G7 verdict/rollback. Total lane
+  downtime ~25-45 min (build + ctest + model load).
+- OOM lesson (recorded in long-term memory): never run a buildstage/ctest build
+  concurrently with the live lane on this 61GiB host; the ship's G4 free-GPU window is
+  the safe place for GPU ctest, and the build must ride a pre-stopped lane.
