@@ -2115,3 +2115,19 @@ Execution is sequenced after the T33 Wave B + T36 windows (plan order), on a fre
 - Test-coverage correction: the three dflash2 op tests (selector_predecessors /
   selector_scores / topk_walk) use CUDA device buffers — GPU-required, NOT in the host-suite
   run; they first execute in the next free-GPU ship's G4 ctest.
+
+## Round 14 (2026-09-06, ~18:35 CEST) - T33 Wave B first build attempt FAILED (bad flag); fix dispatched
+
+First host-build-window run failed fast (~80s total, 17:53:46-17:55:06): the window script
+invoked `podman build --cpus 16 ...`, but `--cpus` is a `podman run`/`create` flag, not a
+`build` flag. `BUILD rc=125`, no image produced; the subsequent host ctest (`rc=99`) is bogus
+noise (nothing existed to test). Lane safety held: the script's always-restart fired regardless
+of build outcome, `/v1/models` verified 200 within ~10s on the unchanged `:quasar` image — no
+live-service damage, no image needed replacing.
+- Fix dispatched (hub send to `T33WaveBPicks`): mirror `ninfer-ship.sh`'s proven G2 invocation
+  exactly — `podman -H unix:///run/user/1000/podman/podman.sock build -t
+  localhost/ninfer-nvfp4:t33dflash2-a7893d9 "$CLONE"` with `$CLONE=/home/gevil/containers/ninfer-github`
+  (the shared build clone, synced to the pushed `t33-dflash2-quasar` tip `a7893d93` first), no
+  CPU-limiting flag at all, no `:quasar`/`:latest` retag (probe build, not a ship). Rest of the
+  window script (45s delivery sleep, lane stop, RAM gate, host ctest, always-restart) was correct
+  and is unchanged. Agent re-running the same window with the corrected build command.
