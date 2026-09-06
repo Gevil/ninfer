@@ -1787,3 +1787,72 @@ correct in the entry). "1.45M" was a 10× digit-transcription error; "141,480" a
 typos of 141,487. The trigger was a 110-message session whose 145,367-token prompt SIZE-FAILed
 against the resident 137,887 prefix (spill → `[safety-spill] SKIP: no endpoint state image` →
 materialization fatal), not a single 1.45M-token request.
+
+## T33 Wave Plan (2026-09-06) — gpillon fork adoption: Wave A agentic cluster, Wave B DFlash2 graft
+
+Re-scoped per operator directive (09-06): T33 = full adoption of the gpillon/ninfer agentic
+coding-traffic stack (the fork's driving problem) plus the DFlash2 drafter graft, executed as
+two sequential waves on one branch, **off the T18 tip (`49400365`)** — NOT off the T31 line
+(the base-selection error that killed the T36 wave: its base carried unshipped T31 host-KV
+code). Cherry-pick only (diverged base; no merge). QUASAR artifact byte-identical in both
+waves (Wave A = runtime only; Wave B grafts 66 new objects onto the 1,259-object base, base
+tensors unchanged).
+
+### Wave A — agentic serving cluster (no artifact change)
+
+Pick set, chronological order in `gpillon/gpillon/coding`:
+
+| # | Pick | What |
+|---|---|---|
+| 1 | `de386ad6` | system RAM KV cache for finished chats (tier base; cherry-pick of dylan 14329810) |
+| 2 | `f144f052` | KV RAM used size + copy times in serve logs |
+| 3 | `27665883` | two-tier probation/protected eviction by content lineage |
+| 4 | `7bdee888` | active-lane prefix sharing for identical concurrent requests |
+| 5 | `96371a3d` | one shared sibling snapshot instead of per-sibling capture |
+| 6 | `f4b128c6` | **T34 guard**: stop offering rewrite-checkpoint restores from host RAM (append-at-frontier only) |
+| 7 | `68b12497` | disable the RAM tier while an exact-key side store is in use |
+| 8 | `eaf2037b` | record format v2 (hyperquant side-store carry; off-lane route, format preserved) |
+| 9 | `07aeac2d` | preserve coding-agent prefix state (system/tools shared boundary) |
+| 10 | `2065ed38` | capture dynamic shared-prefix boundaries |
+| 11 | `2728ace4` | exact-size RAM captures + PreserveExisting admission |
+| 12 | `093c1fdd` | sibling-prefix overlap telemetry (no behavior change) |
+| 13 | `7a4634b5` | tagged request lanes @main/@agents/@classifier (@main-owned lanes evicted last) |
+| 14 | `5f014910` | tool-call XML leak fixes (2 bugs incl. stream-teardown crash) |
+| 15 | `6a1b62c5` | decouple warmup from client-facing request deadline |
+| 16 | `27417ca2` | warmup fail-fast + auto kv-capacity bounds |
+| 17 | `adf494c2` | block host sync — fixes 100% CPU decode (cudaDeviceSchedule spin) |
+| 18 | `c2708ec8` | adaptive MTP verification widths |
+| 19 | `9d86436c` | price adaptive widths by context depth |
+| 20 | `9bef0f73` | calibrate round-cost model from measured round duration |
+
+Conflict policy: our commits touch the same areas (`src/ops/softmax_attention.*` 6,
+`src/ops/linear/nvfp4/*` 10, T23/T36 TMA work) — adapt gpillon's hunks to our signatures on
+conflict; no reformatting; no new flags beyond theirs (RAM tier inert at `--host-kv-mib 0`,
+tagged lanes schedule untagged traffic as today, adaptive MTP opt-in).
+
+Wave A gates: host build PASS in the buildstage container (same path as the t31rev/t36 waves)
+→ free-GPU ctest within T18 baseline (+ new kv-ram-cache unit tests) → quiet-window battery
+16/16 → cache-hit-rate A/B (sibling sharing changes restore behavior) → greedy parity →
+supervised ship via ninfer-ship.sh (mandatory quiet window, non-lane shipwatch). INT8 KV
+@225,280, k=3, embedded template @xhigh unchanged.
+
+### Wave B — DFlash2 drafter graft (only after Wave A is shipped and stable)
+
+Engine picks (audited order, round 6): `a5064a9d → b5f6a15a → b4087269 → 34a33720 →
+9990b6b2 → 92cdac97 → 6d962dba → 1953f2f4 → a14f0033`; keep `kNativeContext = 262144`; skip
+`2dc34a79` (drafter SWA KV through the RAM tier — decide once Wave A's tier is live); add
+serve telemetry `5ebbb1ab`/`fff3d6eb` if acceptance profiling needs it.
+Quasar side: port the converter/graft (`graft_dflash2_module.py` equivalent) — graft the 66
+objects (34 NVFP4 + 32 BF16 norms) from the `z-lab/Qwen3.8-27B-DFlash2` bf16 checkpoint onto
+the QUASAR artifact; verify the 1,259 base objects byte-identical + 1,325 total; quasar
+identity override in `validate_source_artifact`.
+Wave B gates: acceptance rate beats the MTP3 incumbent (~1.95/round @ k=3) at **1.5K/8K/32K**
+with no context collapse (fusion counter-evidence: 24.7% → 12.7% by 12K — the
+context-collapse check is mandatory), greedy/verification parity, battery 16/16, INT8 KV,
+QUASAR base byte-identical. `--spec dflash2` is the kill switch (module not materialized
+without the flag).
+
+### Decision rule
+Wave A: adopt only if the quiet-window battery is green and no TTFT/decode/cache-hit
+regression. Wave B: adopt only if acceptance beats MTP3 at all three contexts. Otherwise
+keep the lane as-is and record the results here.
