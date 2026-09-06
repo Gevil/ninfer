@@ -2093,3 +2093,25 @@ Scout re-derivation (T31T34ReDerive) against the clean base `t33-gpillon-quasar 
 
 Execution is sequenced after the T33 Wave B + T36 windows (plan order), on a fresh branch
 `t31-hostkv2-quasar` from the then-current live base. Reference material in /tmp/t3134/.
+
+## Round 13 (2026-09-06, ~18:20 CEST) - T33 Wave B port complete; host-build window live
+
+- Port complete on `t33-dflash2-quasar` @ `a7893d93` (pushed to gevil; force-with-lease
+  replaced the stale pre-Wave-A `a3ba415f`, preserved in the local reflog): 12 of 14 picks
+  applied; `34a33720`/`1953f2f4` became net-empty after adaptation (our evolved op-layer form
+  and our runtime region already covered them). Engine surface verified: `--spec dflash2`
+  parses, `DFlash2Config` params exact, module is ValidateOnly unless the flag is set.
+  Conflict-resolution policy: op layer (swa / kv_cache_append_prefix / bidirectional) taken at
+  the evolved `b4087269` form; program_impl.h + request_plan_impl.h + text_prefill dflash2-sink
+  kept OURS (second-convention runtime region, per the threshold rule) — those are the
+  follow-up-wave files; new staged `dflash2_*` headers kept.
+- Host-build window (detached): script `/tmp/t33waveb-build-window.sh`, log
+  `~/.local/share/ninfer/logs/t33waveb-build-window-2026-09-06.log` (PID 2486064):
+  45s delivery sleep -> lane stop -> RAM >=12GiB gate (600s; ABORT-RAM restarts the lane,
+  exit 2) -> podman build --cpus 16 tagged `t33dflash2-a7893d9` (no `:quasar`/`:latest`
+  retag) -> fresh /build -j16 BUILD_TESTING=ON + host-suite ctest (6 Wave A targets) ->
+  ALWAYS lane restart + /v1/models poll (300s) -> final line `BUILD rc=.. CTEST rc=..
+  IMAGE .. LANE http=..`
+- Test-coverage correction: the three dflash2 op tests (selector_predecessors /
+  selector_scores / topk_walk) use CUDA device buffers — GPU-required, NOT in the host-suite
+  run; they first execute in the next free-GPU ship's G4 ctest.
