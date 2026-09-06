@@ -1501,7 +1501,7 @@ Verify portability (dylan's line historically carries 35B-only dflash assumption
 | 30 | Mirko KVaRN line | DEFERRED — `114b0fcb` adds a greedy-parity fix if revived |
 | 31 | gzenz host-KV safety-net port | **BLOCKED** — 2 bugs (B2 entitlement, B3 frontier); pick set INVALID (re-derive from `5f23c37e`); approach reframed by **T34** |
 | 32 | upstream prefix/context-cache cluster (#176–#181, #142) | WATCH — +#184; #181 mirrors our T14 finding |
-| 33 | **DFlash2 drafter grafted onto the QUASAR artifact** | **NEW — PROBE-FIRST, top priority.** Engine port from `gpillon/coding` + quasar-side graft using `z-lab/Qwen3.8-27B-DFlash2`; keeps QUASAR weights; gate on acceptance/round @1.5K/8K/32K |
+| 33 | **DFlash2 drafter grafted onto the QUASAR artifact** | **NEW — PROBE-FIRST, top priority.** Engine port from `gpillon/coding` + quasar-side graft using `z-lab/Qwen3.8-27B-DFlash2`; keeps QUASAR weights; gate on acceptance/round @1.5K/8K/32K — **serve-fixes LIVE 09-06** (t33serve-9737d75c, battery 16/16, Round 10); Wave B file-set port in progress (agent) |
 | 34 | **host-KV restore correctness (reframes T31)** | **NEW — ADOPT the mitigation shape**: host-RAM reuse = append-at-frontier only; do NOT relax the frontier invariant; port `ac60331d` as a guard |
 | 35 | **draft window k=3→5** | **REVERTED 09-06** — probe complete: battery 16/16, fresh +8.5% but 8k −6.8% + long-ctx acceptance degraded → plan rule: revert to k=3 (baseline frozen for T33/T36) |
 | 36 | **md dense-lane ops wave** | **NEW — PORT-CANDIDATE**: `8767dac7` decode-softmax-fold; `c735909b`+`16c66809` nvfp4-TMA (27B-measured); `ce71f787` sampled-draft probe |
@@ -1857,10 +1857,172 @@ Wave A: adopt only if the quiet-window battery is green and no TTFT/decode/cache
 regression. Wave B: adopt only if acceptance beats MTP3 at all three contexts. Otherwise
 keep the lane as-is and record the results here.
 
-## t33serve-9737d75c ship (2026-09-06) - t33-gpillon-quasar @ 9737d75c
+## Round 8 (2026-09-06, ~15:30 CEST) — master consolidation, branch cleanup, T33 Wave A launch
 
-Image `2b17722dc2fb` (tags: `t33serve-9737d75c`, :quasar, :latest); previous
-`:quasar` `e858f88b907e` retained as rollback target.
-- Free-GPU ctest: rc=0, skips within baseline (6 expected).
-- Battery: 16 PASS / 0 FAIL: VERDICT UP: PASS VERDICT IMAGE: PASS VERDICT MODELS: PASS VERDICT LEDGER: PASS VERDICT WARMUP: PASS VERDICT VISION: PASS VERDICT VISION-HIST: PASS VERDICT VISION-POISONED: PASS VERDICT REPLAY: PASS VERDICT THINK-SMOKE: PASS VERDICT XHIGH: PASS VERDICT DECODE-FRESH: PASS VERDICT DECODE-8K: PASS VERDICT QUALITY: PASS VERDICT SOAK: PASS VERDICT 4XX-WATCH: PASS
-- State: lane `ninfer-nvfp4` runs the new image; :quasar/:latest pinned (verified match).
+**User directives this round:** (1) capture the re-scoped T33 wave plan (done above),
+(2) merge the done tier branches into `master` with the current ADOPTION.md + plans,
+(3) delete done branches once confirmed in master, (4) T41 deferred; use the proper
+skills/agents for any detach/test/ship (shipwatch supervisor + ops log watcher +
+lane-ship pipeline — pre-staged, see T33 Wave A ship gate).
+
+### Master consolidation (`gevil/master` @ 0aae7780)
+- Merged the done lane line (`t18-gdn-quasar` = live T18-gdn code, contains T1–T23) into
+  `master`; ADOPTION.md resolved to **this record line** (rounds 1–7 + T33 wave plan),
+  `THINKING_WALLTIME_PLAN.md` brought in.
+- **Incident + fix:** the pre-merge master doc line was NOT docs-only — it carried its own
+  real code merges (`c1bdf081` tier5 PR #6, `20798a3b`+`20ddbf0d` tier7 merge+**revert**,
+  `37bc977f` quasar-nvfp4, `721045e4` t12). The 3-way merge re-applied the doc line's tier7
+  revert on top of the lane line, **dropping the live `src/ops/common/device_info.{h,cu}`
+  SM-count code** (referenced by the GDN chunked `output.cu` persistent-grid sizing) and
+  re-editing `output.cu`/`src/CMakeLists.txt`. Fixed by restoring the full lane-line code
+  tree (`git checkout t18-gdn-quasar -- <code paths>`): master's code is now
+  **byte-identical to the live lane line**; only the two doc files differ. Verified:
+  `git diff t18-gdn-quasar master --stat` = ADOPTION.md + THINKING_WALLTIME_PLAN.md only.
+  The pre-incident doc line remains in history at `90df7a50`; its older tier-numbering
+  epoch (T13/T15/T19 shipped-vs-deferred contradictions) is preserved there, and the
+  `t13-converge`/`t15-yarn`/`tier13` branches are KEPT as pointers to it.
+- tier1's stray tip (`7e845d45`, patch-identical to the in-tree backport `22c46df7`) was
+  merged explicitly so all done tier tips are true ancestors of master.
+
+### Branch cleanup (archive-tagged, containment-verified, then deleted)
+- Deleted local: `tier1..tier7`, `t22-converge`, `t23-tma-quasar`. Deleted gevil remote:
+  `t16-converge`, `t17-pv-f16acc`, `t19-w8-moe`, `t22-converge`, `t23-tma-pair`,
+  `t23-tma-quasar` (the tier1–tier7 branches were local-only; gevil never had them).
+- Every deleted tip is pinned by a pushed `archive/*` tag (14 tags, `ls-remote` verified
+  before any delete). Kept: `t18-gdn-quasar` (live), `t24-quasar-a` (superseded intermediate),
+  `t18-dylan-wave2` (superseded intermediate — its 3 unique commits = the T23 TMA pair +
+  GDN fix; content-verified 09-06: the GDN-fix commit `269cf431` is a same-content
+  duplicate of the T18 tip `49400365` (identical subject + identical per-file stats), but
+  the tip trees are NOT identical — `git diff 269cf431 49400365 -- src/ include/` shows
+  7 files / +87/-17: 27b package/bindings/variant + 35b package + registry wiring from the
+  extra T23-wave commits that exist only on the T18 line; the branch is an archive
+  pointer, not unmerged work), `t31*`, `t33*`, `t36`,
+  `t13-converge`/`t15-yarn`/`tier13` (numbering-contradiction pointers), `quasar-nvfp4`,
+  `mtp-sampled-draft`, `backup/pre-fork-430298a`, `fork/nvfp4full-merged`, `audit/*`, `pr-*`.
+
+### T33 Wave A (in progress)
+- Branch `t33-gpillon-quasar` cut off the T18 tip `49400365` (worktree `/tmp/t33-wave-a-wt`);
+  agent `T33WaveAPicks` running the 20-pick agentic-cluster sequence → buildstage host
+  build → host-runnable ctest. Result auto-delivers; no lane changes. Ship gate when the
+  wave is green: quiet-window check → shipwatch supervisor (non-lane model) + detached
+  `ninfer-ship.sh` + ops log watcher, all one batch; auto-rollback verified by ImageID.
+
+## Round 9 (2026-09-06, ~16:20 CEST) - T33 Wave A result, Wave B re-scoped, serve-fixes ship
+
+### T33 Wave A result (`t33-gpillon-quasar` @ 9737d75c, pushed to gevil)
+- **Landed 3/20** (self-contained serve/device robustness, no new flags, untagged-traffic
+  behavior-neutral):
+  - `f1989e98` - block host sync to fix 100% CPU during decode (adapt dylan `583d8e10` /
+    gpillon `adf494c2`): `cudaDeviceScheduleBlockingSync` + event-routed `synchronize()` on
+    `transfer_stream`.
+  - `382cf379` - warmup try/catch wrapper (gpillon `6a1b62c5`); deadline decoupling already
+    present in our tree via `DeadlinePolicy::UnboundedStartup` - hunks resolved to ours.
+  - `9737d75c` - warmup fail-fast + auto kv capacity bounds clarification (gpillon `27417ca2`).
+- **Skipped 17/20 - single root cause**: the RAM KV tier base pick `de386ad6` targets
+  `src/runtime/engine/concurrent_executor.h`, which our base already deleted (upstream
+  `d6af046a` split the executor into `engine_core.h`/`scheduler.h`/`resource_manager.h`). Every
+  pick that touches the executor (1,3,10,11,16,17,19,20) or the `kv_ram_cache*` files the base
+  pick creates (2,8,9,12,13,14,15) is structurally blocked. Their RAM tier also sits parallel
+  to our T18 host-KV extent store (`kv_ram_*` vs `host_kv_*` in `include/ninfer/types.h`) -
+  porting means re-architecting onto the refactored engine, not hunk adaptation. Pick 18
+  (`5f014910`, tool-call XML stream leak) has no counterpart class in our tree
+  (`ToolCallStreamFilter` absent) - separate audit of our serve streaming path, not a port.
+- **Build**: rc=0, fresh 321 s host build (buildstage-merge, `--entrypoint /bin/bash`, G4-style
+  python3 guard - no-GPU host build pattern recorded for the ship phase). **Host ctest 6/6
+  PASS** (qwen3_6 frontend, openai/anthropic schema, tool_call_parser, serve_options,
+  openai_responses - the Responses-API coverage target in our tree). GPU ctest deferred to the
+  ship G4 free-GPU window.
+- **T34 guard** (`f4b128c6`): skipped as a RAM-tier dependency; port by hand into
+  `src/targets/qwen3_6/impl/runtime/host_kv_safety_net.h` checkpoint branches per T34 step 5b.
+  Live quadlet runs `--host-kv-mib 32768`, so the T34 step-5a live-exposure question stays open.
+
+### T33 agentic cluster -> **T41 (hand-port, not cherry-pick)**
+- The cluster (RAM KV tier, sibling-prefix sharing, tagged request lanes, adaptive MTP widths,
+  KVRamCache sizing) cannot land via pick sequence: its base commit predates the upstream
+  executor refactor our lane absorbed. T41 = deliberate hand-port of the RAM tier onto
+  `scheduler.h`/`resource_manager.h` with an explicit design decision on the relationship to the
+  existing T18 host-KV extent store (integrate vs replace). Effort: weeks; gated by the same
+  acceptance gates (TTFT/decode/cache-hit) + quiet-window battery. The pick-18 streaming audit
+  is folded into T41 scope.
+
+### T33 Wave B re-scoped (DFlash2 on QUASAR): file-set port, not 9 picks
+- Structural pre-check on `b4087269` (engine integration, 56 files): 21 files absent from our
+  tree - the dflash2 ops layer (`dflash2_draft*`, `dflash2_selector_*`, tests), the `swa` op, the
+  `kv_cache_append_prefix` op, `bidirectional_gqa_attention.cuh` (introduced by earlier commits
+  on gpillon's line beyond the Round 6 9-pick list) plus the dflash2 runtime (`dflash2_impl.h`
+  456 lines, `dflash2_context*`, `workspace_recipe`, `layouts_impl` +133, `program_impl` +391,
+  `schedule` +39).
+- Present-but-conflicting: `cast.*` (4 files), `nvfp4_config/dispatch/gemv/small_t` (overlap
+  with the T23 TMA picks), `model_view.h`, `options.cpp`, `serve_options.cpp`.
+- Verdict: feasible as an agentic file-set port (same kind as Wave A, larger); conflicts
+  expected concentrated in the refactored runtime region + nvfp4 ops. Branch
+  `t33-dflash2-quasar` cut from `9737d75c` (verified serve fixes ride along; rebase to
+  `49400365` if the serve fixes roll back). Off-lane (REJECTED, unchanged): `kNativeContext`
+  1M, hq/hyperquant KV, the nvfp4full artifact - the drafter module is grafted onto the QUASAR
+  artifact via the ported `tools/artifact/graft_dflash2_module.py` (Round 6 plan).
+
+### Serve-fixes ship (t33serve-9737d75c) - launched
+- Quiet window enforced: zero lane requests in the prior 20 min (journal), `/v1/models` 200.
+  Launch order per supervisor pattern: shipwatch (non-lane model) first, then detached
+  `ninfer-ship.sh --branch t33-gpillon-quasar --tag t33serve-9737d75c`, plus ops log watcher.
+  Rollback target = prior `:quasar` ImageID (captured at launch). Decision rule: G6 battery
+  green with no TTFT/decode regression -> keep; else auto-rollback.
+
+### Serve-fixes ship - first launch: G2 OOM-killed, re-ship scheduled
+- First launch (15:52 CEST) died at G2: the buildah build container `exited on killed`
+  at [263/319] with no compiler error - OOM-killed. Host RAM: the lane container holds
+  37.7GiB (incl. the 32GiB host-KV shmem pool, `--host-kv-mib 32768`) + 40GiB buff/cache
+  = only 1-4GiB available; the quadlet has no effective memory cap. Lane untouched
+  (G2 is pre-G4; :quasar still = e858f88b). Context: the lane itself was OOM-killed 3x
+  (15:35/15:41/15:44) while Wave A's host build ran concurrently (kernel oom-kill
+  15:35:02, shmem-rss 34.7GiB; kernel OOM prefers the lane via oom_score_adj=200).
+  lane-sentinel ruled out (no `t31-window.active` marker; no-op runs all afternoon).
+- Re-ship (scheduled ~20 s after this record, script `/tmp/t33serve-rerun.sh`): pre-stop
+  the lane to free the 32GiB pool (available -> ~40GiB), run G2 build, G4 ctest (lane
+  already down), G5 restarts the lane, G6 battery, G7 verdict/rollback. Total lane
+  downtime ~25-45 min (build + ctest + model load).
+- OOM lesson (recorded in long-term memory): never run a buildstage/ctest build
+  concurrently with the live lane on this 61GiB host; the ship's G4 free-GPU window is
+  the safe place for GPU ctest, and the build must ride a pre-stopped lane.
+
+## Round 10 (2026-09-06, ~16:40 CEST) - t33serve ship PASS + post-ship verification
+
+**t33serve-9737d75c SHIPPED** (t33-gpillon-quasar @ 9737d75c; 3 serve/dev fixes riding along:
+warmup/client-deadline decoupling, warmup fail-fast, kv-capacity bounds clarification):
+- First launch (15:52): G2 build OOM-killed at [263/319] (lane 37.7GiB incl. 32GiB host-KV
+  shmem + 40GiB buff/cache on 61GiB host). G2 is pre-G4: lane never stopped, no rollback;
+  verified `e858f88b907e` ran untouched for the whole first attempt.
+- Re-ship with pre-stop (`/tmp/t33serve-rerun.sh` pattern): G2 build ~13 min PASS -> G4
+  free-GPU ctest rc=0 (6 expected skips, within baseline) -> G5 restart, image match verified
+  independently -> G6 battery **16/16** -> G7 PASS. Shipwatch (sonnet, detached, full relay
+  authority) supervised the whole window; no stalls; no rollback.
+- Live: image `2b17722dc2fb` (tags `t33serve-9737d75c`, `:quasar`, `:latest`); `/v1/models`
+  200, `qwen3.8-27b`, max_model_len 225280. Rollback target `e858f88b907e` retained.
+
+Post-ship verification (live journal, 16:33-16:37 CEST, with two user OMP sessions active):
+- decode 150.6-152.8 tok/s sustained (throughput lines); per-request decode 150.6-199.9
+  tok/s across 70k-187k-token contexts; MTP accepted 61.5-71.9%.
+- **host-sync fix confirmed**: host CPU 0.2% (~10 ms per 5 s window) during decode;
+  pre-fix behavior was 100% CPU spin during decode (gpillon's `5ebbb1ab`-lineage fix).
+- Battery DECODE gates (from the G6 log): DECODE-FRESH 154.7 vs baseline 139.4
+  (gate >= 132.4) PASS; DECODE-8K 146.2 vs baseline 137.4 (gate >= 130.5) PASS — both
+  ABOVE baseline. The battery baseline is its hardcoded `quasar-baseline-2026-08-26.json`
+  (139.4/137.4). Correction: the "151.9/150.2 baseline" quoted in Round 6 was a misread
+  of that same file (it holds 139.4/137.4 + a stale 153.2/130.0) — there is no -2.7%
+  8k delta and no perf warning to triage.
+- Probe collision artifact (NOT a measurement): my two clean-window probes at 16:34
+  returned fresh=58 tok @ 5.5 tok/s and 8k=0 tok @ 0.0 — both landed mid-prefill of two
+  concurrent user sessions (183k + 70k tokens; C=4 saturated; req#49 queued 1m 0.1s then
+  cancelled). Discarded as numbers; the journal figures above are the evidence.
+- Pipeline gap noted: G7's "ADOPTION entry committed on master" landed as `c5e3ba95` on
+  **master** in the main repo (parent `0aae7780`), not on the record line — this section
+  supersedes it. Master now has the ship entry but lacks Rounds 8-9; the record line
+  (`t31-hostkv-quasar`) remains canonical (constraint unchanged).
+
+Wave B: `T33WaveBPicks` agent revived with a resume prompt (port-only until a >=12GiB
+available-RAM build window; build window = pre-stopped lane, scheduled by Main). 13-commit
+port set derived in its transcript (worktree `/tmp/t33-wave-b-wt`, branch
+`t33-dflash2-quasar` from `9737d75c`): 9 engine commits + `9f74b068` (swa) + `ce22d457`
+(kv-prefix) + `ec7b1fc6` (bidirectional GQA) + `a14f0033` (GDN replay); base gaps: drop the
+off-lane dflash-ops doc hunk, map `src/core/kv_cache.h` onto our `cyclic_kv_cache.h` /
+`paged_kv_cache.h`.
