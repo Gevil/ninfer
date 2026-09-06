@@ -1501,7 +1501,7 @@ Verify portability (dylan's line historically carries 35B-only dflash assumption
 | 30 | Mirko KVaRN line | DEFERRED — `114b0fcb` adds a greedy-parity fix if revived |
 | 31 | gzenz host-KV safety-net port | **BLOCKED** — 2 bugs (B2 entitlement, B3 frontier); pick set INVALID (re-derive from `5f23c37e`); approach reframed by **T34** |
 | 32 | upstream prefix/context-cache cluster (#176–#181, #142) | WATCH — +#184; #181 mirrors our T14 finding |
-| 33 | **DFlash2 drafter grafted onto the QUASAR artifact** | **NEW — PROBE-FIRST, top priority.** Engine port from `gpillon/coding` + quasar-side graft using `z-lab/Qwen3.8-27B-DFlash2`; keeps QUASAR weights; gate on acceptance/round @1.5K/8K/32K |
+| 33 | **DFlash2 drafter grafted onto the QUASAR artifact** | **NEW — PROBE-FIRST, top priority.** Engine port from `gpillon/coding` + quasar-side graft using `z-lab/Qwen3.8-27B-DFlash2`; keeps QUASAR weights; gate on acceptance/round @1.5K/8K/32K — **serve-fixes LIVE 09-06** (t33serve-9737d75c, battery 16/16, Round 10); Wave B file-set port in progress (agent) |
 | 34 | **host-KV restore correctness (reframes T31)** | **NEW — ADOPT the mitigation shape**: host-RAM reuse = append-at-frontier only; do NOT relax the frontier invariant; port `ac60331d` as a guard |
 | 35 | **draft window k=3→5** | **REVERTED 09-06** — probe complete: battery 16/16, fresh +8.5% but 8k −6.8% + long-ctx acceptance degraded → plan rule: revert to k=3 (baseline frozen for T33/T36) |
 | 36 | **md dense-lane ops wave** | **NEW — PORT-CANDIDATE**: `8767dac7` decode-softmax-fold; `c735909b`+`16c66809` nvfp4-TMA (27B-measured); `ce71f787` sampled-draft probe |
@@ -1984,3 +1984,42 @@ lane-ship pipeline — pre-staged, see T33 Wave A ship gate).
 - OOM lesson (recorded in long-term memory): never run a buildstage/ctest build
   concurrently with the live lane on this 61GiB host; the ship's G4 free-GPU window is
   the safe place for GPU ctest, and the build must ride a pre-stopped lane.
+
+## Round 10 (2026-09-06, ~16:40 CEST) - t33serve ship PASS + post-ship verification
+
+**t33serve-9737d75c SHIPPED** (t33-gpillon-quasar @ 9737d75c; 3 serve/dev fixes riding along:
+warmup/client-deadline decoupling, warmup fail-fast, kv-capacity bounds clarification):
+- First launch (15:52): G2 build OOM-killed at [263/319] (lane 37.7GiB incl. 32GiB host-KV
+  shmem + 40GiB buff/cache on 61GiB host). G2 is pre-G4: lane never stopped, no rollback;
+  verified `e858f88b907e` ran untouched for the whole first attempt.
+- Re-ship with pre-stop (`/tmp/t33serve-rerun.sh` pattern): G2 build ~13 min PASS -> G4
+  free-GPU ctest rc=0 (6 expected skips, within baseline) -> G5 restart, image match verified
+  independently -> G6 battery **16/16** -> G7 PASS. Shipwatch (sonnet, detached, full relay
+  authority) supervised the whole window; no stalls; no rollback.
+- Live: image `2b17722dc2fb` (tags `t33serve-9737d75c`, `:quasar`, `:latest`); `/v1/models`
+  200, `qwen3.8-27b`, max_model_len 225280. Rollback target `e858f88b907e` retained.
+
+Post-ship verification (live journal, 16:33-16:37 CEST, with two user OMP sessions active):
+- decode 150.6-152.8 tok/s sustained (throughput lines); per-request decode 150.6-199.9
+  tok/s across 70k-187k-token contexts; MTP accepted 61.5-71.9%.
+- **host-sync fix confirmed**: host CPU 0.2% (~10 ms per 5 s window) during decode;
+  pre-fix behavior was 100% CPU spin during decode (gpillon's `5ebbb1ab`-lineage fix).
+- Battery DECODE-8K 146.2 vs 150.2 baseline (-2.7%) triaged: concurrent live long-context
+  decode is 150.6+ tok/s -> no regression; the 8k delta is shared-lane noise (T31 triage
+  rule: perf warning, not a rollback trigger).
+- Probe collision artifact (NOT a measurement): my two clean-window probes at 16:34
+  returned fresh=58 tok @ 5.5 tok/s and 8k=0 tok @ 0.0 — both landed mid-prefill of two
+  concurrent user sessions (183k + 70k tokens; C=4 saturated; req#49 queued 1m 0.1s then
+  cancelled). Discarded as numbers; the journal figures above are the evidence.
+- Pipeline gap noted: G7's "ADOPTION entry committed on master" landed as `c5e3ba95` on
+  **master** in the main repo (parent `0aae7780`), not on the record line — this section
+  supersedes it. Master now has the ship entry but lacks Rounds 8-9; the record line
+  (`t31-hostkv-quasar`) remains canonical (constraint unchanged).
+
+Wave B: `T33WaveBPicks` agent revived with a resume prompt (port-only until a >=12GiB
+available-RAM build window; build window = pre-stopped lane, scheduled by Main). 13-commit
+port set derived in its transcript (worktree `/tmp/t33-wave-b-wt`, branch
+`t33-dflash2-quasar` from `9737d75c`): 9 engine commits + `9f74b068` (swa) + `ce22d457`
+(kv-prefix) + `ec7b1fc6` (bidirectional GQA) + `a14f0033` (GDN replay); base gaps: drop the
+off-lane dflash-ops doc hunk, map `src/core/kv_cache.h` onto our `cyclic_kv_cache.h` /
+`paged_kv_cache.h`.
