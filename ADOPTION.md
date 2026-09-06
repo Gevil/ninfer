@@ -1386,8 +1386,29 @@ k=3.
 
 **T36 — md dense-lane ops wave.** `8767dac7` decode-softmax-fold; `c735909b` + `16c66809` nvfp4-TMA
 prefill extensions (27B-nvfp4-measured, extends T23); `ce71f787` MTP sampled-draft (probe).
-Cherry-pick onto the current lane branch; watch overlap in `src/ops/softmax_attention` (6 of our
-commits) and `src/ops/linear/nvfp4` (10 of our commits).
+
+**T36 build record (2026-09-06) — wave ready, probe absorbed.** Wave branch `t36-mdops-quasar` tip
+`29e628a7` (pushed to `gevil`), five commits on `533e93fc`:
+- `29e628a7` = re-pick of `8767dac7` (split-KV decode softmax takes the prompt kernel's arithmetic)
+- `e96df2c9` = re-pick of `c735909b` (TMA grid walked in token groups)
+- `0243d3db` = re-pick of `ce71f787` (MTP sampled-draft; 18 files, +436/−52). Conflict resolutions:
+  kept our `CausalAttentionExecutionEnvelope` + state-source/destination-slot plumbing (the merged
+  `TargetVerifyFrameView` and `target_verify_accept` use them; md's `lanes` field dropped), kept our
+  `increment_token_counts` blocks in the sampler, took md's `out_prob`/support plumbing and his
+  comments.
+- `cbf8a72d`, `d61a8489` = ops docs (host-KV arena note; T35 revert + arena 8→32 GiB record).
+- `16c66809` content (tile-continuous activation scales) already present in base `533e93fc`
+  (symbol check: `nvfp4_make_tma_2d` / `nvfp4_tma_load_2d` / `nvfp4_w4a4_tma_route` counts equal in
+  base and wave) — its pick is a no-op, not re-picked.
+- **Probe absorbed:** `ce71f787` arrived inside the wave as `0243d3db` (the earlier wave build pulled
+  it in), so a separate probe branch was a 2-line no-op (created, verified empty against the wave,
+  deleted). Consequences: (a) the sampled-draft behavior ships WITH the wave image — no longer
+  independently rejectable at pick level; if the post-ship acceptance gate fails, the revert is a
+  `0243d3db`-removal rebuild, not a pick drop. (b) The acceptance-rate gate is unchanged and is
+  measured on the post-ship image: MTP3 with draft head, acceptance drafts/round at 1.5K/8K/32K
+  vs the MTP3 baseline, decode A/B vs 140.6/155.4, greedy parity, battery 16/16, INT8 KV retained.
+- G4-equivalent host build (buildstage-merge container, python3 pre-installed per G4 style): in
+  progress at time of writing; ship additionally gated on a quiet window (user decision).
 
 **T37 — chat-template switch to the artifact-embedded ReasoningEffort template at xhigh
 (PROBE-FIRST).** Full plan above. Config-only, engine-native, one-file rollback.
