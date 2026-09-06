@@ -1891,7 +1891,12 @@ lane-ship pipeline — pre-staged, see T33 Wave A ship gate).
 - Every deleted tip is pinned by a pushed `archive/*` tag (14 tags, `ls-remote` verified
   before any delete). Kept: `t18-gdn-quasar` (live), `t24-quasar-a` (superseded intermediate),
   `t18-dylan-wave2` (superseded intermediate — its 3 unique commits = the T23 TMA pair +
-  GDN fix, all already cherry-picked into the lane line), `t31*`, `t33*`, `t36`,
+  GDN fix; content-verified 09-06: the GDN-fix commit `269cf431` is a same-content
+  duplicate of the T18 tip `49400365` (identical subject + identical per-file stats), but
+  the tip trees are NOT identical — `git diff 269cf431 49400365 -- src/ include/` shows
+  7 files / +87/-17: 27b package/bindings/variant + 35b package + registry wiring from the
+  extra T23-wave commits that exist only on the T18 line; the branch is an archive
+  pointer, not unmerged work), `t31*`, `t33*`, `t36`,
   `t13-converge`/`t15-yarn`/`tier13` (numbering-contradiction pointers), `quasar-nvfp4`,
   `mtp-sampled-draft`, `backup/pre-fork-430298a`, `fork/nvfp4full-merged`, `audit/*`, `pr-*`.
 
