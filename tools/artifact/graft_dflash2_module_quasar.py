@@ -42,11 +42,11 @@ from tools.convert.common.safetensors import ShardReader
 from tools.convert.qwen3_6.common import conversion as family_conversion
 from tools.convert.qwen3_6.common import recipe as family_recipe
 from tools.convert.qwen3_8_27b import convert_nvfp4full as convert
-from tools.convert.qwen3_8_27b import inventory_nvfp4full as inventory
+from tools.convert.qwen3_8_27b import inventory_quasar_dflash2 as inventory
 from tools.convert.qwen3_8_27b import recipe_nvfp4full as recipe
 
 
-RECIPE_ID = convert.RECIPE_ID
+RECIPE_ID = "qwen3_8_27b_quasar_nvfp4_dflash2"
 COPY_CHUNK_BYTES = 64 << 20
 
 
