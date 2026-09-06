@@ -19,11 +19,28 @@ option(NINFER_BUILD_APPS "Build the NInfer CLI and server" ON)
 option(BUILD_TESTING "Build NInfer tests" OFF)
 option(NINFER_BUILD_BENCHMARKS "Build NInfer benchmarks" OFF)
 
+# Local real-artifact path. When set, the corresponding real-artifact ctest
+# tests run instead of skipping: the tests gate on the matching environment
+# variable and return 77 (skip) when it is unset, and tests/CMakeLists.txt
+# forwards this path into the ctest environment. A local prerequisite, not a
+# build input.
+set(NINFER_QWEN3_6_27B_NVFP4_WEIGHTS "" CACHE PATH
+    "qwen3.6-27b nvfp4 .ninfer artifact; when set, the 27b real-artifact ctest tests run instead of skipping")
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)        # clangd / IDE tooling
+if(MSVC)
+  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+  add_compile_options(
+    $<$<COMPILE_LANGUAGE:C,CXX>:/Zc:preprocessor>
+    $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>)
+  # CUDA's static runtime requests LIBCMT even when the application and vcpkg dependencies use
+  # the project-wide /MD runtime. Keep one CRT in the final process.
+  add_link_options(/NODEFAULTLIB:LIBCMT)
+endif()
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
@@ -55,11 +72,31 @@ if(NINFER_BUILD_APPS OR BUILD_TESTING)
 endif()
 
 find_package(CUDAToolkit REQUIRED)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
-  libavformat>=60 libavcodec>=60 libavutil>=58 libswscale>=7)
-if(NINFER_BUILD_MEDIA_ACQUIRE)
-  pkg_check_modules(LIBCURL REQUIRED IMPORTED_TARGET libcurl>=7.85)
+if(WIN32)
+  set(NINFER_CUDART_TARGET CUDA::cudart_static)
+else()
+  set(NINFER_CUDART_TARGET CUDA::cudart)
+endif()
+if(WIN32 OR DEFINED VCPKG_TARGET_TRIPLET)
+  find_package(FFMPEG REQUIRED)
+  add_library(ninfer_ffmpeg_dependencies INTERFACE)
+  target_include_directories(ninfer_ffmpeg_dependencies INTERFACE ${FFMPEG_INCLUDE_DIRS})
+  target_link_directories(ninfer_ffmpeg_dependencies INTERFACE ${FFMPEG_LIBRARY_DIRS})
+  target_link_libraries(ninfer_ffmpeg_dependencies INTERFACE ${FFMPEG_LIBRARIES})
+  set(NINFER_FFMPEG_TARGET ninfer_ffmpeg_dependencies)
+  if(NINFER_BUILD_MEDIA_ACQUIRE)
+    find_package(CURL 7.85 REQUIRED)
+    set(NINFER_CURL_TARGET CURL::libcurl)
+  endif()
+else()
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
+    libavformat>=60 libavcodec>=60 libavutil>=58 libswscale>=7)
+  set(NINFER_FFMPEG_TARGET PkgConfig::FFMPEG)
+  if(NINFER_BUILD_MEDIA_ACQUIRE)
+    pkg_check_modules(LIBCURL REQUIRED IMPORTED_TARGET libcurl>=7.85)
+    set(NINFER_CURL_TARGET PkgConfig::LIBCURL)
+  endif()
 endif()
 find_package(Threads REQUIRED)
 

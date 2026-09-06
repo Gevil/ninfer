@@ -29,6 +29,16 @@ public:
     [[nodiscard]] bool equals(const ResidentPrefixIdentity& other) const;
     [[nodiscard]] bool prefix_equals(const ResidentPrefixIdentity& other, std::size_t count) const;
 
+    [[nodiscard]] std::span<const std::uint8_t> token_types() const noexcept {
+        return token_types_;
+    }
+    [[nodiscard]] std::span<const std::int32_t> positions(std::size_t axis) const {
+        return positions_.at(axis);
+    }
+    [[nodiscard]] std::span<const VisionItem> vision_items() const noexcept {
+        return vision_items_;
+    }
+
 private:
     std::vector<std::uint8_t> token_types_;
     std::array<std::vector<std::int32_t>, 3> positions_;

@@ -3,14 +3,17 @@
 #include "targets/qwen3_6/impl/frontend/digest.h"
 
 #include <nlohmann/json.hpp>
+#include <minja/minja.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
 
 namespace ninfer::targets::qwen3_6::frontend_internal {
 namespace {
@@ -35,6 +38,61 @@ constexpr std::string_view kXHighReasoningInstructions =
     "Reasoning effort is set to xhigh. Please think carefully through the task, validate key "
     "assumptions, consider plausible alternatives, and prioritize correctness, consistency, and "
     "clarity in the final answer.";
+
+ constexpr std::array<std::string_view, 4> kVisionControlTokens = {
+     "<|vision_start|>", "<|vision_end|>", "<|image_pad|>", "<|video_pad|>"};
+ constexpr std::string_view kControlTokenBreak = "\xE2\x81\xA0"; // U+2060 WORD JOINER
+// The Jinja-template render path records structured media placeholders by
+// scanning the rendered text for these pad markers (one per media part, in
+// request order). Literal markers quoted in text are escaped upstream.
+constexpr std::string_view kImagePadMarker = "<|image_pad|>";
+constexpr std::string_view kVideoPadMarker = "<|video_pad|>";
+ 
+ // Text content can legitimately quote the chat template or one of its Vision
+ // control tokens. Keep those strings readable, but break their exact added-token
+ // spelling so that only structured Image/Video parts can create media slots.
+ std::string escape_literal_vision_tokens(std::string text) {
+     for (const std::string_view token : kVisionControlTokens) {
+         std::size_t search = 0;
+         while ((search = text.find(token, search)) != std::string::npos) {
+             text.insert(search + 2, kControlTokenBreak);
+             search += token.size() + kControlTokenBreak.size();
+         }
+     }
+     return text;
+ }
+ 
+ // Escape a fragment's text, shifting literal spans past every inserted break byte.
+ RenderedFragment escape_literal_fragment(RenderedFragment fragment) {
+     std::string text = std::move(fragment.text);
+     std::vector<std::pair<std::size_t, std::size_t>> shifts;  // original pos, inserted bytes
+     for (const std::string_view token : kVisionControlTokens) {
+         std::size_t search = 0;
+         while ((search = text.find(token, search)) != std::string::npos) {
+             shifts.emplace_back(search + 2U, kControlTokenBreak.size());
+             search += token.size() + kControlTokenBreak.size();
+         }
+     }
+     if (shifts.empty()) { fragment.text = std::move(text); return fragment; }
+     std::sort(shifts.begin(), shifts.end());
+     // Apply insertions in reverse so earlier positions stay valid.
+     for (auto it = shifts.rbegin(); it != shifts.rend(); ++it) { text.insert(it->first, kControlTokenBreak); }
+     const auto map_pos = [&](std::size_t pos) {
+         std::size_t mapped = pos;
+         for (const auto& [at, len] : shifts) {
+             if (at <= pos) { mapped += len; }
+             else { break; }
+         }
+         return mapped;
+     };
+     for (ByteSpan& span : fragment.literal_spans) {
+         span.begin = map_pos(span.begin);
+         span.end   = map_pos(span.end);
+     }
+     fragment.text = std::move(text);
+     return fragment;
+ }
+ 
 
 bool is_instruction_role(ChatRole role) noexcept {
     return role == ChatRole::System || role == ChatRole::Developer;
@@ -321,7 +379,7 @@ RenderedToolsSystemBlock render_tools_system_block(const std::vector<std::string
     rendered.append_template("# Tools\n\nYou have access to the following functions:\n\n<tools>");
     for (const std::string& tool : tool_jsons) {
         rendered.append_template("\n");
-        rendered.append_literal(tojson_text(OrderedJson::parse(tool)));
+        rendered.append_literal(escape_literal_vision_tokens(tojson_text(OrderedJson::parse(tool))));
         out.tool_boundaries.push_back(rendered.size());
     }
     rendered.append_template("\n</tools>");
@@ -365,6 +423,216 @@ std::string_view resolve_reasoning_instructions(ChatTemplateSemantics semantics,
 
 } // namespace
 
+ std::string render_role(ChatRole role) {
+     switch (role) {
+     case ChatRole::System:
+         return "system";
+     case ChatRole::Developer:
+         return "developer";
+     case ChatRole::User:
+         return "user";
+     case ChatRole::Assistant:
+         return "assistant";
+     case ChatRole::Tool:
+         return "tool";
+     }
+     throw std::invalid_argument("unsupported chat role value");
+ }
+ 
+ std::string_view render_reasoning_effort(ReasoningEffort effort) {
+     switch (effort) {
+     case ReasoningEffort::Low:
+         return "low";
+     case ReasoningEffort::Medium:
+         return "medium";
+     case ReasoningEffort::XHigh:
+         return "xhigh";
+     }
+     throw std::invalid_argument("invalid reasoning effort");
+ }
+ 
+ OrderedJson render_template_content(const ChatMessage& message) {
+    if (!message.has_media()) { return escape_literal_vision_tokens(message.rendered_content().text); }
+ 
+     OrderedJson content = OrderedJson::array();
+     for (const ChatPart& part : message.parts) {
+         switch (part.kind) {
+         case ChatPartKind::Text:
+             content.push_back(OrderedJson{{"type", "text"},
+                                           {"text", escape_literal_vision_tokens(part.text)}});
+             break;
+         case ChatPartKind::Image:
+             content.push_back(OrderedJson{{"type", "image"}});
+             break;
+         case ChatPartKind::Video:
+             content.push_back(OrderedJson{{"type", "video"}});
+             break;
+         }
+     }
+     return content;
+ }
+ 
+ OrderedJson render_template_tool_calls(const ChatMessage& message) {
+     OrderedJson calls = OrderedJson::array();
+     for (const ToolCall& call : message.tool_calls) {
+         OrderedJson arguments = OrderedJson::object();
+          if (!call.arguments_json.empty()) {
+              try {
+                  // Literal pad markers quoted inside tool-call argument JSON would
+                  // otherwise be re-emitted into the rendered text verbatim, where the
+                  // placeholder scan in render() would record them as structured pads.
+                  // The marker characters are not JSON-structural, so a plain marker can
+                  // only occur inside a JSON string literal; inserting the break token
+                  // there keeps the JSON valid and unrecordable.
+                  arguments = OrderedJson::parse(
+                      escape_literal_vision_tokens(call.arguments_json));
+             } catch (const std::exception& error) {
+                 throw std::invalid_argument("invalid tool call arguments: " +
+                                             std::string(error.what()));
+             }
+             if (!arguments.is_object()) {
+                 throw std::invalid_argument("tool call arguments must be a JSON object");
+             }
+         }
+         calls.push_back(OrderedJson{{"id", call.id},
+                                     {"type", "function"},
+                                     {"function",
+                                      OrderedJson{{"name", call.name},
+                                                  {"arguments", std::move(arguments)}}}});
+     }
+     return calls;
+ }
+ 
+ minja::Value jinja_context(const std::vector<ChatMessage>& messages,
+                            const ChatRenderOptions& options) {
+     OrderedJson jinja_messages = OrderedJson::array();
+     for (const ChatMessage& message : messages) {
+         jinja_messages.push_back(OrderedJson{{"role", render_role(message.role)},
+                                               {"content", render_template_content(message)},
+                                              {"reasoning_content",
+                                               escape_literal_vision_tokens(message.reasoning_content)},
+                                               {"tool_calls", render_template_tool_calls(message)},
+                                               {"tool_call_id", message.tool_call_id}});
+     }
+ 
+     OrderedJson tools = OrderedJson::array();
+     for (const std::string& tool : options.tool_jsons) {
+         try {
+             tools.push_back(OrderedJson::parse(tool));
+         } catch (const std::exception& error) {
+             throw std::invalid_argument("invalid tool JSON: " + std::string(error.what()));
+         }
+     }
+ 
+     OrderedJson values{{"messages", std::move(jinja_messages)},
+                        {"tools", std::move(tools)},
+                        {"add_generation_prompt", options.add_generation_prompt},
+                        {"enable_thinking", options.enable_thinking},
+                        {"add_vision_id", options.add_vision_id},
+                        {"chat_template_kwargs", OrderedJson::object()}};
+     if (options.reasoning_effort) {
+         values["reasoning_effort"] = render_reasoning_effort(*options.reasoning_effort);
+     }
+     if (options.preserve_thinking) {
+         values["preserve_thinking"] = *options.preserve_thinking;
+         values["chat_template_kwargs"]["preserve_thinking"] = *options.preserve_thinking;
+     }
+     if (options.terse) {
+         values["terse"] = *options.terse;
+     }
+     return minja::Value(values);
+ }
+ 
+
+ class CompiledChatTemplate::JinjaTemplate {
+ public:
+     JinjaTemplate(std::string source, std::string source_name)
+         : source_name_(std::move(source_name)),
+           supports_reasoning_effort_(source.find("reasoning_effort") != std::string::npos),
+           supports_terse_(source.find("terse") != std::string::npos) {
+         try {
+             template_ = minja::Parser::parse(source, minja::Options{.trim_blocks           = true,
+                                                                       .lstrip_blocks         = true,
+                                                                       .keep_trailing_newline = false});
+         } catch (const std::exception& error) {
+             throw std::invalid_argument("failed to compile Jinja chat template '" + source_name_ +
+                                         "': " + error.what());
+         }
+     }
+ 
+     [[nodiscard]] RenderedChat render(const std::vector<ChatMessage>& messages,
+                                       const ChatRenderOptions& options) const {
+         if (options.reasoning_effort && !supports_reasoning_effort_) {
+             throw std::invalid_argument(
+             "custom Jinja chat template does not reference reasoning_effort");
+         }
+         if (options.terse && !supports_terse_) {
+             throw std::invalid_argument("custom Jinja chat template does not reference terse");
+         }
+        try {
+            std::string text = template_->render(
+                minja::Context::make(jinja_context(messages, options)));
+            RenderedChat result{.text = std::move(text), .rewrite_checkpoint = std::nullopt};
+            // The template renders one structured pad marker per media part (in request
+            // order). Literal markers quoted in text are escaped upstream on every
+            // channel (text parts, reasoning, tool results, tool-call arguments), and the
+            // per-modality cap below is defense in depth: record at most as many
+            // placeholders as structured parts exist, so any plain marker left in the
+            // rendered text is prose - never recorded, and dropped by the stray-strip in
+            // expand_placeholders when it falls after the last bound placeholder. An
+            // under-render (fewer markers than parts) still fails loudly at the
+            // expand_placeholders size check.
+            std::size_t structured_image = 0;
+            std::size_t structured_video = 0;
+            count_structured_media_parts(messages, structured_image, structured_video);
+            std::size_t recorded_image = 0;
+            std::size_t recorded_video = 0;
+            std::size_t image_pos = result.text.find(kImagePadMarker);
+            std::size_t video_pos = result.text.find(kVideoPadMarker);
+            std::size_t item_index = 0;
+            while (image_pos != std::string::npos || video_pos != std::string::npos) {
+                const bool image = video_pos == std::string::npos || image_pos < video_pos;
+                const std::string_view pad = image ? kImagePadMarker : kVideoPadMarker;
+                const std::size_t pos = image ? image_pos : video_pos;
+                if (image) {
+                    image_pos = result.text.find(kImagePadMarker, pos + pad.size());
+                } else {
+                    video_pos = result.text.find(kVideoPadMarker, pos + pad.size());
+                }
+                const bool structural = image ? recorded_image < structured_image
+                                              : recorded_video < structured_video;
+                if (structural) {
+                    result.media_placeholders.push_back(MediaPlaceholderByteSpec{
+                        .bytes      = ByteSpan{pos, pos + pad.size()},
+                        .modality   = image ? Modality::Image : Modality::Video,
+                        .item_index = item_index++});
+                    if (image) { ++recorded_image; } else { ++recorded_video; }
+                }
+            }
+            return result;
+         } catch (const std::exception& error) {
+             throw std::invalid_argument("failed to render Jinja chat template '" + source_name_ +
+                                         "': " + error.what());
+         }
+     }
+ 
+     [[nodiscard]] PromptCapabilities capabilities() const noexcept {
+         PromptCapabilities result;
+         result.enable_thinking = true;
+         if (supports_reasoning_effort_) {
+             result.reasoning_effort.low            = true;
+             result.reasoning_effort.medium         = true;
+             result.reasoning_effort.xhigh          = true;
+             result.reasoning_effort.default_effort = ReasoningEffort::Medium;
+         }
+         return result;
+     }
+     bool supports_terse_ = false;
+     std::string source_name_;
+     bool supports_reasoning_effort_ = false;
+     std::shared_ptr<minja::TemplateNode> template_;
+ };
+ 
 bool ChatMessage::has_media() const noexcept {
     for (const ChatPart& part : parts) {
         if (part.kind != ChatPartKind::Text) { return true; }
@@ -389,6 +657,8 @@ RenderedFragment ChatMessage::rendered_content(bool add_vision_id, int* image_co
     for (const ChatPart& part : parts) {
         switch (part.kind) {
         case ChatPartKind::Text:
+            // Literal text stays unmodified: the encoding path's literal spans keep its
+            // exact added-token spelling from tokenizing as a media token.
             out.append_literal(part.text);
             break;
         case ChatPartKind::Image:
@@ -423,9 +693,19 @@ CompiledChatTemplate CompiledChatTemplate::resolve(std::string_view source) {
                                 sha256_hex(digest) + ")");
 }
 
+CompiledChatTemplate CompiledChatTemplate::compile_jinja(std::string source,
+                                                         std::string source_name) {
+    if (source.empty()) {
+        throw std::invalid_argument("Jinja chat template ' is empty");
+    }
+    return CompiledChatTemplate(
+        std::make_shared<const JinjaTemplate>(std::move(source), std::move(source_name)));
+}
+
 PromptCapabilities CompiledChatTemplate::capabilities() const noexcept {
     PromptCapabilities result;
     result.enable_thinking = true;
+    if (jinja_template_) { return jinja_template_->capabilities(); }
     if (semantics_ == ChatTemplateSemantics::ReasoningEffort) {
         result.reasoning_effort.low            = true;
         result.reasoning_effort.medium         = true;
@@ -438,6 +718,7 @@ PromptCapabilities CompiledChatTemplate::capabilities() const noexcept {
 RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messages,
                                           ChatRenderOptions options) const {
     if (messages.empty()) { throw std::invalid_argument("chat messages must not be empty"); }
+    if (jinja_template_) { return jinja_template_->render(messages, options); }
 
     const bool continue_final_assistant =
         options.continuation == PromptContinuationMode::ContinueFinalAssistant;
@@ -473,6 +754,9 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
             trim_ascii_whitespace_bounds(leading_instruction_raw.text);
         leading_instruction =
             slice_fragment(leading_instruction_raw, leading_trim_begin, leading_trim_end);
+        // A quoted system prompt keeps its markers readable but broken so they cannot
+        // create media slots; ordinary message text is left untouched.
+        leading_instruction = escape_literal_fragment(std::move(leading_instruction));
         message_begin = 1;
     }
 
@@ -600,7 +884,7 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         RenderedFragment reasoning;
         RenderedFragment body = content;
         if (!message.reasoning_content.empty()) {
-            reasoning = literal_fragment(message.reasoning_content);
+            reasoning = escape_literal_fragment(literal_fragment(message.reasoning_content));
         } else if (!effort_template) {
             ThinkParts parts = derive_think_parts(content);
             reasoning        = std::move(parts.reasoning);
@@ -609,17 +893,36 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         reasoning = trim_ascii_whitespace(reasoning);
 
         const bool keep_thinking = preserve_thinking || (static_cast<long>(i) > last_query_index);
-        if (!preserve_thinking && !rewrite_checkpoint && static_cast<long>(i) > last_query_index) {
+        const std::size_t turn_begin = rendered.size();
+        if (!preserve_thinking && !effort_template && !rewrite_checkpoint &&
+            static_cast<long>(i) > last_query_index) {
             // Closing the current turn may rewrite everything beginning with this assistant
             // segment. Keep the stable history before the opener recoverable; retaining the
             // deterministic opener itself is not worth losing the whole prefix when a caller
             // branches with a new user message instead.
             rewrite_checkpoint = RewriteCheckpointByteSpec{
-                .kind = RewriteCheckpointKind::TurnClosure, .offset = rendered.size()};
+                .kind = RewriteCheckpointKind::TurnClosure, .offset = turn_begin};
         }
         rendered.append_template("<|im_start|>assistant\n");
+        if (effort_template && !preserve_thinking && !rewrite_checkpoint &&
+            static_cast<long>(i) > last_query_index) {
+            // The reasoning-effort opener is a complete deterministic sequence, so the
+            // closure checkpoint may sit just past it and let the opener replay verbatim.
+            rewrite_checkpoint = RewriteCheckpointByteSpec{
+                .kind = RewriteCheckpointKind::TurnClosure, .offset = rendered.size()};
+        }
         add_rewrite_execution_boundary();
-        if (keep_thinking) {
+        if (!preserve_thinking && !rewrite_checkpoint && effort_template &&
+            static_cast<long>(i) > last_query_index) {
+            // Reasoning-effort template: checkpoint after the deterministic opener so a
+            // reconstructed tool-call turn can replay the wrapper the C++ clone omits.
+            rewrite_checkpoint = RewriteCheckpointByteSpec{
+                .kind = RewriteCheckpointKind::TurnClosure, .offset = rendered.size()};
+        }
+        // Official Qwen3.8 Jinja still wraps whenever keep_thinking. The C++ clone
+        // omits an empty reasoning wrapper so history does not inject the
+        // no-thinking cue `<think>\n\n</think>\n\n`.
+        if (keep_thinking && !(effort_template && reasoning.text.empty())) {
             rendered.append_template("<think>\n");
             add_rewrite_execution_boundary();
             rendered.append(reasoning);
@@ -635,7 +938,8 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
                 } else {
                     rendered.append_template("\n");
                 }
-                rendered.append(render_tool_call(message.tool_calls[call_index], effort_template));
+                rendered.append(escape_literal_fragment(
+                    render_tool_call(message.tool_calls[call_index], effort_template)));
             }
         }
         rendered.append_template("<|im_end|>\n");
@@ -649,23 +953,46 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         // opener; placing it after the deterministic prologue makes the complete history
         // unrecoverable for the branch case merely to save a handful of prompt tokens.
         const std::size_t generation_begin = rendered.size();
-        if (preserve_thinking) {
-            rewrite_checkpoint = RewriteCheckpointByteSpec{
-                .kind = RewriteCheckpointKind::ResponseReplay, .offset = generation_begin};
-        } else if (!rewrite_checkpoint) {
+        if (!preserve_thinking && !rewrite_checkpoint) {
             rewrite_checkpoint = RewriteCheckpointByteSpec{
                 .kind = RewriteCheckpointKind::TurnClosure, .offset = generation_begin};
+        } else if (preserve_thinking && !options.enable_thinking && !effort_template) {
+            // Plain template: the pre-generation response checkpoint keeps the whole history
+            // (frontier == stable history tokens) recoverable for the branch case.
+            rewrite_checkpoint = RewriteCheckpointByteSpec{
+                .kind = RewriteCheckpointKind::ResponseReplay, .offset = generation_begin};
         }
         rendered.append_template("<|im_start|>assistant\n");
         add_rewrite_execution_boundary();
         if (options.enable_thinking) {
-            rendered.append_template("<think>\n");
-            add_rewrite_execution_boundary();
+            if (effort_template && preserve_thinking) {
+                // The effort prologue is a complete deterministic sequence: the
+                // replay starts after the whole opener.
+                rendered.append_template("<think>\n");
+                rewrite_checkpoint = RewriteCheckpointByteSpec{
+                    .kind = RewriteCheckpointKind::ResponseReplay, .offset = rendered.size()};
+                add_rewrite_execution_boundary();
+            } else {
+                rendered.append_template("<think>");
+                if (preserve_thinking) {
+                    // After the think tag, not after the trailing newline: `\n` is
+                    // token 198 and `\n\n` is token 271, so the longer prologue is not a
+                    // BPE-stable prefix of a closed empty think block.
+                    rewrite_checkpoint = RewriteCheckpointByteSpec{
+                        .kind = RewriteCheckpointKind::ResponseReplay, .offset = rendered.size()};
+                }
+                rendered.append_template("\n");
+                add_rewrite_execution_boundary();
+            }
         } else {
             rendered.append_template("<think>\n");
             add_rewrite_execution_boundary();
             rendered.append_template(kCanonicalReasoningCloseSerialization);
             add_rewrite_execution_boundary();
+            if (preserve_thinking && effort_template) {
+                rewrite_checkpoint = RewriteCheckpointByteSpec{
+                    .kind = RewriteCheckpointKind::ResponseReplay, .offset = rendered.size()};
+            }
         }
     }
     for (std::size_t index = 0; index < options.cache_markers.size(); ++index) {
@@ -704,5 +1031,47 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
                         .message_boundaries           = std::move(message_boundaries),
                         .cache_boundaries             = std::move(cache_boundaries)};
 }
+
+ void count_structured_media_parts(const std::vector<ChatMessage>& messages,
+                                   std::size_t& image_parts,
+                                   std::size_t& video_parts) {
+     image_parts = 0;
+     video_parts = 0;
+     for (const ChatMessage& message : messages) {
+         // Same role filter as Processor::media_parts (processor.cpp): system/developer
+         // media is invalid there and never counted; unsupported roles are rejected
+         // upstream. Keep the two predicates in lockstep - the count must equal the
+         // number of VisionItems the processor builds from the same messages.
+         if (message.role == ChatRole::System || message.role == ChatRole::Developer) { continue; }
+         if (message.role != ChatRole::User && message.role != ChatRole::Assistant &&
+             message.role != ChatRole::Tool) { continue; }
+         for (const ChatPart& part : message.parts) {
+             if (part.kind == ChatPartKind::Image) { ++image_parts; }
+             else if (part.kind == ChatPartKind::Video) { ++video_parts; }
+         }
+     }
+ }
+
+ bool prompt_ends_in_open_reasoning(const std::string& rendered_text) {
+     // Reasoning markers depend on the active chat template. Qwen-Sharp opens
+     // the channel with a plain less-than + think + greater-than token and
+     // closes it with a less-than + slash + think + greater-than token
+     // (five-letter think); the official Qwen3 template uses a newline-after-
+     // less-than open and an eight-letter thinking close. Match every variant
+     // so the gate does not depend on which chat template is active.
+     const auto last_of = [&rendered_text](const char* a, const char* b) {
+         const std::size_t pos_a = rendered_text.rfind(std::string(a));
+         const std::size_t pos_b = rendered_text.rfind(std::string(b));
+         if (pos_a == std::string::npos) { return pos_b; }
+         if (pos_b == std::string::npos) { return pos_a; }
+         return (pos_a > pos_b) ? pos_a : pos_b;
+     };
+     const std::size_t last_open  = last_of("<think>", "<\nthink>");
+     const std::size_t last_close = last_of("</think>", "</thinking>");
+     if (last_open == std::string::npos) { return false; }
+     if (last_close == std::string::npos) { return true; }
+     return last_close < last_open;
+ }
+ 
 
 } // namespace ninfer::targets::qwen3_6::frontend_internal

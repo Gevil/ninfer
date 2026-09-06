@@ -131,19 +131,6 @@ void validate_standard_output_controls(const Json& body) {
         }
     }
 
-    if (body.contains("response_format") && !body.at("response_format").is_null()) {
-        const Json& format = body.at("response_format");
-        if (!format.is_object() || !format.contains("type") || !format.at("type").is_string()) {
-            bad_request("response_format must contain a string type", "response_format");
-        }
-        if (format.at("type").get<std::string>() != "text") {
-            bad_request(
-                "this response_format requires constrained output, which NInfer cannot guarantee; "
-                "only {\"type\":\"text\"} is available",
-                "response_format", "response_format_not_supported");
-        }
-    }
-
     if (body.contains("modalities") && !body.at("modalities").is_null()) {
         const Json& modalities = body.at("modalities");
         if (!modalities.is_array() || modalities.empty()) {
@@ -816,6 +803,7 @@ TemplateOptions parse_template_options(const Json& body) {
     }
     for (auto iterator = kwargs.begin(); iterator != kwargs.end(); ++iterator) {
         if (iterator.key() != "enable_thinking" && iterator.key() != "preserve_thinking" &&
+            iterator.key() != "reasoning_effort" && iterator.key() != "terse" &&
             !iterator.value().is_null()) {
             bad_request("chat_template_kwargs." + iterator.key() + " is not supported",
                         "chat_template_kwargs", "chat_template_option_not_supported");
@@ -847,6 +835,86 @@ void parse_reasoning_effort(const Json& body, GenerationRequest& output) {
                     "reasoning_effort");
     }
     output.reasoning_effort = *parsed;
+}
+
+std::optional<RequestedReasoningEffort> parse_kwarg_reasoning_effort(const Json& body) {
+    // The Sharp template's kwargs channel (chat_template_kwargs.reasoning_effort): same string
+    // validation as the top-level field; nulls stay unset (server default wins).
+    if (!body.contains("chat_template_kwargs") || !body.at("chat_template_kwargs").is_object()) {
+        return std::nullopt;
+    }
+    const Json& kwargs = body.at("chat_template_kwargs");
+    if (!kwargs.contains("reasoning_effort") || kwargs.at("reasoning_effort").is_null()) {
+        return std::nullopt;
+    }
+    if (!kwargs.at("reasoning_effort").is_string()) {
+        bad_request("chat_template_kwargs.reasoning_effort must be a string or null",
+                    "chat_template_kwargs");
+    }
+    const std::string value = kwargs.at("reasoning_effort").get<std::string>();
+    const std::optional<RequestedReasoningEffort> parsed = parse_requested_reasoning_effort(value);
+    if (!parsed) {
+        bad_request("chat_template_kwargs.reasoning_effort must be one of none, minimal, low, "
+                    "medium, high, xhigh, or max",
+                    "chat_template_kwargs");
+    }
+    return *parsed;
+}
+
+std::optional<bool> parse_kwarg_terse(const Json& body) {
+    // Sharp template per-request terseness toggle (kwargs channel only; the template keeps its
+    // own default when absent). The kwargs allowlist above has already validated the key.
+    if (!body.contains("chat_template_kwargs") || !body.at("chat_template_kwargs").is_object()) {
+        return std::nullopt;
+    }
+    const Json& kwargs = body.at("chat_template_kwargs");
+    if (!kwargs.contains("terse") || kwargs.at("terse").is_null()) { return std::nullopt; }
+    if (!kwargs.at("terse").is_boolean()) {
+        bad_request("chat_template_kwargs.terse must be a boolean or null", "chat_template_kwargs");
+    }
+    return kwargs.at("terse").get<bool>();
+}
+
+// Accepts {type:text}, {type:json_object}, and {type:json_schema} (the schema object is
+// carried; `name` and `strict` are parsed for wire compatibility only — there is no
+// token-level constraint in this engine, so JSON modes are prompt-injected in translate.cpp).
+void parse_response_format(const Json& body, GenerationRequest& output) {
+    if (!body.contains("response_format") || body.at("response_format").is_null()) { return; }
+    const Json& fmt = body.at("response_format");
+    if (!fmt.is_object()) {
+        bad_request("response_format must be an object", "response_format",
+                    "response_format_not_supported");
+    }
+    if (!fmt.contains("type") || !fmt.at("type").is_string()) {
+        bad_request("response_format.type must be a string", "response_format",
+                    "response_format_not_supported");
+    }
+    const std::string type = fmt.at("type").get<std::string>();
+    if (type == "text") {
+        output.structured_output = StructuredOutput{StructuredOutputType::Text, {}};
+        return;
+    }
+    if (type == "json_object") {
+        output.structured_output = StructuredOutput{StructuredOutputType::JsonObject, {}};
+        return;
+    }
+    if (type == "json_schema") {
+        if (!fmt.contains("json_schema") || !fmt.at("json_schema").is_object()) {
+            bad_request("response_format.json_schema must be an object", "response_format",
+                        "response_format_not_supported");
+        }
+        const Json& js = fmt.at("json_schema");
+        if (!js.contains("schema") || !js.at("schema").is_object()) {
+            bad_request("response_format.json_schema.schema must be an object", "response_format",
+                        "response_format_not_supported");
+        }
+        output.structured_output =
+            StructuredOutput{StructuredOutputType::JsonSchema, js.at("schema").dump()};
+        return;
+    }
+    bad_request("response_format.type '" + type + "' is not supported; only text, json_object, "
+                "and json_schema are accepted",
+                "response_format", "response_format_not_supported");
 }
 
 void parse_stream_options(const Json& body, OpenAIChatRequest& output) {
@@ -909,6 +977,23 @@ OpenAIChatRequest parse_chat_completion_request(const Json& body, const RequestL
     parse_response_observations(body, output);
     parse_output_limit(body, limits, output);
     parse_reasoning_effort(body, output.generation);
+    // Two spellings, one value: the top-level `reasoning_effort` field, or the Sharp
+    // template's kwargs channel. Top-level wins; an explicit disagreement is a conflict,
+    // not a silent override.
+    if (const std::optional<RequestedReasoningEffort> kwarg_effort =
+            parse_kwarg_reasoning_effort(body);
+        kwarg_effort) {
+        if (output.generation.reasoning_effort &&
+            *output.generation.reasoning_effort != *kwarg_effort) {
+            bad_request("conflicting reasoning_effort values", "reasoning_effort",
+                        "conflicting_template_option");
+        }
+        if (!output.generation.reasoning_effort) {
+            output.generation.reasoning_effort = *kwarg_effort;
+        }
+    }
+    output.generation.terse = parse_kwarg_terse(body);
+    parse_response_format(body, output.generation);
     const TemplateOptions template_options = parse_template_options(body);
     output.generation.enable_thinking      = template_options.enable_thinking;
     output.generation.preserve_thinking    = template_options.preserve_thinking;

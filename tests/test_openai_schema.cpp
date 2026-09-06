@@ -562,6 +562,136 @@ int test_reasoning_and_extensions() {
     return failures;
 }
 
+int test_template_kwargs() {
+    int failures = 0;
+    auto body = base_request();
+
+    // The Sharp template's kwargs channel: per-request reasoning effort.
+    body["chat_template_kwargs"] = Json{{"reasoning_effort", "xhigh"}};
+    GenerationRequest kwargs_effort = parse(body).generation;
+    failures += check(kwargs_effort.reasoning_effort == RequestedReasoningEffort::XHigh,
+                      "chat_template_kwargs.reasoning_effort is honored");
+
+    // The per-request terseness toggle (Sharp v22.3.2).
+    body                        = base_request();
+    body["chat_template_kwargs"] = Json{{"terse", false}};
+    GenerationRequest terse_request = parse(body).generation;
+    failures += check(terse_request.terse == false, "chat_template_kwargs.terse is honored");
+
+    // Two spellings, one value: agreement is fine, disagreement is a conflict.
+    body                                   = base_request();
+    body["reasoning_effort"]               = "xhigh";
+    body["chat_template_kwargs"]           = Json{{"reasoning_effort", "xhigh"}};
+    failures += check(parse(body).generation.reasoning_effort == RequestedReasoningEffort::XHigh,
+                      "matching top-level and kwargs reasoning effort accepted");
+    body["chat_template_kwargs"]["reasoning_effort"] = "low";
+    failures += check(api_error([&] { (void)parse(body); }).code == "conflicting_template_option",
+                      "conflicting reasoning_effort spellings rejected");
+
+    body                         = base_request();
+    body["chat_template_kwargs"] = Json{{"reasoning_effort", "bogus"}};
+    failures += check(api_error([&] { (void)parse(body); }).status != 0,
+                      "unknown reasoning effort value rejected");
+    body["chat_template_kwargs"] = Json{{"terse", "off"}};
+    failures += check(api_error([&] { (void)parse(body); }).status != 0,
+                      "non-boolean terse rejected");
+
+    // Nulls stay neutral (server/template defaults win).
+    body["chat_template_kwargs"] = Json{{"reasoning_effort", nullptr}, {"terse", nullptr}};
+    GenerationRequest neutral = parse(body).generation;
+    failures += check(!neutral.reasoning_effort && !neutral.terse, "null kwargs stay neutral");
+    return failures;
+}
+
+int test_response_format() {
+    int failures = 0;
+    auto text_of = [](const ninfer::ChatMessage& message) {
+        std::string text;
+        for (const ninfer::MessagePart& part : message.parts) { text += part.text; }
+        return text;
+    };
+
+    // json_object without a system turn: instruction becomes a new leading system turn.
+    {
+        Json body = base_request();
+        body["response_format"] = Json{{"type", "json_object"}};
+        GenerationRequest req = parse(body).generation;
+        failures += check(req.structured_output.type == StructuredOutputType::JsonObject,
+                          "json_object response_format accepted");
+        const ninfer::PromptInput input = prompt(req);
+        failures += check(input.messages.size() == 2, "json_object: system turn injected");
+        failures += check(input.messages.front().role == ninfer::ChatRole::System,
+                          "json_object: leading system turn");
+        failures += check(text_of(input.messages.front()).find("single JSON object") !=
+                              std::string::npos,
+                          "json_object: instruction present");
+        failures += check(input.messages.back().role == ninfer::ChatRole::User &&
+                              text_of(input.messages.back()) == "hello",
+                          "json_object: user turn preserved");
+    }
+
+    // json_object with a leading system turn: appended, not duplicated.
+    {
+        Json body = base_request();
+        body["messages"] =
+            Json::array({Json{{"role", "system"}, {"content", "be brief"}},
+                         Json{{"role", "user"}, {"content", "hello"}}});
+        body["response_format"] = Json{{"type", "json_object"}};
+        const ninfer::PromptInput input = prompt(parse(body).generation);
+        failures += check(input.messages.size() == 2, "json_object: no duplicate system turn");
+        const std::string system_text = text_of(input.messages.front());
+        failures += check(system_text.find("be brief") != std::string::npos &&
+                              system_text.find("single JSON object") != std::string::npos,
+                          "json_object: instruction appended to existing system turn");
+    }
+
+    // json_schema: the client schema is serialized and embedded in the prompt.
+    {
+        Json schema =
+            Json{{"type", "object"},
+                 {"properties", Json{{"facts", Json{{"type", "array"}}}}},
+                 {"required", Json::array({"facts"})}};
+        Json body = base_request();
+        body["response_format"] =
+            Json{{"type", "json_schema"},
+                 {"json_schema", Json{{"name", "facts"}, {"schema", schema}, {"strict", true}}}};
+        GenerationRequest req = parse(body).generation;
+        failures += check(req.structured_output.type == StructuredOutputType::JsonSchema,
+                          "json_schema response_format accepted");
+        failures += check(req.structured_output.schema_json.find("\"facts\"") != std::string::npos,
+                          "json_schema: client schema serialized");
+        failures += check(text_of(prompt(req).messages.front()).find("\"facts\"") !=
+                              std::string::npos,
+                          "json_schema: schema embedded in the prompt");
+    }
+
+    // text and absent: recorded, never injected.
+    {
+        Json body = base_request();
+        body["response_format"] = Json{{"type", "text"}};
+        GenerationRequest req = parse(body).generation;
+        failures += check(req.structured_output.type == StructuredOutputType::Text,
+                          "text response_format recorded");
+        failures += check(prompt(req).messages.size() == 1, "text: no injection");
+        body = base_request();
+        failures += check(parse(body).generation.structured_output.type ==
+                              StructuredOutputType::None,
+                          "absent response_format stays None");
+    }
+
+    // Unknown types and malformed json_schema payloads are rejected.
+    {
+        Json body = base_request();
+        body["response_format"] = Json{{"type", "json"}};
+        failures += check(api_error([&] { (void)parse(body); }).code == "response_format_not_supported",
+                          "unknown response_format type rejected");
+        body["response_format"] = Json{{"type", "json_schema"}};
+        failures += check(api_error([&] { (void)parse(body); }).code == "response_format_not_supported",
+                          "json_schema without schema rejected");
+    }
+    return failures;
+}
+
 int test_stops_and_ranges() {
     int failures                            = 0;
     Json body                               = base_request();
@@ -788,6 +918,8 @@ int main() {
     failures += test_tools();
     failures += test_messages_and_media();
     failures += test_reasoning_and_extensions();
+    failures += test_template_kwargs();
+    failures += test_response_format();
     failures += test_stops_and_ranges();
     failures += test_aggregate_response();
     failures += test_stream_response();

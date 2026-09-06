@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -22,6 +23,7 @@ inline constexpr std::size_t kDefaultResponseStoreBytes   = 256ULL << 20;
 struct ServeOptions {
     bool help_requested = false;
     std::string artifact_path;
+    std::filesystem::path chat_template_path;
     std::string host = "127.0.0.1";
     int port         = 8080;
     std::string api_key;                          // empty => no auth
@@ -47,6 +49,8 @@ struct ServeOptions {
     ContextCacheOptions context_cache;
     bool enable_vision      = false;
     bool use_cuda_graph     = true;
+    float rope_scaling_factor              = 1.0F;
+    std::uint32_t rope_scaling_original_context = 262144;
     bool allow_prefix_reuse = true;
     bool enable_thinking =
         true; // default thinking mode for the generation prompt (--no-thinking opts out)
@@ -54,6 +58,10 @@ struct ServeOptions {
     std::optional<std::uint32_t> default_thinking_budget;
     int default_max_tokens = kDefaultMaxTokens;
     bool enable_cors       = false; // send permissive CORS headers for browser UIs
+    bool webui_auto        = false; // --webui: auto-download the prebuilt llama.cpp
+                                    // webui from the ggml-org/llama-ui HF bucket
+    std::string webui_dir;          // --webui-dir: serve this dir; also the download
+                                    // location for --webui (default: <artifact-dir>/webui)
     // Process-level explicit overrides layered between registered model/mode defaults and request
     // fields. An omitted seed is replaced per request with a fresh random seed.
     SamplingOverrides sampling_overrides;

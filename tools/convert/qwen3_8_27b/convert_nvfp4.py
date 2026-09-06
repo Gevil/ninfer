@@ -378,7 +378,7 @@ def _build_report(
     return report
 
 
-def convert(
+def _convert_mixed(
     official_dir: str | Path,
     quantized_dir: str | Path,
     dflash2_model_dir: str | Path,
@@ -509,6 +509,30 @@ def convert(
         flush=True,
     )
     return report_path
+
+
+def convert(
+    official_dir: str | Path,
+    quantized_dir: str | Path,
+    out_path: str | Path,
+    *,
+    device: str | torch.device = "cuda",
+) -> Path:
+    """Detect the registered quantized source profile and convert it."""
+
+    output = Path(out_path)
+    if output.name != OUTPUT_BASENAME:
+        raise ValueError(
+            f"NVFP4 converter output basename must be {OUTPUT_BASENAME!r}"
+        )
+    config = family_conversion.load_json(Path(quantized_dir) / "config.json")
+    from . import convert_nvfp4_quasar
+
+    if convert_nvfp4_quasar.matches_config(config):
+        return convert_nvfp4_quasar.convert(
+            official_dir, quantized_dir, out_path, device=device
+        )
+    return _convert_mixed(official_dir, quantized_dir, out_path, device=device)
 
 
 def main(argv: Sequence[str] | None = None) -> None:

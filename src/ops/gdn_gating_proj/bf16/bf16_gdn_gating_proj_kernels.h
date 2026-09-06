@@ -29,6 +29,11 @@ void bf16_gdn_gating_proj_small_t_split10_launch(const Tensor& x, const Weight& 
                                                  const Tensor& dt_bias, void* workspace,
                                                  std::size_t workspace_bytes, Tensor& g,
                                                  Tensor& beta, cudaStream_t stream);
+void bf16_gdn_gating_proj_small_t_fused_launch(const Tensor& x, const Weight& a_weight,
+                                               const Weight& b_weight, const Tensor& A_log,
+                                               const Tensor& dt_bias, void* workspace,
+                                               std::size_t workspace_bytes, Tensor& g,
+                                               Tensor& beta, cudaStream_t stream);
 
 // Cooperative launchers return false without submitting work only when the selected device cannot
 // make one complete token tile resident. The Op wrapper owns the non-cooperative fallback.

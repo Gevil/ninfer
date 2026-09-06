@@ -21,7 +21,13 @@ void speculative_accept_greedy_drafts_launch(const Tensor& target_tokens, const 
                                              Tensor& licensed_tokens, Tensor& licensed_counts,
                                              Tensor& accepted, std::int32_t token_domain,
                                              const SamplingConfig* configs, DeviceSpan workspace,
-                                             cudaStream_t stream);
+                                             cudaStream_t stream,
+                                             const Tensor* draft_probs      = nullptr,
+                                             bool nucleus_accept            = false,
+                                             const Tensor* draft_support_ids = nullptr,
+                                             const Tensor* draft_support_probs = nullptr,
+                                             const Tensor* draft_support_n     = nullptr,
+                                             const Tensor* draft_recorded      = nullptr);
 
 void speculative_accept_sparse_drafts_launch(
     const Tensor& target_tokens, const Tensor& logits, const Tensor& drafts,

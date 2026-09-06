@@ -301,7 +301,8 @@ void Variant::gdn_norm_control_projection(const Tensor& residual, const Tensor& 
 }
 
 void Variant::post_mixer(const Tensor& hidden, const PostMixerWeights& weights, Tensor& residual,
-                         qwen3_6::TextPhase, WorkspaceArena& workspace, cudaStream_t stream) {
+                         qwen3_6::TextPhase, WorkspaceArena& workspace, cudaStream_t stream,
+                         ops::WeightPrefetchSpan) {
     auto scope        = workspace.scope();
     Tensor activation = workspace.alloc(DType::BF16, {TextConfig::intermediate, hidden.ne[1]});
     ops::linear_swiglu(hidden, weights.gate_up, activation, text_policy(weights.gate_up), workspace,
@@ -355,6 +356,10 @@ std::size_t Variant::attention_projection_workspace_capacity_bytes(WeightsProfil
     case WeightsProfile::Qwen38GroupwiseInt:
         return 0;
     case WeightsProfile::Qwen36Nvfp4:
+    case WeightsProfile::Qwen38Nvfp4Full:
+    case WeightsProfile::Qwen38Quasar:
+    case WeightsProfile::Qwen38Nvfp4LegacyW8:
+    case WeightsProfile::Qwen38Nvfp4Quasar:
         return ops::attn_input_proj_workspace_capacity_bytes(
             QType::NVFP4, 14336, TextConfig::hidden, kNvfp4TextPolicy, first, last);
     case WeightsProfile::Qwen38Nvfp4:
@@ -374,6 +379,10 @@ std::size_t Variant::attention_output_projection_workspace_capacity_bytes(
                                                         TextConfig::query_size,
                                                         ops::LinearPolicy::A16Only, first, last);
     case WeightsProfile::Qwen36Nvfp4:
+    case WeightsProfile::Qwen38Nvfp4Full:
+    case WeightsProfile::Qwen38Quasar:
+    case WeightsProfile::Qwen38Nvfp4LegacyW8:
+    case WeightsProfile::Qwen38Nvfp4Quasar:
         return ops::linear_add_workspace_capacity_bytes(QType::NVFP4, TextConfig::hidden,
                                                         TextConfig::query_size, kNvfp4TextPolicy,
                                                         first, last);
@@ -395,6 +404,10 @@ std::size_t Variant::gdn_input_projection_workspace_capacity_bytes(WeightsProfil
     case WeightsProfile::Qwen38GroupwiseInt:
         return 0;
     case WeightsProfile::Qwen36Nvfp4:
+    case WeightsProfile::Qwen38Nvfp4Full:
+    case WeightsProfile::Qwen38Quasar:
+    case WeightsProfile::Qwen38Nvfp4LegacyW8:
+    case WeightsProfile::Qwen38Nvfp4Quasar:
         return ops::gdn_input_proj_workspace_capacity_bytes(QType::NVFP4, 16384, TextConfig::hidden,
                                                             kNvfp4TextPolicy, first, last);
     case WeightsProfile::Qwen38Nvfp4:
@@ -416,6 +429,10 @@ std::size_t Variant::gdn_input_projection_snapshot_workspace_capacity_bytes(
                             TextConfig::key_dim, TextConfig::key_dim, TextConfig::value_dim,
                             batch_size, first, last));
     case WeightsProfile::Qwen36Nvfp4:
+    case WeightsProfile::Qwen38Nvfp4Full:
+    case WeightsProfile::Qwen38Quasar:
+    case WeightsProfile::Qwen38Nvfp4LegacyW8:
+    case WeightsProfile::Qwen38Nvfp4Quasar:
         return std::max(kMinimumLeafWorkspaceBytes,
                         ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
                             QType::NVFP4, 16384, TextConfig::hidden, kNvfp4TextPolicy, batch_size,
@@ -441,6 +458,10 @@ std::size_t Variant::gdn_input_projection_record_workspace_capacity_bytes(
                             TextConfig::key_dim, TextConfig::key_dim, TextConfig::value_dim,
                             batch_size, first, last));
     case WeightsProfile::Qwen36Nvfp4:
+    case WeightsProfile::Qwen38Nvfp4Full:
+    case WeightsProfile::Qwen38Quasar:
+    case WeightsProfile::Qwen38Nvfp4LegacyW8:
+    case WeightsProfile::Qwen38Nvfp4Quasar:
         return std::max(kMinimumLeafWorkspaceBytes,
                         ops::gdn_input_proj_conv_record_workspace_capacity_bytes(
                             QType::NVFP4, 16384, TextConfig::hidden, kNvfp4TextPolicy, batch_size,
@@ -466,6 +487,10 @@ std::size_t Variant::gdn_output_projection_workspace_capacity_bytes(WeightsProfi
                                                         TextConfig::value_dim,
                                                         ops::LinearPolicy::A16Only, first, last);
     case WeightsProfile::Qwen36Nvfp4:
+    case WeightsProfile::Qwen38Nvfp4Full:
+    case WeightsProfile::Qwen38Quasar:
+    case WeightsProfile::Qwen38Nvfp4LegacyW8:
+    case WeightsProfile::Qwen38Nvfp4Quasar:
         return ops::linear_add_workspace_capacity_bytes(
             QType::NVFP4, TextConfig::hidden, TextConfig::value_dim, kNvfp4TextPolicy, first, last);
     case WeightsProfile::Qwen38Nvfp4:
@@ -492,6 +517,10 @@ std::size_t Variant::post_mixer_workspace_capacity_bytes(WeightsProfile weights_
         return post_mixer_workspace_bytes(QType::Q4G64_F16S, QType::Q5G64_F16S,
                                           ops::LinearPolicy::A16Only, first, last);
     case WeightsProfile::Qwen36Nvfp4:
+    case WeightsProfile::Qwen38Nvfp4Full:
+    case WeightsProfile::Qwen38Quasar:
+    case WeightsProfile::Qwen38Nvfp4LegacyW8:
+    case WeightsProfile::Qwen38Nvfp4Quasar:
         return post_mixer_workspace_bytes(QType::NVFP4, QType::NVFP4, kNvfp4TextPolicy, first,
                                           last);
     case WeightsProfile::Qwen38Nvfp4: {

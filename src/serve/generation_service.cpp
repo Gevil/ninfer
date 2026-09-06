@@ -234,6 +234,7 @@ GenerationService::GenerationService(ServeOptions options, StartupObserver start
     : options_(std::move(options)) {
     ninfer::EngineOptions engine_options;
     engine_options.artifact_path            = options_.artifact_path;
+    engine_options.chat_template_path       = options_.chat_template_path;
     engine_options.device                   = options_.device;
     engine_options.max_context              = options_.max_context;
     engine_options.kv_capacity              = options_.kv_capacity;
@@ -244,6 +245,8 @@ GenerationService::GenerationService(ServeOptions options, StartupObserver start
     engine_options.kv_cache                 = options_.kv_cache;
     engine_options.enable_vision            = options_.enable_vision;
     engine_options.use_cuda_graph           = options_.use_cuda_graph;
+    engine_options.rope_scaling_factor          = options_.rope_scaling_factor;
+    engine_options.rope_scaling_original_context = options_.rope_scaling_original_context;
     engine_options.speculative              = options_.speculative;
     engine_options.context_cache            = options_.context_cache;
     engine_options.context_cost.preset_path = options_.context_cost_presets;

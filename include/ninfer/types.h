@@ -150,6 +150,8 @@ struct ContextCostOptions {
 
 struct EngineOptions {
     std::filesystem::path artifact_path;
+    // Optional self-contained Jinja chat template loaded once with this Engine.
+    std::filesystem::path chat_template_path;
     EnginePurpose purpose              = EnginePurpose::Generation;
     int device                         = 0;
     std::uint32_t max_context          = 2048; // Logical ceiling of one request or score window.
@@ -166,6 +168,8 @@ struct EngineOptions {
     std::uint32_t media_preprocess_threads = 0;
     bool enable_vision                     = false;
     bool use_cuda_graph                    = true;
+    float rope_scaling_factor              = 1.0F;
+    std::uint32_t rope_scaling_original_context = 262144;
     ContextCacheOptions context_cache;
     ContextCostOptions context_cost;
     StartupObserver startup_observer;
@@ -406,6 +410,8 @@ struct PromptOptions {
     bool enable_thinking                = true;
     std::optional<ReasoningEffort> reasoning_effort;
     bool preserve_thinking = false;
+    // Sharp template per-request terseness toggle (null = template default).
+    std::optional<bool> terse;
     bool add_vision_id     = false;
     std::vector<std::string> tool_jsons;
 };
@@ -915,6 +921,10 @@ struct RuntimeStats {
     std::uint64_t pressure_searches                    = 0;
     std::uint64_t pressure_search_budget_exhaustions   = 0;
     std::uint64_t pressure_maximal_fallback_selections = 0;
+    // Admission path counters: catalog hits found via the session-key fallback,
+    // and restores served from the host-KV safety net.
+    std::uint64_t admission_catalog_hits        = 0;
+    std::uint64_t admission_safety_net_restores = 0;
     std::uint32_t shared_active_references             = 0;
     std::uint64_t historical_fork_hits                 = 0;
     double actual_context_transfer_seconds             = 0.0;

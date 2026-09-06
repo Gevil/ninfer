@@ -106,6 +106,19 @@ std::string render_tool_definition(const ToolDefinition& tool) {
     return Json{{"type", "function"}, {"function", std::move(function)}}.dump();
 }
 
+// JSON response formats have no token-level constraint in this engine, so they are
+// enforced by an instruction injected into the prompt — the same soft-JSON approach
+// llama.cpp pairs with its json_object grammar. JsonObject asks for a bare object;
+// JsonSchema additionally carries the client's schema.
+std::string structured_output_instruction(const StructuredOutput& output) {
+    std::string text = "You must respond with a single JSON object and nothing else: "
+                       "no prose, no explanations, no markdown code fences.";
+    if (output.type == StructuredOutputType::JsonSchema) {
+        text += " The object must conform to this JSON schema:\n" + output.schema_json;
+    }
+    return text;
+}
+
 } // namespace
 
 ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& request,
@@ -116,6 +129,7 @@ ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& reques
         .reasoning_effort           = std::nullopt,
         .effective_reasoning_effort = std::nullopt,
         .preserve_thinking          = request.preserve_thinking.value_or(server.preserve_thinking),
+        .terse                      = request.terse,
     };
     const auto complete = [&]() {
         if (request.continuation == ninfer::PromptContinuationMode::ContinueFinalAssistant &&
@@ -168,7 +182,6 @@ ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& reques
     case RequestedReasoningEffort::None:
         break;
     }
-
     if (!capabilities.reasoning_effort.supports(*result.reasoning_effort)) {
         invalid_prompt_option("reasoning effort '" +
                                   std::string(requested_reasoning_effort_name(requested)) +
@@ -181,10 +194,27 @@ ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& reques
 ninfer::PromptInput to_prompt_input(const GenerationRequest& request,
                                     const ResolvedPromptSemantics& semantics,
                                     const MediaAcquirer& acquire_media) {
+    std::vector<ChatTurn> turns = request.messages;
+    const StructuredOutput& structured_output = request.structured_output;
+    if (structured_output.type == StructuredOutputType::JsonObject ||
+        structured_output.type == StructuredOutputType::JsonSchema) {
+        ContentPart instruction;
+        instruction.kind = ContentKind::Text;
+        instruction.text = structured_output_instruction(structured_output);
+        if (!turns.empty() && turns.front().role == ChatRole::System) {
+            turns.front().content.push_back(std::move(instruction));
+        } else {
+            ChatTurn system;
+            system.role    = ChatRole::System;
+            system.content = std::vector<ContentPart>{std::move(instruction)};
+            turns.insert(turns.begin(), std::move(system));
+        }
+    }
+
     ninfer::PromptInput input;
-    input.messages.reserve(request.messages.size());
-    for (std::size_t turn_index = 0; turn_index < request.messages.size(); ++turn_index) {
-        const ChatTurn& turn = request.messages[turn_index];
+    input.messages.reserve(turns.size());
+    for (std::size_t turn_index = 0; turn_index < turns.size(); ++turn_index) {
+        const ChatTurn& turn = turns[turn_index];
         ninfer::ChatMessage message;
         message.role              = turn.role;
         message.reasoning_content = turn.reasoning_content;
@@ -272,6 +302,7 @@ ninfer::PromptInput to_prompt_input(const GenerationRequest& request,
     input.options.enable_thinking                  = semantics.enable_thinking;
     input.options.reasoning_effort                 = semantics.reasoning_effort;
     input.options.preserve_thinking                = semantics.preserve_thinking;
+    input.options.terse                        = semantics.terse;
     input.options.add_vision_id                    = false;
     const std::vector<const ToolDefinition*> tools = effective_tools(request);
     input.options.tool_jsons.reserve(tools.size());

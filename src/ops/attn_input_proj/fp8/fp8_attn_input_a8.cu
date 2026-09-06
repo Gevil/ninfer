@@ -52,31 +52,26 @@ void run(const Weight& weight, Tensor& q, Tensor& gate, Tensor& k, Tensor& v,
 void fp8_attn_input_a8_launch(const Tensor& x, const Weight& weight, Tensor& q, Tensor& gate,
                               Tensor& k, Tensor& v, Fp8A8Workspace workspace, cudaStream_t stream) {
     launch_fp8_a8_quantize(x, weight, workspace, stream);
-    // This Op owns its tile choices; the generic Linear schedules do not describe four-output
-    // projection's short-column cost. All variants share the same activation representation.
-    using Small32   = Fp8MmaSchedule<32, 64, 128, 1, 2, 3, 2, Cache::cg, Cache::cg,
-                                     Fp8MmaFragmentPipeline::PingPong, Fp8MmaRaster::TokenFast>;
-    using Small64   = Fp8MmaSchedule<64, 64, 128, 2, 2, 3, 2, Cache::cg, Cache::cg,
-                                     Fp8MmaFragmentPipeline::PingPong, Fp8MmaRaster::TokenFast>;
-    using ShortTail = Fp8MmaSchedule<32, 128, 128, 2, 4, 2, 2, Cache::cg, Cache::cg,
-                                     Fp8MmaFragmentPipeline::PingPong, Fp8MmaRaster::TokenFast>;
-    using Wide128   = Fp8MmaSchedule<64, 64, 128, 2, 2, 2, 3, Cache::cg, Cache::cg,
-                                     Fp8MmaFragmentPipeline::PingPong, Fp8MmaRaster::TokenFast>;
-    using Tail144   = Fp8MmaSchedule<48, 128, 128, 3, 4, 2, 2, Cache::cg, Cache::cg,
-                                     Fp8MmaFragmentPipeline::PingPong, Fp8MmaRaster::TokenFast>;
-    using Prefill   = Fp8MmaSchedule<64, 128, 128, 2, 4, 2, 2, Cache::cg, Cache::cg,
-                                     Fp8MmaFragmentPipeline::PingPong, Fp8MmaRaster::TokenFast>;
-    if (x.ne[1] <= 32)
-        run<Small32>(weight, q, gate, k, v, workspace, x.ne[1], stream);
-    else if (x.ne[1] <= 64)
-        run<Small64>(weight, q, gate, k, v, workspace, x.ne[1], stream);
-    else if (x.ne[1] <= 96)
-        run<ShortTail>(weight, q, gate, k, v, workspace, x.ne[1], stream);
-    else if (x.ne[1] <= 128)
-        run<Wide128>(weight, q, gate, k, v, workspace, x.ne[1], stream);
-    else if (x.ne[1] <= 144)
-        run<Tail144>(weight, q, gate, k, v, workspace, x.ne[1], stream);
-    else
-        run<Prefill>(weight, q, gate, k, v, workspace, x.ne[1], stream);
+    using TmaSchedule = typename Fp8LinearA8TmaSchedule<Geometry>::Type;
+    if (fp8_a8_tma_applies<Geometry, TmaSchedule, Schedule>(x.ne[1], workspace.codes,
+                                                            weight.qdata)) {
+        const Fp8AttentionInputOutput output{
+            static_cast<__nv_bfloat16*>(q.data),
+            static_cast<__nv_bfloat16*>(k.data),
+            static_cast<__nv_bfloat16*>(gate.data),
+            static_cast<__nv_bfloat16*>(v.data),
+        };
+        fp8_a8_tma_launch<Geometry, TmaSchedule>(workspace.codes, workspace.scales,
+                                                 static_cast<const std::uint8_t*>(weight.qdata),
+                                                 static_cast<const __nv_bfloat16*>(weight.scales),
+                                                 x.ne[1], Fp8IdentityEpilogue{}, output, stream);
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
+    if ((x.ne[1] % Schedule::kBlockTokens) == 0) {
+        launch_mma<true>(weight, q, gate, k, v, workspace, x.ne[1], stream);
+    } else {
+        launch_mma<false>(weight, q, gate, k, v, workspace, x.ne[1], stream);
+    }
 }
 } // namespace ninfer::ops::detail

@@ -3,17 +3,22 @@
 #include "serve/generation_service.h"
 #include "serve/http_server.h"
 #include "serve/serve_options.h"
+#include "serve/webui_update.h"
 
 #include <spdlog/logger.h>
 
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstddef>
+#include <cstdlib>
+#include <filesystem>
 #include <exception>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <typeinfo>
 #include <utility>
 
 namespace {
@@ -25,9 +30,29 @@ void handle_signal(int) {
     if (server != nullptr) { server->stop(); }
 }
 
+// An exception that escapes a request boundary ends the process through
+// std::terminate, and the default handler's message is the only record of which
+// exception it was. That message is worth writing to stderr: under a container
+// this process is pid 1, the kernel discards the SIGABRT that abort() raises
+// against itself, glibc falls through to its abort instruction, and all the
+// kernel reports is a bare protection fault inside libc.
+[[noreturn]] void log_terminate() {
+    std::string detail = "terminate called with no active exception";
+    if (std::current_exception() != nullptr) {
+        try {
+            std::rethrow_exception(std::current_exception());
+        } catch (const std::exception& error) {
+            detail = std::string("terminate called after throwing ") + typeid(error).name() + ": " +
+                     error.what();
+        } catch (...) { detail = std::string("terminate called after throwing a non-std exception"); }
+    }
+    std::cerr << detail << std::endl;
+    std::abort();
+}
 } // namespace
 
 int main(int argc, char** argv) {
+    std::set_terminate(log_terminate);
     ninfer::serve::ServeOptions options;
     try {
         options = ninfer::serve::parse_serve_options(argc, argv);
@@ -54,6 +79,22 @@ int main(int argc, char** argv) {
     bool serving = false;
 
     try {
+        // Resolve (and, in --webui mode, auto-download) the webui directory before
+        // the port is taken so a failed download aborts startup cleanly. In
+        // --webui-dir mode the directory is trusted to already hold a built UI;
+        // fail early if it does not.
+        if (options.webui_auto) {
+            options.webui_dir =
+                ninfer::serve::ensure_webui_available(ninfer::serve::resolve_webui_dir(options));
+        } else if (!options.webui_dir.empty()) {
+            std::error_code ec;
+            const bool have_index =
+                std::filesystem::exists(std::filesystem::path(options.webui_dir) / "index.html", ec);
+            if (!std::filesystem::is_directory(options.webui_dir, ec) || !have_index) {
+                throw std::invalid_argument(
+                    "--webui-dir must be a directory containing index.html: " + options.webui_dir);
+            }
+        }
         ninfer::serve::HttpServer server(options, logger);
         if (!server.bind()) {
             operational_log.bind_failure(options.host, options.port);

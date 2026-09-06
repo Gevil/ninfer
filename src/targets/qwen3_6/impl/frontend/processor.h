@@ -111,6 +111,10 @@ struct ProcessedInput {
     std::vector<std::uint32_t> rewrite_execution_frontiers;
     std::vector<std::optional<std::uint32_t>> message_boundaries;
     std::vector<std::optional<std::uint32_t>> cache_boundaries;
+    // True when the rendered prompt (after media expansion) leaves the reasoning
+    // channel open. Lets the Frontend seed `starts_in_reasoning` from the
+    // actually-rendered prompt on the media path.
+    bool opens_reasoning = false;
     PreprocessStats stats;
 
     [[nodiscard]] std::span<const std::int32_t> position_axis(int axis) const;

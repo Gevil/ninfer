@@ -19,6 +19,8 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -225,8 +227,26 @@ void validate_tokenizer_config(const FrontendResources& resources) {
     }
 }
 
-fi::CompiledChatTemplate compile_chat_template(const FrontendResources& resources) {
+std::string read_chat_template_file(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        throw std::invalid_argument("failed to open Jinja chat template '" + path.string() + "'");
+    }
+    const std::string source((std::istreambuf_iterator<char>(stream)),
+                             std::istreambuf_iterator<char>());
+    if (stream.bad()) {
+        throw std::invalid_argument("failed to read Jinja chat template '" + path.string() + "'");
+    }
+    return source;
+}
+
+fi::CompiledChatTemplate compile_chat_template(const FrontendResources& resources,
+                                               const FrontendOptions& options) {
     validate_tokenizer_config(resources);
+    if (!options.chat_template_path.empty()) {
+        return fi::CompiledChatTemplate::compile_jinja(
+            read_chat_template_file(options.chat_template_path), options.chat_template_path.string());
+    }
     return fi::CompiledChatTemplate::resolve(resources.chat_template_jinja);
 }
 
@@ -326,6 +346,7 @@ fi::ChatRenderOptions render_options(const PromptOptions& options,
                                    .enable_thinking   = options.enable_thinking,
                                    .reasoning_effort  = options.reasoning_effort,
                                    .preserve_thinking = options.preserve_thinking,
+                                   .terse               = options.terse,
                                    .add_vision_id     = options.add_vision_id,
                                    .tool_jsons        = options.tool_jsons};
     rendered.cache_markers.assign(cache_markers.begin(), cache_markers.end());
@@ -532,6 +553,7 @@ struct DecoderState {
     std::array<std::string, 2> stop_pending;
     bool in_reasoning              = false;
     bool strip_content_leading     = false;
+    bool raw_output                = false;
     bool terminal                  = false;
     std::uint64_t decoded_bytes    = 0;
     std::uint32_t reasoning_tokens = 0;
@@ -647,8 +669,39 @@ void feed_content(DecoderState& state, std::string text, const StopPolicy& polic
 void feed_decoded_text(DecoderState& state, std::string_view text, const StopPolicy& policy,
                        PublishedOutput& emitted, std::uint32_t committed_tokens,
                        StopMatch* best_match) {
-    if (!state.in_reasoning) {
+    if (state.raw_output) {
+        // Raw sessions expose the decoded stream byte-exactly on the content channel;
+        // reasoning splitting and the stray-marker cleanup must never touch them.
         feed_content(state, std::string(text), policy, emitted, committed_tokens, best_match);
+        return;
+    }
+    if (!state.in_reasoning) {
+        // With preserve_special_tokens enabled (tool-capable requests), a model-emitted
+        // think-close token decodes to literal text. Once reasoning has closed - or never
+        // opened (thinking disabled) - that tag can never be meaningful content, so drop
+        // it instead of leaking the raw marker into client-visible text. The first close
+        // while reasoning is still open is handled above; this guards every subsequent one.
+        // A marker split across decoded tokens is handled by holding the ambiguous tail in
+        // think_marker_pending until it resolves. Raw sessions returned above and are never
+        // cleaned up.
+        state.think_marker_pending.append(text);
+        const std::size_t hit = state.think_marker_pending.find(kThinkClose);
+        const std::size_t hold =
+            longest_suffix_prefix(state.think_marker_pending, kThinkClose, true);
+        const std::size_t resolved_end = state.think_marker_pending.size() - hold;
+        std::string cleaned;
+        cleaned.reserve(resolved_end);
+        std::size_t begin = 0;
+        for (;;) {
+            const std::size_t found = state.think_marker_pending.find(kThinkClose, begin);
+            if (found == std::string::npos || found >= resolved_end) { break; }
+            cleaned.append(state.think_marker_pending.substr(begin, found - begin));
+            begin = found + kThinkClose.size();
+        }
+        cleaned.append(state.think_marker_pending.substr(begin, resolved_end - begin));
+        state.think_marker_pending.erase(0, resolved_end);
+        if (!cleaned.empty()) { feed_content(state, std::move(cleaned), policy, emitted,
+                                             committed_tokens, best_match); }
         return;
     }
 
@@ -698,6 +751,23 @@ void terminalize(DecoderState& state, const StopPolicy& policy, PublishedOutput&
         state.think_marker_pending.clear();
         close_channel(state, OutputChannel::Reasoning, emitted);
     } else {
+        // Whatever is held here is a suffix of </think> (or bytes containing one). No
+        // further tokens can resolve it: publish ordinary generated bytes as content but
+        // never a close marker itself - terminating on one must match what decoding would
+        // have done with it (dropped), not leak it into content.
+        if (!state.think_marker_pending.empty()) {
+            std::string held = std::move(state.think_marker_pending);
+            state.think_marker_pending.clear();
+            // A complete trailing close marker would be dropped during decoding, so
+            // terminating on one must not publish it either; anything ahead of it is
+            // ordinary generated bytes and is flushed as content.
+            if (const std::size_t marker = held.find(kThinkClose); marker != std::string::npos) {
+                held.resize(marker);
+            }
+            if (!held.empty()) {
+                feed_content(state, std::move(held), policy, emitted, committed_tokens, nullptr);
+            }
+        }
         close_channel(state, OutputChannel::Content, emitted);
     }
     state.stop_pending = {};
@@ -878,7 +948,7 @@ PreparedContextCache prepare_context_cache(
 class Frontend::Impl {
 public:
     Impl(const FrontendResources& resources, bool registered_checkpoint, FrontendOptions options)
-        : chat_template(compile_chat_template(resources)),
+        : chat_template(compile_chat_template(resources, options)),
           tokenizer(std::make_shared<const fi::Tokenizer>(
               fi::TokenizerResources{.tokenizer_json         = resources.tokenizer_json,
                                      .tokenizer_config_json  = resources.tokenizer_config_json,
@@ -963,6 +1033,7 @@ public:
             throw std::invalid_argument("thinking budget must be positive");
         }
         state.in_reasoning        = split_reasoning;
+        state.raw_output          = output.raw;
         prefix_execution.tracking = starts_in_reasoning;
         semantic.budget           = thinking.budget;
         // The presentation decoder already tracks normal reasoning output. Keep the independent
@@ -976,6 +1047,7 @@ public:
     std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens;
     bool preserve_special = false;
     bool split_reasoning  = false;
+    bool raw_output       = false;
     DecoderState state;
     DecoderState preview_state;
     SemanticThinkingState semantic;
@@ -1424,6 +1496,7 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
     auto prepared              = std::make_unique<PreparedPromptData>();
     PreparedPromptData& result = *prepared;
     result.tool_call_output    = tool_call_output;
+    bool starts_in_reasoning   = false;
     std::vector<std::optional<std::uint32_t>> message_boundaries;
     std::vector<std::optional<std::uint32_t>> cache_boundaries;
     if (has_media) {
@@ -1464,9 +1537,13 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
             std::move(processed.rewrite_execution_frontiers);
         message_boundaries = std::move(processed.message_boundaries);
         cache_boundaries   = std::move(processed.cache_boundaries);
+        starts_in_reasoning                =
+            options.continuation == PromptContinuationMode::NewAssistantTurn && processed.opens_reasoning;
     } else {
         const fi::RenderedChat rendered =
             impl_->chat_template.render(messages, render_options(options, rendered_markers));
+        starts_in_reasoning =
+            options.continuation == PromptContinuationMode::NewAssistantTurn && fi::prompt_ends_in_open_reasoning(rendered.text);
         const auto tokenize_started = Clock::now();
         fi::EncodedChat encoded     = fi::encode_rendered_chat(
             *impl_->tokenizer, rendered, static_cast<std::size_t>(impl_->max_context) + 1U);
@@ -1490,9 +1567,8 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
         std::move(cache_hints), message_count, message_boundaries, rendered_markers,
         cache_boundaries, result.vision_items, engine_tool_marker_index, leading_boundary,
         checked_token_count(result.token_ids.size()));
-    result.starts_in_reasoning =
-        options.continuation == PromptContinuationMode::NewAssistantTurn && options.enable_thinking;
-    result.prepare.seconds = std::chrono::duration<double>(Clock::now() - start).count();
+    result.starts_in_reasoning = starts_in_reasoning;
+    result.prepare.seconds     = std::chrono::duration<double>(Clock::now() - start).count();
     return PreparedPrompt(std::move(prepared));
 }
 

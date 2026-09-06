@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -108,6 +109,7 @@ struct ChatRenderOptions {
     bool enable_thinking       = true;
     std::optional<ReasoningEffort> reasoning_effort;
     std::optional<bool> preserve_thinking;
+    std::optional<bool> terse;
     bool add_vision_id = false;
     std::vector<std::string> tool_jsons;
     std::vector<PromptCacheMarker> cache_markers;
@@ -133,6 +135,21 @@ struct RenderedChat {
     std::vector<std::optional<std::size_t>> cache_boundaries;
 };
 
+// True when the rendered prompt leaves the reasoning channel open: the final
+// thinking-open marker has no subsequent thinking-close marker. Used to seed
+// `starts_in_reasoning` from the actually-rendered prompt rather than from
+// render options alone.
+[[nodiscard]] bool prompt_ends_in_open_reasoning(const std::string& rendered_text);
+
+// Per-modality count of structured media parts across user/assistant/tool
+// messages. Same role filter as Processor::media_parts (processor.cpp).
+// JinjaTemplate::render uses this to cap placeholder recording at the number
+// of parts the template actually renders pads for, so plain pad markers
+// quoted in text are treated as prose, never recorded.
+void count_structured_media_parts(const std::vector<ChatMessage>& messages,
+                                  std::size_t& image_parts,
+                                  std::size_t& video_parts);
+
 enum class ChatTemplateSemantics : std::uint8_t {
     ThinkingToggle,
     ReasoningEffort,
@@ -141,16 +158,23 @@ enum class ChatTemplateSemantics : std::uint8_t {
 class CompiledChatTemplate {
 public:
     [[nodiscard]] static CompiledChatTemplate resolve(std::string_view source);
+    [[nodiscard]] static CompiledChatTemplate compile_jinja(std::string source,
+                                                             std::string source_name);
 
     [[nodiscard]] PromptCapabilities capabilities() const noexcept;
     [[nodiscard]] RenderedChat render(const std::vector<ChatMessage>& messages,
                                       ChatRenderOptions options = {}) const;
 
 private:
+    class JinjaTemplate;
+
     explicit CompiledChatTemplate(ChatTemplateSemantics semantics) noexcept
         : semantics_(semantics) {}
+    explicit CompiledChatTemplate(std::shared_ptr<const JinjaTemplate> jinja_template) noexcept
+        : jinja_template_(std::move(jinja_template)) {}
 
-    ChatTemplateSemantics semantics_;
+    ChatTemplateSemantics semantics_ = ChatTemplateSemantics::ThinkingToggle;
+    std::shared_ptr<const JinjaTemplate> jinja_template_;
 };
 
 } // namespace ninfer::targets::qwen3_6::frontend_internal

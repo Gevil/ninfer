@@ -15,6 +15,7 @@ ninfer_add_op_bench(ninfer_residual_add_bench SOURCES ops/residual_add_bench.cu)
 ninfer_add_op_bench(ninfer_sigmoid_mul_bench SOURCES ops/sigmoid_mul_bench.cu)
 ninfer_add_op_bench(ninfer_rmsnorm_bench SOURCES ops/rmsnorm_bench.cu)
 ninfer_add_op_bench(ninfer_rmsnorm_pack_tail_bench SOURCES ops/rmsnorm_pack_tail_bench.cu)
+ninfer_add_op_bench(ninfer_residual_rmsnorm_bench SOURCES ops/residual_rmsnorm_bench.cu)
 ninfer_add_op_bench(ninfer_l2norm_bench SOURCES ops/l2norm_bench.cu)
 ninfer_add_op_bench(ninfer_gdn_gating_bench SOURCES ops/gdn_gating_bench.cu)
 ninfer_add_op_bench(ninfer_gdn_gating_proj_bench SOURCES ops/gdn_gating_proj_bench.cu)
@@ -61,6 +62,8 @@ ninfer_add_op_bench(ninfer_causal_softmax_attention_bench
   SOURCES ops/causal_softmax_attention_bench.cu)
 ninfer_add_op_bench(ninfer_context_softmax_attention_bench
   SOURCES ops/context_softmax_attention_bench.cu)
+ninfer_add_op_bench(ninfer_gqa_attention_decode_nvfp4_bench
+  SOURCES ops/gqa_attention_decode_nvfp4_bench.cu)
 ninfer_add_op_bench(ninfer_sliding_window_attention_bench
   SOURCES ops/sliding_window_attention_bench.cu)
 ninfer_add_op_bench(ninfer_kv_cache_append_bench SOURCES ops/kv_cache_append_bench.cu)
@@ -82,7 +85,7 @@ target_include_directories(ninfer_bench PRIVATE
   ${PROJECT_SOURCE_DIR}/src
   ${PROJECT_SOURCE_DIR}/third_party)
 target_compile_definitions(ninfer_bench PRIVATE NINFER_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
-target_link_libraries(ninfer_bench PRIVATE ninfer_engine CUDA::cudart)
+target_link_libraries(ninfer_bench PRIVATE ninfer_engine ${NINFER_CUDART_TARGET})
 
 # Static context-cost calibrator. Transfer measurements call production Paged-KV copy primitives,
 # then release their synthetic fixtures before the public Engine optionally loads one real artifact

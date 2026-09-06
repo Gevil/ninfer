@@ -64,6 +64,7 @@ target_link_libraries(ninfer_nvfp4_non_rdc PRIVATE ninfer_core CUDA::cudart CUDA
 # Shared mathematical Ops. The list is intentionally explicit: adding a
 # source is a build-boundary decision, not an accidental recursive-glob side effect.
 add_library(ninfer_ops STATIC
+  ops/common/device_info.cu
   ops/launcher/add_bias.cu
   ops/launcher/argmax.cu
   ops/launcher/cast.cu
@@ -80,6 +81,7 @@ add_library(ninfer_ops STATIC
   ops/launcher/prepare_ragged_prefix.cu
   ops/launcher/prepare_masked_block.cu
   ops/launcher/residual_add.cu
+  ops/launcher/residual_rmsnorm.cu
   ops/launcher/rmsnorm.cu
   ops/launcher/rmsnorm_pack_tail.cu
   ops/launcher/rope.cu
@@ -183,6 +185,7 @@ add_library(ninfer_ops STATIC
   ops/linear/bf16/bf16_n256_k5120.cu
   ops/linear/bf16/bf16_small_t.cu
   ops/linear/bf16/bf16_dispatch.cpp
+  ops/common/memory_evict.cu
   ops/linear/fp8/fp8_format.cpp
   ops/linear/fp8/fp8_gemv.cu
   ops/linear/fp8/fp8_small_t.cu
@@ -296,6 +299,7 @@ add_library(ninfer_ops STATIC
   ops/wrapper/residual_add.cpp
   ops/wrapper/rmsnorm.cpp
   ops/wrapper/rmsnorm_pack_tail.cpp
+  ops/wrapper/residual_rmsnorm.cpp
   ops/wrapper/rope.cpp
   ops/wrapper/sampling.cpp
   ops/wrapper/scalar.cpp
@@ -307,7 +311,7 @@ add_library(ninfer_ops STATIC
   ops/wrapper/vision_pos_embed.cpp)
 ninfer_internal_includes(ninfer_ops)
 ninfer_cuda_archive(ninfer_ops)
-target_link_libraries(ninfer_ops PUBLIC ninfer_core PRIVATE ninfer_nvfp4_non_rdc)
+target_link_libraries(ninfer_ops PUBLIC ninfer_core PRIVATE ninfer_nvfp4_non_rdc CUDA::cuda_driver)
 
 # Product-independent text and media mechanisms.
 add_library(ninfer_text STATIC
@@ -390,6 +394,8 @@ if(NINFER_BUILD_SERVE)
     serve/request_log.cpp
     serve/http_server.cpp
     serve/openai_responses_http.cpp
+    serve/webui_update.cpp
+    serve/console_log.cpp
     serve/serve_options.cpp)
   ninfer_internal_includes(ninfer_serve)
   target_include_directories(ninfer_serve PRIVATE
@@ -397,4 +403,7 @@ if(NINFER_BUILD_SERVE)
   target_link_libraries(ninfer_serve
     PUBLIC ninfer_engine Threads::Threads
     PRIVATE ninfer_media_acquire ninfer_product_logging CUDA::cudart)
+  if(WIN32)
+    target_link_libraries(ninfer_serve PRIVATE winhttp)
+  endif()
 endif()

@@ -78,10 +78,11 @@ ReasoningEffort parse_reasoning_effort(std::string_view text) {
 std::string usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
            " <model.ninfer> (--prompt <text>|--messages <messages.json>)\n"
+            "       [--chat-template-file PATH]\n"
            "       [--max-context N] [--kv-capacity N|auto] [--prefill-chunk N] [--max-new N]\n"
            "       [--device N]\n"
-           "       [--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--spec mtp|dflash|dflash2 --draft-tokens "
-           "N]\n"
+           "       [--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--spec mtp|dflash|dflash2 --draft-tokens N]\n"
+           "       [--rope-scaling-factor F] [--rope-scaling-original-context N]\n"
            "       [--lm-head-draft]\n"
            "       [--temperature F] [--top-p F] [--top-k N] [--min-p F]\n"
            "       [--presence-penalty F] [--frequency-penalty F] [--seed N] [--greedy]\n"
@@ -99,7 +100,7 @@ std::string usage_text(const char* argv0) {
            "toward --max-new.\n"
            "--kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
-           " MiB of sizing headroom.\n"
+           " MiB of sizing headroom (bounded by max-context).\n"
            "Sampling defaults come from the loaded model and thinking mode; flags override "
            "individual fields.\n";
 }
@@ -125,6 +126,11 @@ Options parse_options(int argc, char** argv) {
             options.prompt = value(arg);
         } else if (arg == "--messages") {
             options.messages_path = value(arg);
+        } else if (arg == "--chat-template-file") {
+            options.chat_template_path = value(arg);
+            if (options.chat_template_path.empty()) {
+                throw std::invalid_argument("--chat-template-file must not be empty");
+            }
         } else if (arg == "--max-new") {
             options.max_new = parse_u32(value(arg), "max-new");
         } else if (arg == "--max-context") {
@@ -138,6 +144,12 @@ Options parse_options(int argc, char** argv) {
             options.device = parse_device(value(arg));
         } else if (arg == "--kv-dtype") {
             options.kv_cache = parse_kv_cache(value(arg));
+        } else if (arg == "--rope-scaling-factor") {
+            options.rope_scaling_factor =
+                parse_float(value(arg), "rope-scaling-factor", 1.0f, 32.0f);
+        } else if (arg == "--rope-scaling-original-context") {
+            options.rope_scaling_original_context =
+                parse_u32(value(arg), "rope-scaling-original-context");
         } else if (arg == "--spec") {
             options.speculative.backend = product::parse_speculative_backend(value(arg));
         } else if (arg == "--draft-tokens") {

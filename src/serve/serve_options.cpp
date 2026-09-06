@@ -67,7 +67,8 @@ KvCapacityPolicy parse_kv_capacity(const char* text) {
 std::string serve_usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
            " <model.ninfer> [--host H] [--port N] [--api-key KEY] "
-           "[--model-id ID] [--max-context N] [--kv-capacity N|auto] [--max-concurrency N] "
+            "[--model-id ID] [--chat-template-file PATH] [--max-context N] [--kv-capacity N|auto] "
+            "[--max-concurrency N] "
            "[--max-pending-requests N] [--pending-timeout-ms N] "
            "[--prefill-chunk N] [--log-stats-interval-ms N] [--device N] "
            "[--context-cost-presets FILE] "
@@ -79,9 +80,11 @@ std::string serve_usage_text(const char* argv0) {
            "[--request-log-jsonl FILE] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--spec mtp|dflash|dflash2 --draft-tokens N] "
+           "[--rope-scaling-factor F] [--rope-scaling-original-context N] "
            "[--default-max-tokens N] [--default-thinking-budget N] "
            "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
            "[--lm-head-draft] [--no-thinking] [--preserve-thinking] [--cors] "
+           "[--webui | --webui-dir DIR] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
            "       [--log-level trace|debug|info|warning|error|critical|off]\n"
@@ -112,7 +115,14 @@ std::string serve_usage_text(const char* argv0) {
            "       --preserve-thinking retains closed-turn assistant reasoning in later prompts\n"
            "       sampler defaults come from the loaded model and resolved thinking mode; "
            "server flags and request fields override individual values.\n"
-           "       --greedy forces temperature 0 (exact argmax).\n";
+           "       --webui auto-downloads the prebuilt llama.cpp webui (ggml-org/llama-ui "
+           "HF bucket) into the webui dir and serves it at / alongside the API\n"
+           "       --webui-dir DIR serves (and for --webui, downloads into) DIR; "
+           "defaults to <model dir>/webui\n"
+           "       --greedy forces temperature 0 (exact argmax).\n"
+           "       --rope-scaling-factor applies YaRN position scaling (1.0 = disabled); "
+           "extends effective context by the factor.\n"
+           "       --rope-scaling-original-context is the YaRN ramp threshold (default 262144).\n";
 }
 
 ServeOptions parse_serve_options(int argc, char** argv) {
@@ -153,6 +163,11 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.model_id_override = require_value("--model-id");
             if (options.model_id_override->empty()) {
                 throw std::invalid_argument("--model-id must not be empty");
+            }
+        } else if (arg == "--chat-template-file") {
+            options.chat_template_path = require_value("--chat-template-file");
+            if (options.chat_template_path.empty()) {
+                throw std::invalid_argument("--chat-template-file must not be empty");
             }
         } else if (arg == "--max-context") {
             options.max_context = static_cast<std::uint32_t>(
@@ -261,6 +276,14 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.device = parse_nonnegative_int(require_value("--device"), "device");
         } else if (arg == "--kv-dtype") {
             options.kv_cache = parse_kv_dtype(require_value("--kv-dtype"));
+        } else if (arg == "--rope-scaling-factor") {
+            options.rope_scaling_factor =
+                parse_float_in(require_value("--rope-scaling-factor"), "rope-scaling-factor", 1.0f,
+                               16.0f);
+        } else if (arg == "--rope-scaling-original-context") {
+            options.rope_scaling_original_context = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value("--rope-scaling-original-context"),
+                                     "rope-scaling-original-context"));
         } else if (arg == "--spec") {
             options.speculative.backend =
                 product::parse_speculative_backend(require_value("--spec"));
@@ -292,6 +315,13 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.preserve_thinking = true;
         } else if (arg == "--cors") {
             options.enable_cors = true;
+        } else if (arg == "--webui") {
+            options.webui_auto = true;
+        } else if (arg == "--webui-dir") {
+            options.webui_dir = require_value("--webui-dir");
+            if (options.webui_dir.empty()) {
+                throw std::invalid_argument("--webui-dir must not be empty");
+            }
         } else if (arg == "--temperature") {
             options.sampling_overrides.temperature =
                 parse_float_in(require_value("--temperature"), "temperature", 0.0f, 2.0f);

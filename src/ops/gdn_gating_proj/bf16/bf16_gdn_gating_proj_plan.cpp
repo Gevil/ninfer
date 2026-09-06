@@ -80,6 +80,7 @@ bool schedule_uses_mma(Bf16GdnGatingScheduleId schedule) noexcept {
         return true;
     case Bf16GdnGatingScheduleId::GemvPairedRows:
     case Bf16GdnGatingScheduleId::SmallTSplit10:
+    case Bf16GdnGatingScheduleId::SmallTFusedCooperative:
     case Bf16GdnGatingScheduleId::SimtWarpRowC4:
     case Bf16GdnGatingScheduleId::SimtWarpRowC8:
         return false;
@@ -94,6 +95,7 @@ std::int32_t mma_tile_cols(const Bf16GdnGatingProblem& problem) noexcept {
 std::int32_t schedule_split_k(Bf16GdnGatingScheduleId schedule) {
     switch (schedule) {
     case Bf16GdnGatingScheduleId::SmallTSplit10:
+    case Bf16GdnGatingScheduleId::SmallTFusedCooperative:
         return 10;
     case Bf16GdnGatingScheduleId::MmaCooperativeSplit32:
         return 32;
@@ -122,6 +124,7 @@ bool candidate_is_legal(Bf16GdnGatingScheduleId schedule,
         case Bf16GdnGatingScheduleId::GemvPairedRows:
             return problem.cols == 1;
         case Bf16GdnGatingScheduleId::SmallTSplit10:
+        case Bf16GdnGatingScheduleId::SmallTFusedCooperative:
             return problem.cols >= 2 && problem.cols <= 8;
         case Bf16GdnGatingScheduleId::MmaCooperativeSplit8:
         case Bf16GdnGatingScheduleId::MmaCooperativeSplit4:
@@ -152,6 +155,7 @@ bool candidate_is_legal(Bf16GdnGatingScheduleId schedule,
         return true;
     case Bf16GdnGatingScheduleId::GemvPairedRows:
     case Bf16GdnGatingScheduleId::SmallTSplit10:
+    case Bf16GdnGatingScheduleId::SmallTFusedCooperative:
         return false;
     }
     return false;
@@ -201,6 +205,10 @@ void execute_resolved(const Bf16GdnGatingPlan& plan, const Bf16GdnGatingProblem&
         bf16_gdn_gating_proj_small_t_split10_launch(x, a_weight, b_weight, A_log, dt_bias,
                                                     scratch.data, scratch.bytes, g, beta,
                                                     execution.stream);
+        return;
+    case Bf16GdnGatingScheduleId::SmallTFusedCooperative:
+        bf16_gdn_gating_proj_small_t_fused_launch(x, a_weight, b_weight, A_log, dt_bias,
+                                                  scratch.data, scratch.bytes, g, beta, execution.stream);
         return;
     case Bf16GdnGatingScheduleId::SimtWarpRowC4:
         bf16_gdn_gating_proj_35_simt_c4_launch(x, a_weight, b_weight, A_log, dt_bias, g, beta,
@@ -282,6 +290,8 @@ const char* bf16_gdn_gating_schedule_name(Bf16GdnGatingScheduleId schedule) noex
         return "gdn_gating_proj.bf16.gemv.paired_rows";
     case Bf16GdnGatingScheduleId::SmallTSplit10:
         return "gdn_gating_proj.bf16.small_t.split10";
+    case Bf16GdnGatingScheduleId::SmallTFusedCooperative:
+        return "gdn_gating_proj.bf16.small_t.fused_cooperative";
     case Bf16GdnGatingScheduleId::SimtWarpRowC4:
         return "gdn_gating_proj.bf16.simt.warp_row.c4";
     case Bf16GdnGatingScheduleId::SimtWarpRowC8:

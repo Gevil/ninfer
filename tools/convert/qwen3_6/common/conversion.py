@@ -11,8 +11,8 @@ from collections import Counter
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import os
 import platform
-import subprocess
 from typing import Mapping, Sequence
 
 import torch
@@ -162,13 +162,26 @@ def device_arena_bytes(tensor_specs: Sequence[TensorSpec], alignment: int = 256)
 
 
 def converter_revision(repo_root: str | Path) -> str | None:
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=Path(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    """Stamp the converter revision.
+
+    An explicit ``NINFER_CONVERTER_REVISION`` environment override wins (the
+    host launcher can inject the SHA without git in the container). Falls
+    back to ``git rev-parse HEAD``; a container without git yields ``None``
+    rather than a hard crash (the artifact is unaffected by provenance gaps).
+    """
+    override = os.environ.get("NINFER_CONVERTER_REVISION")
+    if override:
+        return override
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
     return result.stdout.strip() or None
 
 

@@ -87,10 +87,6 @@ ninfer_add_test(ninfer_perplexity_evaluation_test
           ${PROJECT_SOURCE_DIR}/apps/perplexity/evaluation.cpp)
 target_include_directories(ninfer_perplexity_evaluation_test PRIVATE
   ${PROJECT_SOURCE_DIR}/apps/perplexity)
-ninfer_add_test(ninfer_cli_options_test
-  SOURCES test_cli_options.cpp ${PROJECT_SOURCE_DIR}/apps/cli/options.cpp
-  LIBRARIES ninfer_core ninfer_product_logging)
-target_include_directories(ninfer_cli_options_test PRIVATE ${PROJECT_SOURCE_DIR}/apps/cli)
 ninfer_add_test(ninfer_kv_cache_test
   SOURCES test_kv_cache.cpp
   LIBRARIES ninfer_core)
@@ -116,6 +112,14 @@ ninfer_add_test(ninfer_qwen3_6_frontend_test
 target_include_directories(ninfer_qwen3_6_frontend_test PRIVATE
   ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export
   ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/impl)
+target_link_libraries(ninfer_qwen3_6_frontend_test PRIVATE CUDA::cudart)
+ninfer_add_test(ninfer_qwen3_6_jinja_template_test
+  SOURCES targets/qwen3_6/test_jinja_chat_template.cpp
+  LIBRARIES ninfer_engine)
+target_include_directories(ninfer_qwen3_6_jinja_template_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export
+  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/impl)
+target_link_libraries(ninfer_qwen3_6_jinja_template_test PRIVATE CUDA::cudart)
 ninfer_add_test(ninfer_qwen3_6_runtime_mechanisms_test
   SOURCES targets/qwen3_6/test_runtime_mechanisms.cpp
   LIBRARIES ninfer_engine ninfer_core)
@@ -127,6 +131,13 @@ ninfer_add_test(ninfer_qwen3_6_state_image_test
 target_include_directories(ninfer_qwen3_6_state_image_test PRIVATE
   ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export)
 set_tests_properties(ninfer_qwen3_6_state_image_test PROPERTIES SKIP_RETURN_CODE 77)
+ninfer_add_test(ninfer_qwen3_6_state_image_entitlement_test
+  SOURCES targets/qwen3_6/test_state_image_entitlement.cpp
+  LIBRARIES ninfer_engine ninfer_core)
+target_include_directories(ninfer_qwen3_6_state_image_entitlement_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export
+  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_27b/export)
+set_tests_properties(ninfer_qwen3_6_state_image_entitlement_test PROPERTIES SKIP_RETURN_CODE 77)
 ninfer_add_test(ninfer_qwen3_6_state_image_layout_test
   SOURCES targets/qwen3_6/test_state_image_layout.cpp
   LIBRARIES ninfer_engine ninfer_core)
@@ -197,6 +208,11 @@ ninfer_add_test(ninfer_tool_call_parser_test
 ninfer_add_test(ninfer_serve_options_test
   SOURCES test_serve_options.cpp
   LIBRARIES ninfer_serve)
+ninfer_add_test(ninfer_cli_options_test
+  SOURCES test_cli_options.cpp
+          ${PROJECT_SOURCE_DIR}/apps/cli/options.cpp
+  LIBRARIES ninfer_core ninfer_product_logging)
+target_include_directories(ninfer_cli_options_test PRIVATE ${PROJECT_SOURCE_DIR}/apps/cli)
 ninfer_add_test(ninfer_request_log_test
   SOURCES test_request_log.cpp
   LIBRARIES ninfer_serve)
@@ -328,6 +344,7 @@ ninfer_add_linear_test(ninfer_linear_w8_a16_test ops/linear/test_w8_a16.cpp)
 ninfer_add_linear_test(ninfer_linear_nvfp4_a16_test ops/linear/test_nvfp4_a16.cpp)
 ninfer_add_linear_test(ninfer_linear_nvfp4_a4_test ops/linear/test_nvfp4_a4.cpp)
 ninfer_add_linear_test(ninfer_linear_fp8_a16_test ops/linear/test_fp8_a16.cpp)
+ninfer_add_linear_test(ninfer_linear_t_invariance_test ops/linear/test_t_invariance.cpp)
 ninfer_add_linear_test(ninfer_linear_fp8_a8_test ops/linear/test_fp8_a8.cpp)
 ninfer_add_op_test(ninfer_linear_bf16_a16_test
   SOURCES ops/linear/test_bf16_a16.cpp

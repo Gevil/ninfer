@@ -53,10 +53,35 @@ void speculative_accept_greedy_drafts_launch(const Tensor& target_tokens, const 
                                              Tensor& licensed_tokens, Tensor& licensed_counts,
                                              Tensor& accepted, std::int32_t token_domain,
                                              const SamplingConfig* configs, DeviceSpan workspace,
-                                             cudaStream_t stream) {
+                                             cudaStream_t stream, const Tensor* draft_probs,
+                                             bool nucleus_accept,
+                                             const Tensor* draft_support_ids,
+                                             const Tensor* draft_support_probs,
+                                             const Tensor* draft_support_n,
+                                             const Tensor* draft_recorded) {
     const std::int32_t physical_rows     = logits.ne[0];
     const std::int32_t cols              = drafts.ne[0] + 1;
     const std::int32_t batch             = drafts.ne[1];
+    // Буфер q лежит по шагам: ne[0] = batch — непрерывный, ne[1] = число черновиков.
+    const float* draft_prob_data =
+        (draft_probs != nullptr && draft_probs->data != nullptr)
+            ? static_cast<const float*>(draft_probs->data)
+            : nullptr;
+    const std::int32_t draft_prob_stride =
+        draft_prob_data != nullptr ? draft_probs->ne[0] : 0;
+    const bool has_support = draft_support_ids != nullptr && draft_support_ids->data != nullptr &&
+                             draft_support_probs != nullptr && draft_support_n != nullptr;
+    const auto* sup_idx =
+        has_support ? static_cast<const std::int32_t*>(draft_support_ids->data) : nullptr;
+    const auto* sup_prob =
+        has_support ? static_cast<const float*>(draft_support_probs->data) : nullptr;
+    const auto* sup_n =
+        has_support ? static_cast<const std::int32_t*>(draft_support_n->data) : nullptr;
+    const std::int32_t sup_cap =
+        has_support && draft_prob_stride > 0 ? draft_support_ids->ne[0] / draft_prob_stride : 0;
+    const auto* recorded = (draft_recorded != nullptr && draft_recorded->data != nullptr)
+                               ? static_cast<const std::int32_t*>(draft_recorded->data)
+                               : nullptr;
     const SamplingWorkspaceLayout layout = make_sampling_workspace_layout(token_domain, cols);
     if (!layout.multiblock) {
         speculative_accept_greedy_drafts_kernel<<<batch, kSamplerBlock, 0, stream>>>(
@@ -68,7 +93,8 @@ void speculative_accept_greedy_drafts_launch(const Tensor& target_tokens, const 
             static_cast<std::int32_t*>(licensed_tokens.data),
             static_cast<std::int32_t*>(licensed_counts.data),
             static_cast<std::int32_t*>(accepted.data), configs, token_domain, physical_rows,
-            drafts.ne[0]);
+            drafts.ne[0], draft_prob_data, draft_prob_stride, nucleus_accept, sup_idx,
+            sup_prob, sup_n, sup_cap, recorded);
         CUDA_CHECK(cudaGetLastError());
         return;
     }
@@ -95,7 +121,8 @@ void speculative_accept_greedy_drafts_launch(const Tensor& target_tokens, const 
             static_cast<std::int32_t*>(licensed_tokens.data),
             static_cast<std::int32_t*>(licensed_counts.data),
             static_cast<std::int32_t*>(accepted.data), configs, token_domain, cols, partial_blocks,
-            groups, scratch, layout.bytes);
+            groups, scratch, layout.bytes, draft_prob_data, draft_prob_stride, nucleus_accept,
+            sup_idx, sup_prob, sup_n, sup_cap, recorded);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -143,10 +170,10 @@ void speculative_accept_sparse_drafts_launch(
         static_cast<std::int32_t*>(round_lengths.data),
         static_cast<std::int32_t*>(round_anchors.data),
         static_cast<std::int32_t*>(licensed_tokens.data),
-        static_cast<std::int32_t*>(licensed_counts.data),
-        static_cast<std::int32_t*>(accepted_drafts.data), configs, token_domain, cols,
-        partial_blocks, groups, scratch, layout.bytes);
-
+        static_cast<std::int32_t*>(licensed_counts.data), static_cast<std::int32_t*>(accepted.data),
+        configs, token_domain, cols, partial_blocks, groups, scratch, layout.bytes,
+        draft_prob_data, draft_prob_stride, nucleus_accept, sup_idx, sup_prob, sup_n, sup_cap,
+        recorded);
     CUDA_CHECK(cudaGetLastError());
 }
 

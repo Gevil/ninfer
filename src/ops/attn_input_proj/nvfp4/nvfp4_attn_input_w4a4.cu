@@ -71,10 +71,22 @@ void launch_gemm(const Weight& weight, Tensor& q, Tensor& gate, Tensor& k, Tenso
         static_cast<__nv_bfloat16*>(v.data),
     };
     const float alpha = 1.0F / (weight.input_scale_divisor * weight.weight_scale_divisor);
-    nvfp4_w4a4_mma_kernel<Geometry, Schedule><<<grid, Schedule::kThreads, 0, stream>>>(
-        activation, static_cast<const std::uint8_t*>(weight.qdata),
-        static_cast<const std::uint8_t*>(weight.scales), tokens, alpha, Nvfp4IdentityEpilogue{},
-        output);
+    // T<=4 (one-shot verify/decode weight stream): mark the weight cp.async L2::evict_first so
+    // the streaming GEMV weights don't pollute the L2 set of downstream re-read consumers (see
+    // Cache::EvictFirst). Larger T re-reads weight tiles across M-blocks -> keep cg.
+    if (tokens <= 4) {
+        nvfp4_w4a4_mma_kernel<Geometry, Schedule, Nvfp4IdentityEpilogue, Nvfp4W4a4AttentionOutput,
+                              Nvfp4W4a4IdentityRows, false, Cache::EvictFirst>
+            <<<grid, Schedule::kThreads, 0, stream>>>(
+                activation, static_cast<const std::uint8_t*>(weight.qdata),
+                static_cast<const std::uint8_t*>(weight.scales), tokens, alpha,
+                Nvfp4IdentityEpilogue{}, output);
+    } else {
+        nvfp4_w4a4_mma_kernel<Geometry, Schedule><<<grid, Schedule::kThreads, 0, stream>>>(
+            activation, static_cast<const std::uint8_t*>(weight.qdata),
+            static_cast<const std::uint8_t*>(weight.scales), tokens, alpha, Nvfp4IdentityEpilogue{},
+            output);
+    }
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -83,7 +95,7 @@ void launch_gemm(const Weight& weight, Tensor& q, Tensor& gate, Tensor& k, Tenso
 void nvfp4_attn_input_w4a4_launch(const Tensor& x, const Weight& weight, Tensor& q, Tensor& gate,
                                   Tensor& k, Tensor& v, Nvfp4W4a4Workspace workspace,
                                   cudaStream_t stream) {
-    launch_nvfp4_w4a4_quantize(x, weight, workspace, stream);
+    launch_nvfp4_w4a4_quantize(x, weight, workspace, nvfp4_w4a4_tma_route(x.ne[1]), stream);
     const std::int32_t tokens = x.ne[1];
     if (tokens >= 1024 && (tokens % kTmaBlockM) == 0) {
         const float alpha = 1.0F / (weight.input_scale_divisor * weight.weight_scale_divisor);

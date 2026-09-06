@@ -20,8 +20,12 @@
 #include <cstdint>
 #include <deque>
 #include <exception>
+#include <csignal>
+#include <cstdio>
 #include <future>
+#include <iostream>
 #include <limits>
+#include <unistd.h>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -81,6 +85,8 @@ public:
             !options.context_cache.max_shared_prefixes) {
             throw std::logic_error("target admission capacity does not match the Engine");
         }
+        std::signal(SIGSEGV, [](int sig) { const char msg[] = "[engine] CRASH: SIGSEGV\n"; ::write(2, msg, sizeof(msg)-1); std::signal(sig, SIG_DFL); ::raise(sig); });
+        std::signal(SIGABRT, [](int sig) { const char msg[] = "[engine] CRASH: SIGABRT\n"; ::write(2, msg, sizeof(msg)-1); std::signal(sig, SIG_DFL); ::raise(sig); });
         std::promise<void> startup;
         std::future<void> started = startup.get_future();
         worker_                   = std::thread([this, startup = std::move(startup)]() mutable {
@@ -724,7 +730,11 @@ private:
         const BeginSummary& begin = *request->admitted_begin;
         if (begin.reused_prompt_tokens > begin.prompt_tokens ||
             request->computed_prompt_tokens > begin.prompt_tokens - begin.reused_prompt_tokens) {
-            throw std::logic_error("prompt progress exceeds the admitted prompt frontier");
+            throw std::logic_error(
+                "prompt progress exceeds the admitted prompt frontier (computed=" +
+                std::to_string(request->computed_prompt_tokens) +
+                " frontier=" + std::to_string(begin.prompt_tokens - begin.reused_prompt_tokens) +
+                " committed_reused=" + std::to_string(begin.reused_prompt_tokens) + ")");
         }
         const PromptProgress progress{
             .total_prompt_tokens     = begin.prompt_tokens,
@@ -1345,8 +1355,26 @@ private:
             throw std::logic_error("prefill unit exceeded the admitted prompt suffix");
         }
         request->computed_prompt_tokens += progress.processed_prompt_tokens;
-        if (progress.complete && request->computed_prompt_tokens != suffix_tokens) {
-            throw std::logic_error("completed prefill did not reach the admitted prompt frontier");
+        // The transparent host-KV safety-net restore (a Root admission whose prefix is
+        // restored from host RAM) advances the staged prefill base after the admission
+        // was sealed, so the runtime reports more reuse than the plan committed and
+        // computes a correspondingly shorter frontier. Compare against the runtime's
+        // actual reuse (never below the committed one; enforced below), not the committed
+        // suffix. For a normal prefill (runtime reuse == committed reuse) this is
+        // identical to the committed-suffix check.
+        if (progress.complete) {
+            const std::uint32_t runtime_reused = progress.summary.reused_prompt_tokens;
+            if (runtime_reused > begin.prompt_tokens ||
+                request->computed_prompt_tokens != begin.prompt_tokens - runtime_reused) {
+                throw std::logic_error(
+                    "completed prefill did not reach the admitted prompt frontier "
+                    "(computed=" + std::to_string(request->computed_prompt_tokens) +
+                    " prompt=" + std::to_string(begin.prompt_tokens) +
+                    " committed_reused=" + std::to_string(begin.reused_prompt_tokens) +
+                    " runtime_reused=" + std::to_string(runtime_reused) +
+                    " expected_suffix=" +
+                    std::to_string(begin.prompt_tokens - runtime_reused) + ")");
+            }
         }
         if (progress.processed_prompt_tokens != 0) { publish_prompt_progress(request); }
         if (progress.capture) {
@@ -1362,7 +1390,15 @@ private:
         if (!request->lane || !progress.pending) {
             throw std::logic_error("completed prefill has no lane or pending token");
         }
-        if (!request->admitted_begin || progress.summary != *request->admitted_begin) {
+        // The prompt and reuse path must match the committed admission exactly.
+        // reused_prompt_tokens may only grow: the transparent host-KV safety-net
+        // restore (a Root admission whose prefix is restored from host RAM)
+        // advances the staged prefill base after the admission was sealed, so
+        // the runtime legitimately reports more reuse than the plan committed.
+        if (!request->admitted_begin ||
+            progress.summary.prompt_tokens != request->admitted_begin->prompt_tokens ||
+            progress.summary.prefix_reuse_path != request->admitted_begin->prefix_reuse_path ||
+            progress.summary.reused_prompt_tokens < request->admitted_begin->reused_prompt_tokens) {
             throw std::logic_error("runtime Begin summary differs from committed admission");
         }
         const std::uint32_t lane = request->lane->value;
@@ -1684,25 +1720,34 @@ private:
                 control_progress = true;
                 continue;
             }
-            auto head_inspection = inspect_admission(head);
-            if (head_inspection.readiness == Readiness::PermanentlyInfeasible) {
-                (void)remove_pending_error(
-                    head, std::make_exception_ptr(RequestError(
-                              RequestErrorKind::ContextLengthExceeded,
-                              "request reservation exceeds Engine shared KV capacity")));
-                control_progress = true;
-                continue;
-            }
-            if (head_inspection.readiness == Readiness::Ready ||
-                head_inspection.readiness == Readiness::NeedsTransfer) {
-                if (!head_inspection.choice) {
-                    throw std::logic_error("ready resource inspection has no admission choice");
-                }
-                AdmissionGrant grant = scheduler_.grant_head(
-                    head->id, head_inspection.choice->summary().service_work_quanta);
-                return admit_planned_request(head, std::move(*head_inspection.choice),
-                                             std::move(grant));
-            }
+try {
+    ResourceInspection head_inspection = inspect_admission(head);
+    if (head_inspection.readiness == Readiness::PermanentlyInfeasible) {
+        (void)remove_pending_error(
+            head, std::make_exception_ptr(RequestError(
+                      RequestErrorKind::ContextLengthExceeded,
+                      "request reservation exceeds Engine shared KV capacity")));
+        control_progress = true;
+        continue;
+    }
+    if (head_inspection.readiness == Readiness::Ready ||
+        head_inspection.readiness == Readiness::NeedsTransfer) {
+        if (!head_inspection.choice) {
+            throw std::logic_error("ready resource inspection has no admission choice");
+        }
+        AdmissionGrant grant = scheduler_.grant_head(
+            head->id, head_inspection.choice->summary().service_work_quanta);
+        return admit_planned_request(head, std::move(*head_inspection.choice),
+                                     std::move(grant));
+    }
+} catch (const std::exception& error) {
+    (void)remove_pending_error(
+        head, std::make_exception_ptr(RequestError(
+                  RequestErrorKind::Overloaded,
+                  std::string("admission planning failed: ") + error.what())));
+    control_progress = true;
+    continue;
+}
 
             const ActiveAdmissionSet active =
                 scheduler_.active_admission_set(slots_, max_concurrency_);
@@ -1758,33 +1803,43 @@ private:
                     control_progress = true;
                     continue;
                 }
-                auto candidate_inspection = inspect_admission(candidate);
-                if (candidate_inspection.readiness == Readiness::PermanentlyInfeasible) {
-                    (void)remove_pending_error(
-                        candidate, std::make_exception_ptr(RequestError(
-                                       RequestErrorKind::ContextLengthExceeded,
-                                       "request reservation exceeds Engine shared KV capacity")));
-                    control_progress = true;
-                    continue;
-                }
-                if ((candidate_inspection.readiness != Readiness::Ready &&
-                     candidate_inspection.readiness != Readiness::NeedsTransfer) ||
-                    !candidate_inspection.choice) {
-                    continue;
-                }
-                const auto proof = resources_.prove_persistent_backfill(
-                    *instance_.program, *head->base_plan, *candidate_inspection.choice,
-                    std::span<const SequenceHandle>(persistent_borrowers.data(),
-                                                    persistent_borrower_count));
-                if (!proof) { continue; }
-                const RequestPlanSummary& candidate_plan = candidate_inspection.choice->summary();
-                auto grant =
-                    scheduler_.qualify_backfill(candidate->id, candidate_plan.service_work_quanta,
-                                                active.span(), proof->resource_revision());
-                if (grant) {
-                    return admit_planned_request(candidate, std::move(*candidate_inspection.choice),
-                                                 std::move(*grant));
-                }
+try {
+    ResourceInspection candidate_inspection = inspect_admission(candidate);
+    if (candidate_inspection.readiness == Readiness::PermanentlyInfeasible) {
+        (void)remove_pending_error(
+            candidate, std::make_exception_ptr(RequestError(
+                           RequestErrorKind::ContextLengthExceeded,
+                           "request reservation exceeds Engine shared KV capacity")));
+        control_progress = true;
+        continue;
+    }
+    if ((candidate_inspection.readiness != Readiness::Ready &&
+         candidate_inspection.readiness != Readiness::NeedsTransfer) ||
+        !candidate_inspection.choice) {
+        continue;
+    }
+    const auto proof = resources_.prove_persistent_backfill(
+        *instance_.program, *head->base_plan, *candidate_inspection.choice,
+        std::span<const SequenceHandle>(persistent_borrowers.data(),
+                                        persistent_borrower_count));
+    if (!proof) { continue; }
+    const RequestPlanSummary& candidate_plan = candidate_inspection.choice->summary();
+    auto grant =
+        scheduler_.qualify_backfill(candidate->id, candidate_plan.service_work_quanta,
+                                    active.span(), proof->resource_revision());
+    if (grant) {
+        return admit_planned_request(candidate, std::move(*candidate_inspection.choice),
+                                     std::move(*grant));
+    }
+} catch (const std::exception& error) {
+    (void)remove_pending_error(
+        candidate, std::make_exception_ptr(RequestError(
+                      RequestErrorKind::Overloaded,
+                      std::string("admission planning failed: ") +
+                          error.what())));
+    control_progress = true;
+    continue;
+}
             }
             return control_progress ? AdmissionProgress::ControlProgress : AdmissionProgress::None;
         }
@@ -2010,6 +2065,15 @@ private:
                 finish_engine_phase(boundary, EngineHostPhase::Boundary);
             } catch (...) {
                 const std::exception_ptr error = std::current_exception();
+                try {
+                    std::rethrow_exception(error);
+                } catch (const std::exception& fatal) {
+                    std::cerr << "ninfer: engine fatal error, failing all requests: " << fatal.what()
+                              << std::endl;
+                } catch (...) {
+                    std::cerr << "ninfer: engine fatal error, failing all requests: unknown exception"
+                              << std::endl;
+                }
                 HostPhaseMeasurement cleanup   = begin_host_phase();
                 fail_all_locked(error);
                 finish_engine_phase(cleanup, EngineHostPhase::Maintenance);

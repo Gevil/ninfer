@@ -1343,7 +1343,12 @@ PressurePlanningSessionImpl<NINFER_QWEN36_VARIANT>::commit_expansion(
     }
     const std::size_t maximum = candidates.size() + 1U + planning_detail::kOptionalTargetCapacity;
     if (prepared_new_count > maximum - std::min(maximum, targets.size())) {
-        throw std::length_error("prepared pressure expansion exceeds the target arena");
+        throw std::length_error(
+            "prepared pressure expansion exceeds the target arena: new_targets=" +
+            std::to_string(prepared_new_count) + " targets=" + std::to_string(targets.size()) +
+            " candidates=" + std::to_string(candidates.size()) + " owners=" +
+            std::to_string(owners.size()) + " scratch_decisions=" +
+            std::to_string(prepared_owner_decisions.size()));
     }
 
     committed_children.clear();
