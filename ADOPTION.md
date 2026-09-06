@@ -1407,8 +1407,9 @@ prefill extensions (27B-nvfp4-measured, extends T23); `ce71f787` MTP sampled-dra
   `0243d3db`-removal rebuild, not a pick drop. (b) The acceptance-rate gate is unchanged and is
   measured on the post-ship image: MTP3 with draft head, acceptance drafts/round at 1.5K/8K/32K
   vs the MTP3 baseline, decode A/B vs 140.6/155.4, greedy parity, battery 16/16, INT8 KV retained.
-- G4-equivalent host build (buildstage-merge container, python3 pre-installed per G4 style): in
-  progress at time of writing; ship additionally gated on a quiet window (user decision).
+- G4-equivalent host build (buildstage-merge container, python3 pre-installed per G4 style): PASS
+  2026-09-06 (fresh /build, `BUILD_TESTING=ON`, full cmake configure + build to 100%, all test
+  binaries linked, ~4.5 min). Ship additionally gated on a quiet window (user decision).
 
 **T37 — chat-template switch to the artifact-embedded ReasoningEffort template at xhigh
 (PROBE-FIRST).** Full plan above. Config-only, engine-native, one-file rollback.
