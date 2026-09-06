@@ -1504,7 +1504,7 @@ Verify portability (dylan's line historically carries 35B-only dflash assumption
 | 33 | **DFlash2 drafter grafted onto the QUASAR artifact** | **NEW — PROBE-FIRST, top priority.** Engine port from `gpillon/coding` + quasar-side graft using `z-lab/Qwen3.8-27B-DFlash2`; keeps QUASAR weights; gate on acceptance/round @1.5K/8K/32K — **serve-fixes LIVE 09-06** (t33serve-9737d75c, battery 16/16, Round 10); Wave B file-set port in progress (agent) |
 | 34 | **host-KV restore correctness (reframes T31)** | **NEW — ADOPT the mitigation shape**: host-RAM reuse = append-at-frontier only; do NOT relax the frontier invariant; port `ac60331d` as a guard |
 | 35 | **draft window k=3→5** | **REVERTED 09-06** — probe complete: battery 16/16, fresh +8.5% but 8k −6.8% + long-ctx acceptance degraded → plan rule: revert to k=3 (baseline frozen for T33/T36) |
-| 36 | **md dense-lane ops wave** | **NEW — PORT-CANDIDATE**: `8767dac7` decode-softmax-fold; `c735909b`+`16c66809` nvfp4-TMA (27B-measured); `ce71f787` sampled-draft probe |
+| 36 | **md dense-lane ops wave** | **PORT SET DERIVED 09-06** (Round 11): branch `t36-mdops2-quasar` from `9737d75c` = re-picks `67bf4b78` (8767dac7 softmax-fold) + `11f528fd` (c735909b TMA raster groups), byte-identical to the previously host-build-verified wave; `16c66809` no-op (contained via T23 `bb535075`); `ce71f787` = separate acceptance-gated probe (T36b). Build + probe window sequenced after the Wave B verdict |
 | 37 | **chat template → artifact-embedded ReasoningEffort @xhigh** | **ADOPTED 09-06** — live since 09-05 21:42; quiet battery 15/16 (LEDGER window artifact only); decode-neutral vs Sharp (140.6/155.4); new render-path decode baseline recorded |
 | 38 | **upstream `--chat-template FILE` (#183/#182) + stream-slot (#184)** | **NEW — WATCH/adopt-on-merge**; reconcile flag naming with our `--chat-template-file` |
 | 39 | **Astrangemaninhere/ninfer-fusion** | **NEW — WATCH**; sub-floor KV REJECT (perplexity-only); its DFlash2 < MTP3 by its own data |
@@ -2026,3 +2026,31 @@ port set derived in its transcript (worktree `/tmp/t33-wave-b-wt`, branch
 (kv-prefix) + `ec7b1fc6` (bidirectional GQA) + `a14f0033` (GDN replay); base gaps: drop the
 off-lane dflash-ops doc hunk, map `src/core/kv_cache.h` onto our `cyclic_kv_cache.h` /
 `paged_kv_cache.h`.
+
+## Round 11 (2026-09-06, ~17:10 CEST) - T36 re-evaluation on the clean base; port set derived
+
+Scout scoping of the md picks against the shipped base `t33-gpillon-quasar @ 9737d75c`
+(read-only: `git cherry` + in-tree grep + ancestry checks):
+- `8767dac7` (split-KV decode softmax fold): ABSENT, low risk — 2 files, shared decode
+  attention kernels only (`src/ops/softmax_attention/dense/causal_cache/small_t_{bf16,i8}.cuh`).
+  Re-pick `29e628a7` (prior wave `t36-mdops-quasar` @ old base `533e93fc`) transfers
+  verbatim: touched ops region byte-identical between old and clean base (0-file diff),
+  and that wave already passed a G4-equivalent host build.
+- `c735909b` (TMA grid token groups / L2 weight reuse): ABSENT, low risk — 2 files,
+  +26/-4 (`nvfp4_w4a4_tma.cuh`, `nvfp4_linear_swiglu_w4a4_tma.cuh`); measured prefill
+  -2.79..-3.71% on our exact 27B-nvfp4 model. Re-pick `e96df2c9` transfers verbatim.
+- `16c66809` (tile-contiguous a_scales): CONTAINED — shipped in-tree as T23 `bb535075`
+  (the cherry-pick SHA of PR #160 `a05618f7`; likewise PR #167 `3c722761` → in-tree
+  `52fabe3e`). `kScaleTileGroups` verified at `nvfp4_w4a4_tma.cuh:76` +
+  `nvfp4_linear_swiglu_w4a4_tma.cu:24`. Re-pick is a no-op: SKIP.
+- `ce71f787` (MTP sampled draft, probe): ABSENT, HIGH risk — 18 files, +425/-34; the
+  `qwen3_6` runtime region is diverged (clean base removed the T31 host-KV files; T33
+  DFlash2 work present there). Prior resolution `0243d3db` is NOT reusable (targeted
+  the removed host-KV runtime). Fresh resolution + acceptance gate vs the frozen k=3
+  baseline (fresh 140.6 / 8k 155.4) → separate T36b probe, not in the main port set.
+
+Port set: branch `t36-mdops2-quasar` cut from `9737d75c`, cherry-picked re-picks
+`67bf4b78` + `11f528fd` (clean apply; 4 files, +127/-62, all shared `src/ops`), the four
+touched files byte-identical to the prior wave's (host-build-verified) post-image,
+pushed to gevil. Build + ctest + battery + decode A/B = a pre-stopped-lane window
+sequenced after the T33 Wave B verdict (batch or sequence the window).
