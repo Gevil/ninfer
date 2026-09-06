@@ -2156,3 +2156,30 @@ the synced clone) instead of guessing a second time.
   supervisor) is deliberately used. Mid-session correction: stopped spawning read-only scouts
   for prep work while the lane is shared with live user sessions and a build window; do that
   kind of investigation directly instead.
+
+## Round 16 (2026-09-06, ~18:55 CEST) - v3 window launched (compile fix bd16fdeb); subagent absorbed into main session
+
+v2 window result: build FAILED at step 38/327 in `src/ops/launcher/bidirectional_gqa_attention.cu` - dense/paged
+signature mismatch. Pick `c1dfcfed` (cherry-pick of upstream `ec7b1fc6`, "feat(ops): add bidirectional gqa
+attention") landed the launcher + local header + public header + wrapper at the pre-paged-migration state, while
+the in-tree `src/ops/kernel/bidirectional_gqa_attention.cuh` is the paged-cache version (byte-identical to
+`gpillon/feat/dflash2-local` tip). The three kernel call sites (split-partial direct/split + reduce) instantiate
+the paged signature (valid_columns/table_rows/block_tables/physical+logical pages) that the dense launcher never
+passes.
+- Scope decision: the 33-file "drift vs gpillon tip" pre-scan was mostly intentional branch divergence (noise);
+  the fix is scoped strictly to the 4-file bidirectional-GQA family the compiler named.
+- Fix `bd16fdeb` (pushed to gevil; clone origin Gevil/ninfer has it): adopted gpillon-tip state verbatim for
+  `src/ops/launcher/bidirectional_gqa_attention.cu`, `src/ops/launcher/bidirectional_gqa_attention.h`,
+  `include/ninfer/ops/bidirectional_gqa_attention.h`, `src/ops/wrapper/bidirectional_gqa_attention.cpp`.
+  (`.cuh` untouched - already identical.) Verified: all four byte-identical to tip; commit contains exactly those
+  four files; worktree clean; `BidirectionalGqaRoute` resolves in the adopted launcher-local header (the public
+  include header legitimately carries no paged fields - first sanity grep was a false alarm).
+- Process change (user instruction): the main session now runs on the same local lane model as the subagent, so the
+  separate-agent pattern has no remaining upside. `T33WaveBPicks` confirmed stand-down (it had restored the .cuh
+  to its committed state, keeping the tree clean) and was retired. Lane-stop survival is now provided by
+  host-side watchers (plain async bash, zero lane consumption) instead of lane-model agent watchers.
+- v3 window launched by the main session: script `/tmp/t33waveb-v3-build-window.sh`, tag `t33dflash2-bd16fde`,
+  log `~/.local/share/ninfer/logs/t33waveb-v3-build-window-2026-09-06.log`. Window: 45s grace -> lane stop ->
+  RAM>=12GiB gate -> clone sync (origin) -> build -> host ctest (6 host suites) -> ALWAYS lane restart.
+  ETA ~30-55 min. Note: the main session's own backend is the lane model, so the session is suspended for the
+  window's duration and resumes with the script's always-restart.
