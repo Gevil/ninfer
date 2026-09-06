@@ -7,6 +7,7 @@
 #include "ninfer/ops/attn_input_proj.h"
 #include "ninfer/ops/embedding.h"
 #include "ninfer/ops/kv_cache_append.h"
+#include "ninfer/ops/kv_cache_append_prefix.h"
 #include "ninfer/ops/linear.h"
 #include "ninfer/ops/linear_add.h"
 #include "ninfer/ops/linear_pair.h"

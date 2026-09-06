@@ -9,6 +9,7 @@
 #include "ninfer/ops/sampling.h"
 #include "ninfer/ops/sliding_window_attention.h"
 #include "ninfer/ops/softmax_attention.h"
+#include "ninfer/ops/swa.h"
 #include "targets/qwen3_6/impl/runtime/dflash_context.h"
 #include "targets/qwen3_6/impl/runtime/dflash2_context.h"
 #include "targets/qwen3_6/impl/runtime/text_context.h"
@@ -122,7 +123,7 @@ bool mtp_sampled_draft_enabled();
 bool mtp_nucleus_accept_enabled();
 
 struct DFlash2Envelopes {
-    ops::SwAContextExecutionEnvelope local;
+    ops::SwaContextExecutionEnvelope local;
     ops::KVCacheAppendPrefixExecutionEnvelope append;
     ops::ContextAttentionExecutionEnvelope full;
 };
