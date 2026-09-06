@@ -1499,20 +1499,28 @@ T19, T15 config flip.
 ## Operational event 2026-09-06: host-KV arena 8 → 32 GiB + T35 revert (single restart 09:08 CEST)
 
 - **Context.** User symptom: one ~178k-token OMP session, every turn full re-prefill — journal:
-  `cache 0 (0.0%)` on ~178–180k prompts, TTFT 1m8s–1m48s, "host" column tiny. Boot ledger:
-  `host 8 states, 8.00 GiB KV` — slots sized ~1 GiB each (~32k sessions), while one 178k-token
-  INT8-KV state ≈ 2.8 GiB (16 KiB/token) → session state never fit a slot → nothing to restore
-  after T14's idle-prefix loss @45–120s → full re-prefill each turn. NOT a T35/k=5 regression:
-  the same `cache 0` re-prefills appear in the k=3-era journal (00:50–00:57, req#501–507).
+  `cache 0 (0.0%)` on ~178–180k prompts, TTFT 1m8s–1m48s, "host" column tiny — while warm
+  follow-ups hit 95–100% cache (req#506 95.5% in the k=3 era; post-boot req#4 99.8%, req#83
+  100.0% at TTFT 4.3s). NOT a T35/k=5 regression: the same `cache 0` re-prefills appear in the
+  k=3-era journal (00:50–00:57, req#501–507). Arena semantics verified in the T18 source:
+  `--host-kv-mib` is ONE byte pool (`host_kv_capacity_bytes = mib << 20`, serve_options.cpp:239)
+  with a state-count cap of 8 ("host 8 states" is that cap — identical at fresh boot, not fixed
+  slabs); 8 GiB ≈ 2× one 2.8 GiB (178k-token) state, so single-session fit is NOT the issue.
 - **Change.** Quadlet `--host-kv-mib 8192 → 32768` (user request: was 32G before; MemAvailable
   32 GiB pre-pin → 10 GiB post-pin) + `--draft-tokens 5 → 3` (T35 revert, above). Backup:
   `ninfer-nvfp4.container.bak-2026-09-06-hostkv32g`. Boot 09:08:26 CEST: `host KV pinned |
-  32.0 GiB | 13.4s`, `host 8 states, 32.0 GiB KV` (slots now 4 GiB each — a 178k state fits).
-  `/v1/models` 200; post-restart follow-up request already hit `cache 81,077 (99.8%, private
-  endpoint)`.
-- **Verification pending:** decisive test is this session's NEXT turn after ≥1 min idle — expect
-  high cache % + TTFT in seconds. If re-prefill persists at 32 GiB, cause is the restore path /
-  state identity (T31/T34 class, not arena sizing) → escalate there.
+  32.0 GiB | 13.4s`, `host 8 states, 32.0 GiB KV`. `/v1/models` 200; post-restart follow-ups
+  already hit 99.8–100% cache (TTFT 4.3–7.9s).
+- **Root cause: UNCONFIRMED.** Candidates: (a) multi-generation / parked-lane arena contention at
+  8 GiB; (b) restore-path fallback — T31/T34 class (host-RAM rewrite-checkpoint restore is the
+  documented broken path upstream); (c) state-identity mismatch (this session's requests
+  alternate 167-message / 1-message forms — different rendered prefixes can't match); (d) T14
+  idle expiry before parking. Decisive test: this session's NEXT turn after ≥1 min idle — expect
+  high cache % + TTFT in seconds. NOTE: this build logs no park/restore events at info level
+  (zero such lines in the journal since boot) — the observables are the done-line
+  `cache N (X%, private endpoint)` field and TTFT. If re-prefill persists at 32 GiB → (b)/(c):
+  escalate to T31/T34. ALSO watch 500s on vision turns (StateImage-entitlement class, the 09-05
+  Bug 2 500): the bigger arena raises restore frequency and this session carries 5 vision media.
 - **Corruption-exposure note (plan step 5a):** T18's restore path validates entries (corrupt entry
   → loud `ResidentLost` → full reset; frontier-entitlement invariant rejects loudly — the 09-05
   Bug 3 fatal is that rejection) and ran at 8 GiB since 09-05 with no silent corruption; the
