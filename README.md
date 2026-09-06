@@ -7,30 +7,6 @@ single NVIDIA GeForce RTX 5090. It runs text, image, and video prompts through a
 OpenAI-/Anthropic-compatible HTTP APIs. The runtime is deliberately specialized: one GPU, one
 resident model, and a startup-fixed capacity of one to eight active requests.
 
-## This fork — Gevil/ninfer
-
-This repository is a personal fork of [Neroued/ninfer](https://github.com/Neroued/ninfer),
-maintained for one purpose: a fast single-GPU inference lane running **Qwen3.8-27B NVFP4 on an
-RTX 5090** (~225K-token INT8 KV, MTP3 speculative decoding, vision) served through the
-OpenAI-compatible endpoint for local agent sessions.
-
-Rather than wait on upstream, the fork **merges open upstream PRs and cherry-picks
-improvements from community forks** that are not yet in upstream `master`:
-
-- upstream `master` is always fully contained (re-verified before every batch);
-- one PR = one tagged merge commit, so a future rebase drops it cleanly once the PR
-  merges upstream;
-- cherry-picks from contributor branches land as regular commits naming the source
-  fork/commit;
-- conflicts are pre-checked with `git merge-tree` and resolved one PR at a time;
-- every batch is verified by rebuilding the lane image and running a serve battery on
-  the live GPU (models contract, vision probes, long-history replay, decode-rate
-  regression, 4xx watch).
-
-The full running record — what is in, where it came from, how it was verified, audits,
-and decisions (including what was evaluated and deliberately left out) — is in
-[ADOPTION.md](ADOPTION.md).
-
 NInfer supports five artifact identities. The quick-start commands use Qwen3.8-27B NVFP4.
 
 | Model | Weights | Artifact | Download and model card |
