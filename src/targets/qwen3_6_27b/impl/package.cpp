@@ -82,7 +82,23 @@ ModelSamplingDefaults Package::sampling_defaults(std::string_view model) {
                              std::string(target_key) + "'");
 }
 
-Package::WeightsProfile Package::resolve_weights(const artifact::ArtifactIdentity& identity) {
+bool tensor_matches(const artifact::Reader& reader, std::string_view name,
+                    artifact::NumericFormat format, artifact::StorageLayout layout,
+                    std::vector<std::uint64_t> shape) {
+    const auto* object = reader.find(name);
+    if (object == nullptr) { return false; }
+    const auto* tensor = std::get_if<artifact::TensorDescriptor>(object);
+    return tensor != nullptr && tensor->format == format && tensor->layout == layout &&
+           tensor->shape == shape;
+}
+
+bool endpoint_matches(const artifact::Reader& reader, std::string_view name,
+                      artifact::NumericFormat format, artifact::StorageLayout layout) {
+    return tensor_matches(reader, name, format, layout, {248320, 5120});
+}
+
+Package::WeightsProfile Package::resolve_weights(const artifact::Reader& reader) {
+    const auto& identity = reader.identity();
     if (identity.model_id == model_id && identity.weights_id == "groupwise-int") {
         return WeightsProfile::Qwen36GroupwiseInt;
     }
@@ -93,7 +109,26 @@ Package::WeightsProfile Package::resolve_weights(const artifact::ArtifactIdentit
         return WeightsProfile::Qwen36Nvfp4;
     }
     if (identity.model_id == qwen3_8_model_id && identity.weights_id == "nvfp4") {
-        return WeightsProfile::Qwen38Nvfp4;
+        const bool legacy_w8 =
+            endpoint_matches(reader, "text/token_embedding", artifact::NumericFormat::W8G32_F16S,
+                             artifact::StorageLayout::RowSplitK128V1) &&
+            endpoint_matches(reader, "text/output_head", artifact::NumericFormat::W8G32_F16S,
+                             artifact::StorageLayout::RowSplitK128V1);
+        const bool current_fp8 = endpoint_matches(reader, "text/token_embedding",
+                                                  artifact::NumericFormat::FP8_E4M3FN_ROW_BF16S,
+                                                  artifact::StorageLayout::RowScaleV1) &&
+                                 endpoint_matches(reader, "text/output_head",
+                                                  artifact::NumericFormat::FP8_E4M3FN_ROW_BF16S,
+                                                  artifact::StorageLayout::RowScaleV1);
+        if (legacy_w8) {
+            const bool quasar =
+                tensor_matches(reader, "text/layers/3/attention/query_key_gate_value",
+                               artifact::NumericFormat::NVFP4,
+                               artifact::StorageLayout::BlockScaleK16M128x4V1, {14336, 5120});
+            return quasar ? WeightsProfile::Qwen38Nvfp4Quasar : WeightsProfile::Qwen38Nvfp4LegacyW8;
+        }
+        if (current_fp8) { return WeightsProfile::Qwen38Nvfp4; }
+        throw std::runtime_error("unsupported qwen3.8-27b/nvfp4 endpoint storage profile");
     }
     if (identity.model_id == qwen3_8_model_id && identity.weights_id == "nvfp4full") {
         return WeightsProfile::Qwen38Nvfp4Full;
@@ -139,11 +174,14 @@ Package::SequencePlanner Package::make_sequence_planner(DeviceContext& device,
     return qwen3_6::make_sequence_planner<detail::Variant>(device, options, weights_profile);
 }
 
-std::unique_ptr<Package::Program>
-Package::create_program(const LoadedModel& model, SequencePlan&& plan, DeviceContext& device) {
+std::unique_ptr<Package::Program> Package::create_program(const LoadedModel& model,
+                                                          SequencePlan&& plan,
+                                                          DeviceContext& device,
+                                                          const StartupObserver& startup_observer) {
     if (model.impl_ == nullptr) { throw std::invalid_argument("loaded model is empty"); }
-    return qwen3_6::create_program<detail::Variant>(
-        model.impl_->data.runtime, model.impl_->weights_profile, std::move(plan), device);
+    return qwen3_6::create_program<detail::Variant>(model.impl_->data.runtime,
+                                                    model.impl_->weights_profile, std::move(plan),
+                                                    device, startup_observer);
 }
 
 } // namespace ninfer::targets::qwen3_6_27b

@@ -77,6 +77,10 @@ struct DFlashDecodeIngress {
     std::array<std::int32_t, kMaximumConcurrency> context_frontiers{};
     std::array<std::int32_t, kMaximumConcurrency> proposal_extents{};
     std::array<std::int32_t, kMaximumConcurrency> target_valid_columns{};
+    // DFlash uses logical positions for its own attention. Target verification carries a separate
+    // continuation RoPE position so multimodal rows retain their per-sequence rope_delta.
+    std::array<std::int32_t, kMaximumConcurrency * kDFlashDecodeMaximumWidth>
+        target_rope_positions{};
     std::array<std::int32_t, kMaximumConcurrency> text_kv_table_rows{};
     std::array<std::int32_t, kMaximumConcurrency> dflash_kv_table_rows{};
     std::array<std::int32_t, kMaximumConcurrency> active_lanes{};
@@ -120,6 +124,11 @@ struct MtpDecodeStateLayout {
     TensorRegion target_hidden;
     TensorRegion target_continuation_hidden;
     TensorRegion proposal_logits;
+    TensorRegion draft_probs;
+    TensorRegion draft_support_ids;
+    TensorRegion draft_support_probs;
+    TensorRegion draft_support_n;
+    TensorRegion draft_recorded_tokens;
     TensorRegion alignment_ids;
     TensorRegion alignment_hidden;
     TensorRegion ar_hidden;
@@ -233,6 +242,11 @@ struct MtpDecodeState {
     Tensor target_hidden;
     Tensor target_continuation_hidden;
     Tensor proposal_logits;
+    Tensor draft_probs;
+    Tensor draft_support_ids;
+    Tensor draft_support_probs;
+    Tensor draft_support_n;
+    Tensor draft_recorded_tokens;
     Tensor alignment_ids;
     Tensor alignment_hidden;
     Tensor ar_hidden;
@@ -254,6 +268,7 @@ struct DFlashDecodeState {
     Tensor context_frontiers;
     Tensor proposal_extents;
     Tensor target_valid_columns;
+    Tensor target_rope_positions;
     Tensor text_kv_table_rows;
     Tensor dflash_kv_table_rows;
     Tensor active_lanes;

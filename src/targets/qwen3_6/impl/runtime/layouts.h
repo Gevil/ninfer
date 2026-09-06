@@ -74,13 +74,14 @@ struct SequencePlanningInputs {
     std::uint32_t prefill_chunk            = 0;
     std::uint32_t draft_window             = 0;
     SpeculativeBackend speculative_backend = SpeculativeBackend::None;
-    DType kv_dtype                         = DType::BF16;
-    std::int32_t kv_quant_group            = 0;
+    KvCacheStorage kv_storage              = KvCacheStorage::BFloat16;
     ProposalHead proposal_head             = ProposalHead::Full;
     StartupFeatures features;
     bool use_cuda_graph = true;
     bool causal_scoring = false;
     int device          = 0;
+    float rope_scaling_factor              = 1.0F;
+    std::uint32_t rope_scaling_original_context = 262144;
     ContextCacheOptions context_cache;
 };
 
@@ -98,13 +99,14 @@ struct SequencePlanImpl<NINFER_QWEN36_VARIANT> {
     std::uint32_t prefill_chunk            = 0;
     std::uint32_t draft_window             = 0;
     SpeculativeBackend speculative_backend = SpeculativeBackend::None;
-    DType kv_dtype                         = DType::BF16;
-    std::int32_t kv_quant_group            = 0;
+    KvCacheStorage kv_storage              = KvCacheStorage::BFloat16;
     ProposalHead proposal_head             = ProposalHead::Full;
     StartupFeatures features;
     bool use_cuda_graph = true;
     bool causal_scoring = false;
     int device          = 0;
+    float rope_scaling_factor              = 1.0F;
+    std::uint32_t rope_scaling_original_context = 262144;
     ContextCacheOptions context_cache;
     NINFER_QWEN36_RUNTIME_NS::PersistentLayout persistent;
     NINFER_QWEN36_RUNTIME_NS::WorkspacePlan workspace;

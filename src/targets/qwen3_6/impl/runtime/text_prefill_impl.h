@@ -39,6 +39,8 @@ void configure_text_card(TextContext& card, const ExecutionCore& execution,
     card.set_linear_state_slots(state_source_slot, state_destination_slot);
     card.set_gdn_state_action(GdnStateAction::UpdateInPlace, nullptr);
     card.set_mtp_proposal_extent(mtp_proposal_extent);
+    card.set_rope_scaling(execution.rope_scaling_factor,
+                          execution.rope_scaling_original_context);
     if (execution.proposal_head == ProposalHead::Full) {
         card.set_proposal_head(nullptr, nullptr, 0);
         return;
@@ -76,9 +78,6 @@ PrefillChunkResult prefill_multimodal_chunk(PrefillContext& state, const Prepare
                                             std::uint32_t nominal_length,
                                             std::optional<std::uint32_t> split_frontier,
                                             bool finalize_at_end) {
-    if (state.dflash != nullptr) {
-        throw std::logic_error("DFlash staged multimodal prefill is unavailable");
-    }
     TextContext card(state.execution.device, state.execution.model, state.execution.work,
                      state.text_kv, state.execution.linear_attention, state.execution.io,
                      state.execution.prefill_hidden, state.execution.prefill_chunk,
@@ -88,6 +87,11 @@ PrefillChunkResult prefill_multimodal_chunk(PrefillContext& state, const Prepare
     card.set_rewrite_checkpoint_hidden_output(state.rewrite_checkpoint_hidden);
     card.set_prefill_split_frontier(split_frontier ? static_cast<std::int64_t>(*split_frontier)
                                                    : -1);
+    if (state.dflash != nullptr) {
+        DFlashFeatureSink sink = make_dflash_prefill_sink(state);
+        return card.prefill_chunk(prompt, state.text_kv_base, nominal_length, vision,
+                                  finalize_at_end, sink);
+    }
     return card.prefill_chunk(prompt, state.text_kv_base, nominal_length, vision, finalize_at_end);
 }
 

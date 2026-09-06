@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ninfer/types.h"
+#include "product/logging/logging.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -25,6 +26,8 @@ struct Options {
     int device                   = 0;
 
     KvCacheStorage kv_cache = KvCacheStorage::BFloat16;
+    float rope_scaling_factor              = 1.0F;
+    std::uint32_t rope_scaling_original_context = 262144;
     SpeculativeOptions speculative;
     bool enable_vision  = false;
     bool use_cuda_graph = true;
@@ -40,7 +43,8 @@ struct Options {
 
     // Omitted fields are resolved from the loaded model and rendered prompt mode by Engine.
     SamplingOverrides sampling;
-    bool greedy = false;
+    bool greedy                 = false;
+    product::LogLevel log_level = product::LogLevel::Info;
 };
 
 [[nodiscard]] Options parse_options(int argc, char** argv);

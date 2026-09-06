@@ -110,7 +110,8 @@ a small set of explicitly registered checkpoint artifacts. The supported identit
 `qwen3.8-27b/nvfp4`, and `qwen3.6-35b-a3b/groupwise-int`. The current implementation is compiled
 for `sm_120a` and tuned and measured on NVIDIA GeForce RTX 5090. All identities execute Text,
 image/video Vision, MTP, prefix reuse, CLI, OpenAI/Anthropic serving, and measurement through the
-same public `.ninfer` Engine route; the 35B-A3B target additionally supports text-only DFlash.
+same public `.ninfer` Engine route; the 35B-A3B target additionally supports DFlash for both Text
+and image/video Vision prompts.
 
 The current workload is one GPU and one resident model instance with a startup-fixed one to eight
 active requests. The Engine forms one compact decode batch at every round boundary and uses bounded
@@ -181,8 +182,8 @@ govern a live decision in the current task.
 These boundaries govern ordinary implementation work. An explicit architecture task may revise
 them, but must update the corresponding active authorities and affected implementation together.
 
-- `.ninfer` is the only C++ product artifact. Do not add `.qus` fallback, extension detection,
-  compatibility shims, or a second product lane.
+- `.ninfer` is the only C++ product artifact. Do not add extension detection, compatibility shims,
+  or a second product lane.
 - `include/ninfer/engine.h` and `include/ninfer/types.h` are the opaque Engine interface used by
   in-tree applications and owning host values. NInfer does not currently install or export a C++
   SDK. `include/ninfer/ops/` contains repository-internal semantic Op contracts.

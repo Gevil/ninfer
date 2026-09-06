@@ -16,6 +16,7 @@ struct DeviceContext;
 namespace artifact {
 class Binder;
 class MaterializedArtifact;
+class Reader;
 struct ArtifactIdentity;
 struct MaterializationPlan;
 } // namespace artifact
@@ -35,6 +36,8 @@ enum class WeightsProfile : std::uint8_t {
     Qwen38Nvfp4,
     Qwen38Nvfp4Full,
     Qwen38Quasar,
+    Qwen38Nvfp4LegacyW8,
+    Qwen38Nvfp4Quasar,
 };
 
 using Frontend        = qwen3_6::Frontend;
@@ -108,6 +111,7 @@ struct Package {
     using SharedPrefixSummary        = qwen3_6::SharedPrefixSummary;
     using PressurePlanningSession    = qwen3_6::PressurePlanningSession<detail::Variant>;
     using PressureTargetHandle       = qwen3_6::PressureTargetHandle;
+    using AssessedPressureTarget     = qwen3_6::AssessedPressureTarget<detail::Variant>;
     using CapturePressurePlan        = qwen3_6::CapturePressurePlan<detail::Variant>;
     using MaterializationResult      = qwen3_6::MaterializationResult<detail::Variant>;
     using ContextTransactionProgress = qwen3_6::ContextTransactionProgress<detail::Variant>;
@@ -124,7 +128,7 @@ struct Package {
     using Program                    = qwen3_6::Program<detail::Variant>;
 
     [[nodiscard]] static ModelSamplingDefaults sampling_defaults(std::string_view model);
-    [[nodiscard]] static WeightsProfile resolve_weights(const artifact::ArtifactIdentity& identity);
+    [[nodiscard]] static WeightsProfile resolve_weights(const artifact::Reader& reader);
     [[nodiscard]] static LoadPlan plan_load(artifact::Binder& binder, const EngineOptions& options,
                                             WeightsProfile weights_profile);
     [[nodiscard]] static std::unique_ptr<LoadedModel>
@@ -135,7 +139,8 @@ struct Package {
                                                                const EngineOptions& options,
                                                                WeightsProfile weights_profile);
     [[nodiscard]] static std::unique_ptr<Program>
-    create_program(const LoadedModel& model, SequencePlan&& plan, DeviceContext& device);
+    create_program(const LoadedModel& model, SequencePlan&& plan, DeviceContext& device,
+                   const StartupObserver& startup_observer);
 };
 
 } // namespace targets::qwen3_6_27b

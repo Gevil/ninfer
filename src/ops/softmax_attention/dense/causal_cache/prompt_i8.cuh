@@ -48,19 +48,6 @@ static_assert(kCausalPromptI8Groups == 4);
 static_assert(kCausalPromptI8DConsumers == 4);
 static_assert(kCausalPromptI8SmemBytes == 92672);
 
-__device__ __forceinline__ void causal_prompt_i8_store_swz(std::int8_t* tile, int row, int d,
-                                                           std::int8_t code) {
-    const int col_b16 = d >> 1;
-    const int byte    = d & 1;
-    const int off     = (row * kCausalPromptI8DB16 + causal_prompt_swz(row, col_b16)) * 2 + byte;
-    tile[off]         = code;
-}
-
-__device__ __forceinline__ int causal_prompt_i8_p_swz(int row, int col) {
-    if constexpr (kCausalPromptI8Bc == 32) { return (((col >> 3) ^ (row & 3)) << 3) | (col & 7); }
-    return causal_prompt_swz(row, col);
-}
-
 __device__ __forceinline__ int4 causal_prompt_i8_dequant_f16x8(const std::int8_t* codes8,
                                                                __half scale) {
     const int2 raw       = load_vec<int2>(codes8);
@@ -165,8 +152,8 @@ __global__ __maxnreg__(120) void causal_attention_prompt_i8_kernel(
             absmax          = warp_max(absmax, FullMask);
             const float qs  = absmax > 0.0f ? absmax / 127.0f : 0.0f;
             const float inv = qs > 0.0f ? 1.0f / qs : 0.0f;
-            causal_prompt_i8_store_swz(q_i8, row, d0, kv_cache_int8_quant_code(x0, inv));
-            causal_prompt_i8_store_swz(q_i8, row, d1, kv_cache_int8_quant_code(x1, inv));
+            causal_prompt_store_byte_swizzled(q_i8, row, d0, kv_cache_int8_quant_code(x0, inv));
+            causal_prompt_store_byte_swizzled(q_i8, row, d1, kv_cache_int8_quant_code(x1, inv));
             if (lane == 0) { q_scale[row * Groups + grp] = qs; }
         }
     }
@@ -238,11 +225,12 @@ __global__ __maxnreg__(120) void causal_attention_prompt_i8_kernel(
         }
     }
 
-    float acc[PVNtPerWarp][4];
+    // FP16 PV accumulator: two f16x2 registers per n-tile, not four floats.
+    unsigned acc[PVNtPerWarp][2];
 #pragma unroll
     for (int n = 0; n < PVNtPerWarp; ++n) {
 #pragma unroll
-        for (int i = 0; i < 4; ++i) { acc[n][i] = 0.0f; }
+        for (int i = 0; i < 2; ++i) { acc[n][i] = 0u; }
     }
     float running_m0     = -CUDART_INF_F;
     float running_m1     = -CUDART_INF_F;
@@ -369,10 +357,10 @@ __global__ __maxnreg__(120) void causal_attention_prompt_i8_kernel(
                                       : 0.0f;
                 bl0 += p00 + p01;
                 bl1 += p10 + p11;
-                p_s[row0 * Bc + causal_prompt_i8_p_swz(row0, col0)] = __float2half_rn(p00);
-                p_s[row0 * Bc + causal_prompt_i8_p_swz(row0, col1)] = __float2half_rn(p01);
-                p_s[row1 * Bc + causal_prompt_i8_p_swz(row1, col0)] = __float2half_rn(p10);
-                p_s[row1 * Bc + causal_prompt_i8_p_swz(row1, col1)] = __float2half_rn(p11);
+                p_s[row0 * Bc + causal_prompt_p_swz<Bc>(row0, col0)] = __float2half_rn(p00);
+                p_s[row0 * Bc + causal_prompt_p_swz<Bc>(row0, col1)] = __float2half_rn(p01);
+                p_s[row1 * Bc + causal_prompt_p_swz<Bc>(row1, col0)] = __float2half_rn(p10);
+                p_s[row1 * Bc + causal_prompt_p_swz<Bc>(row1, col1)] = __float2half_rn(p11);
             }
             bl0        = warp_sum<4>(bl0, FullMask);
             bl1        = warp_sum<4>(bl1, FullMask);
@@ -416,10 +404,10 @@ __global__ __maxnreg__(120) void causal_attention_prompt_i8_kernel(
         const float alpha1 = alpha_s[row_base + gid + 8];
 #pragma unroll
         for (int n = 0; n < PVNtPerWarp; ++n) {
-            acc[n][0] *= alpha0;
-            acc[n][1] *= alpha0;
-            acc[n][2] *= alpha1;
-            acc[n][3] *= alpha1;
+            const __half2 r0 = __hmul2(half2_from_bits(acc[n][0]), __float2half2_rn(alpha0));
+            const __half2 r1 = __hmul2(half2_from_bits(acc[n][1]), __float2half2_rn(alpha1));
+            acc[n][0]        = load_vec<std::uint32_t>(&r0);
+            acc[n][1]        = load_vec<std::uint32_t>(&r1);
         }
 
 #pragma unroll
@@ -428,7 +416,7 @@ __global__ __maxnreg__(120) void causal_attention_prompt_i8_kernel(
             const int pcol = k * 16 + a_coloff;
             ldmatrix_x4(pf[0], pf[1], pf[2], pf[3],
                         smem_addr(&p_s[(row_base + a_rowoff) * Bc +
-                                       causal_prompt_i8_p_swz(row_base + a_rowoff, pcol)]));
+                                       causal_prompt_p_swz<Bc>(row_base + a_rowoff, pcol)]));
 #pragma unroll
             for (int n = 0; n < PVNtPerWarp; ++n) {
                 const int global_n = d_slice * PVNtPerWarp + n;
@@ -437,7 +425,7 @@ __global__ __maxnreg__(120) void causal_attention_prompt_i8_kernel(
                 const int vcol = global_n * 8;
                 ldmatrix_x2_t(vf[0], vf[1],
                               smem_addr(&v_f16[vrow * D + causal_prompt_swz(vrow, vcol)]));
-                mma_f16(acc[n][0], acc[n][1], acc[n][2], acc[n][3], pf[0], pf[1], pf[2], pf[3],
+                mma_f16_acc16(acc[n][0], acc[n][1], pf[0], pf[1], pf[2], pf[3],
                         vf[0], vf[1]);
             }
         }
@@ -466,12 +454,12 @@ __global__ __maxnreg__(120) void causal_attention_prompt_i8_kernel(
         if (row0 < tile_rows) {
             *reinterpret_cast<unsigned*>(
                 &out[causal_prompt_q_index<Geometry>(q_head, d0, q0 + row0)]) =
-                pack_bf16x2(acc[n][0] * inv_l0, acc[n][1] * inv_l0);
+                pack_bf16x2(__low2float(half2_from_bits(acc[n][0])) * inv_l0, __high2float(half2_from_bits(acc[n][0])) * inv_l0);
         }
         if (row1 < tile_rows) {
             *reinterpret_cast<unsigned*>(
                 &out[causal_prompt_q_index<Geometry>(q_head, d0, q0 + row1)]) =
-                pack_bf16x2(acc[n][2] * inv_l1, acc[n][3] * inv_l1);
+                pack_bf16x2(__low2float(half2_from_bits(acc[n][1])) * inv_l1, __high2float(half2_from_bits(acc[n][1])) * inv_l1);
         }
     }
     causal_prompt_zero_output_rows<Geometry>(out, q_head, tokens, min(q0 + Br, width), tid,

@@ -56,6 +56,8 @@ KvCacheStorage parse_kv_cache(std::string_view text) {
     if (text == "bf16") { return KvCacheStorage::BFloat16; }
     if (text == "int8") { return KvCacheStorage::Int8Group64; }
     if (text == "fp8") { return KvCacheStorage::Fp8E4M3Row256; }
+    if (text == "nvfp4") { return KvCacheStorage::Nvfp4Group16; }
+    if (text == "k8v4") { return KvCacheStorage::Fp8KeyNvfp4Value; }
     throw std::invalid_argument("invalid kv-dtype: " + std::string(text));
 }
 
@@ -79,7 +81,8 @@ std::string usage_text(const char* argv0) {
             "       [--chat-template-file PATH]\n"
            "       [--max-context N] [--kv-capacity N|auto] [--prefill-chunk N] [--max-new N]\n"
            "       [--device N]\n"
-           "       [--kv-dtype bf16|int8|fp8] [--spec mtp|dflash --draft-tokens N]\n"
+           "       [--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--spec mtp|dflash --draft-tokens N]\n"
+           "       [--rope-scaling-factor F] [--rope-scaling-original-context N]\n"
            "       [--lm-head-draft]\n"
            "       [--temperature F] [--top-p F] [--top-k N] [--min-p F]\n"
            "       [--presence-penalty F] [--frequency-penalty F] [--seed N] [--greedy]\n"
@@ -87,6 +90,7 @@ std::string usage_text(const char* argv0) {
            "       [--raw-output] [--print-token-ids] [--no-thinking] [--thinking-budget N]\n"
            "       [--reasoning-effort low|medium|xhigh] [--vision]\n"
            "       [--no-cuda-graph]\n"
+           "       [--log-level trace|debug|info|warning|error|critical|off]\n"
            "\n"
            "Streams answer content to stdout and reasoning plus diagnostics to stderr.\n"
            "Structured message content accepts text, image/image_url, and video/video_url parts;\n"
@@ -140,6 +144,12 @@ Options parse_options(int argc, char** argv) {
             options.device = parse_device(value(arg));
         } else if (arg == "--kv-dtype") {
             options.kv_cache = parse_kv_cache(value(arg));
+        } else if (arg == "--rope-scaling-factor") {
+            options.rope_scaling_factor =
+                parse_float(value(arg), "rope-scaling-factor", 1.0f, 32.0f);
+        } else if (arg == "--rope-scaling-original-context") {
+            options.rope_scaling_original_context =
+                parse_u32(value(arg), "rope-scaling-original-context");
         } else if (arg == "--spec") {
             options.speculative.backend = product::parse_speculative_backend(value(arg));
         } else if (arg == "--draft-tokens") {
@@ -195,6 +205,8 @@ Options parse_options(int argc, char** argv) {
             options.sampling.seed = parse_u64(value(arg), "seed");
         } else if (arg == "--greedy") {
             options.greedy = true;
+        } else if (arg == "--log-level") {
+            options.log_level = product::parse_log_level(value(arg));
         } else {
             throw std::invalid_argument("unknown argument: " + std::string(arg));
         }
@@ -217,9 +229,6 @@ Options parse_options(int argc, char** argv) {
         throw std::invalid_argument("--kv-capacity must be at least --max-context");
     }
     product::validate_speculative_cli_options(options.speculative);
-    if (options.speculative.backend == SpeculativeBackend::DFlash && options.enable_vision) {
-        throw std::invalid_argument("--spec dflash cannot be combined with --vision");
-    }
     if (!options.enable_thinking && options.reasoning_effort) {
         throw std::invalid_argument("--reasoning-effort cannot be combined with --no-thinking");
     }

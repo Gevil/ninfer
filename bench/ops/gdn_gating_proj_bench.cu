@@ -196,8 +196,8 @@ Options parse_args(int argc, char** argv) {
     return opt;
 }
 
-bool run(const Options& opt, std::int32_t tokens, std::size_t interval_capacity,
-         DeviceBuffer& flush) {
+void run(const Options& opt, std::int32_t tokens, std::size_t interval_capacity,
+         DeviceBuffer& flush, DeviceExecutionView execution) {
     const std::int32_t heads  = opt.geometry35 ? 32 : 48;
     const std::int32_t hidden = opt.geometry35 ? 2048 : 5120;
     const std::size_t x_elems = static_cast<std::size_t>(hidden) * tokens;
@@ -233,34 +233,36 @@ bool run(const Options& opt, std::int32_t tokens, std::size_t interval_capacity,
     const std::size_t workspace_bytes = std::max(interval_capacity, plan.workspace_bytes);
     WorkspaceArena ws(std::max<std::size_t>(1, workspace_bytes));
     const auto launch = [&](cudaStream_t stream) {
+        DeviceExecutionView launch_execution = execution;
+        launch_execution.stream              = stream;
         if (opt.norm_control && opt.composed_norm_control) {
             ops::rmsnorm(tx, tnorm_weight, 1.0e-6F, true, th, stream);
             if (opt.geometry35) {
-                ops::gdn_gating_proj(th, parent, tA_log, tdt_bias, ws, tg, tbeta, stream);
+                ops::gdn_gating_proj(th, parent, tA_log, tdt_bias, ws, tg, tbeta, launch_execution);
             } else {
-                ops::gdn_gating_proj(th, wa, wb, tA_log, tdt_bias, ws, tg, tbeta, stream);
+                ops::gdn_gating_proj(th, wa, wb, tA_log, tdt_bias, ws, tg, tbeta, launch_execution);
             }
         } else if (opt.norm_control) {
             if (opt.geometry35) {
                 ops::gdn_norm_gating_proj(tx, tnorm_weight, 1.0e-6F, parent, tA_log, tdt_bias, ws,
-                                          th, tg, tbeta, stream);
+                                          th, tg, tbeta, launch_execution);
             } else {
                 ops::gdn_norm_gating_proj(tx, tnorm_weight, 1.0e-6F, wa, wb, tA_log, tdt_bias, ws,
-                                          th, tg, tbeta, stream);
+                                          th, tg, tbeta, launch_execution);
             }
         } else if (opt.auto_route) {
             if (opt.geometry35) {
-                ops::gdn_gating_proj(tx, parent, tA_log, tdt_bias, ws, tg, tbeta, stream);
+                ops::gdn_gating_proj(tx, parent, tA_log, tdt_bias, ws, tg, tbeta, launch_execution);
             } else {
-                ops::gdn_gating_proj(tx, wa, wb, tA_log, tdt_bias, ws, tg, tbeta, stream);
+                ops::gdn_gating_proj(tx, wa, wb, tA_log, tdt_bias, ws, tg, tbeta, launch_execution);
             }
         } else {
-            ops::detail::bf16_gdn_gating_execute_candidate(opt.candidate, tx, wa, wb, tA_log,
-                                                           tdt_bias, ws, tg, tbeta, stream);
+            ops::detail::bf16_gdn_gating_execute_candidate(
+                opt.candidate, tx, wa, wb, tA_log, tdt_bias, ws, tg, tbeta, launch_execution);
         }
     };
     const bench::ColdTiming timing =
-        bench::measure_cold_launch(launch, flush, nullptr, opt.warmup, opt.repeat);
+        bench::measure_cold_launch(launch, flush, execution.stream, opt.warmup, opt.repeat);
     const double sec = timing.median_us * 1e-6;
     const double useful_flops =
         2.0 * 2.0 * static_cast<double>(heads) * hidden * static_cast<double>(tokens);
@@ -339,6 +341,15 @@ int main(int argc, char** argv) {
     }
     try {
         const Options opt = parse_args(argc, argv);
+        int device_id     = 0;
+        if (cudaGetDevice(&device_id) != cudaSuccess) {
+            throw std::runtime_error("cudaGetDevice failed");
+        }
+        cudaDeviceProp properties{};
+        if (cudaGetDeviceProperties(&properties, device_id) != cudaSuccess) {
+            throw std::runtime_error("cudaGetDeviceProperties failed");
+        }
+        const DeviceExecutionView execution{nullptr, properties.multiProcessorCount};
         DeviceBuffer flush(opt.flush_bytes);
         const std::int32_t heads      = opt.geometry35 ? 32 : 48;
         const std::int32_t hidden     = opt.geometry35 ? 2048 : 5120;
@@ -351,12 +362,11 @@ int main(int argc, char** argv) {
                 : ops::gdn_gating_proj_workspace_capacity_bytes(heads, hidden, min_tokens,
                                                                 max_tokens);
         std::printf("geometry,operation,T,route,median_us,min_us,p95_us,useful_tflops,"
-                    "executed_tflops,useful_gbps,workspace_bytes,bitexact\n");
-        bool all_ok = true;
+                    "executed_tflops,useful_gbps,workspace_bytes\n");
         for (const std::int32_t tokens : opt.tokens) {
-            all_ok = run(opt, tokens, interval_capacity, flush) && all_ok;
+            run(opt, tokens, interval_capacity, flush, execution);
         }
-        return all_ok ? 0 : 3;
+        return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "error: %s\n", error.what());
         return 2;

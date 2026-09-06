@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ninfer/types.h"
+#include "product/logging/logging.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -48,6 +49,8 @@ struct ServeOptions {
     ContextCacheOptions context_cache;
     bool enable_vision      = false;
     bool use_cuda_graph     = true;
+    float rope_scaling_factor              = 1.0F;
+    std::uint32_t rope_scaling_original_context = 262144;
     bool allow_prefix_reuse = true;
     bool enable_thinking =
         true; // default thinking mode for the generation prompt (--no-thinking opts out)
@@ -62,7 +65,8 @@ struct ServeOptions {
     // Process-level explicit overrides layered between registered model/mode defaults and request
     // fields. An omitted seed is replaced per request with a fresh random seed.
     SamplingOverrides sampling_overrides;
-    bool greedy = false; // --greedy: force temperature 0 (exact argmax)
+    bool greedy                 = false; // --greedy: force temperature 0 (exact argmax)
+    product::LogLevel log_level = product::LogLevel::Info;
 
     // Exact process argv for the server-start record. Secret-bearing option values are redacted
     // while parsing; this is provenance only and never affects execution.
