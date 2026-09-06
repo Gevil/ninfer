@@ -1611,3 +1611,34 @@ Image `eaa60d8cb205` (tags: `t36mdops-29e628a7`, :quasar, :latest); previous
   3. Re-pick 16c66809 (conflict-resolved, not `--3way -X theirs`-assumed-absent).
   4. The 4XX-WATCH gate remains blind to 5xx/engine-fatal (T31-era gap, still open):
      a mid-battery fatal must fail the battery, not pass.
+
+### gzenz StateImage fix found (2026-09-06, answers the user's "saw a StateImage fix yesterday" memory)
+
+- **`gzenz/fix/checkpoint-stateimage`** @ `1b11452c` (2026-09-05 17:30), already merged to
+  `gzenz/master` as **PR #1** (`c17de1cc`, 2026-09-06 11:10). Exactly the fatal class that
+  broke the T36 wave; NOT in our tree or the live image (ancestry-verified; no remote commit
+  touched the fatal string itself — pickaxe-verified — the hardening is behavioral):
+  1. **Worker recovery**: `catch(const std::logic_error&)` in the engine worker loop
+     (`engine_core.h` ~2023, above the existing OOM catch) — converts this fatal class
+     ("stale checkpoint state image" / `materialization preparation state is invalid`) into
+     per-request failure + `recover_from_oom_locked` worker recovery, with a
+     `kOomMaxRecoveries` livelock guard, instead of `fail_all` + 503 storm.
+  2. **Slot-budget guard** (`program_impl.h` rewrite-restore path): if the new
+     `rewrite_state` would exceed `state_slots`, release it and proceed without a rewrite
+     checkpoint for the turn (drops the checkpoint rather than fatale).
+  3. **Restore-after-consume**: removes the identity check that blocked rewrite restore
+     after consume; allows restore when the endpoint is evicted; removes the
+     `!rewrite_checkpoint` guard so the checkpoint tracks the latest turn boundary
+     (`chat_template.cpp`).
+  4. 8-phase E2e test suite (checkpoint-advance, tool-calling restore, responses-tools,
+     reasoning-effort).
+- **Also confirmed by the scan:** gzenz `d00e5f0b` (our T31 port's re-squashed base) contains
+  the exact `[safety-spill] SKIP: no endpoint state image` / `SKIP guard` conditions seen in
+  the 11:28 crash log — the spill-SKIP fallthrough into the pre-existing fatal is the
+  wave's exposure. Upstream StateImage fixes `b8786751`/`da49c0d6`/`a140e7ae` are already in
+  the live image tree (`49400365`); dylan/md/eason/cometkim/gpillon have no
+  StateImage-relevant commits in the window.
+- **Adoption implication:** when T31/T34 is re-derived, base it on gzenz `d00e5f0b` **+
+  `1b11452c`** (worker recovery catch + slot guard + restore-after-consume). With the
+  worker catch, this fatal class degrades to a per-request failure instead of a lane-wide
+  503 storm — the difference between "unstable and broken" and "one request failed".
