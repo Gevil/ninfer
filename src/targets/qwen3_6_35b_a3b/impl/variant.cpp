@@ -125,6 +125,14 @@ std::vector<GraphExecutionProfile> Variant::dflash_graph_profiles(std::uint32_t 
     return profiles;
 }
 
+std::vector<GraphExecutionProfile> Variant::dflash2_graph_profiles(std::uint32_t, std::uint32_t,
+                                                                    std::uint32_t) {
+    // DFlash2 is 27B-only (DFlash2Config::execution = false here); this backend is rejected at
+    // option validation and the branch never executes, mirroring dflash_graph_profiles' own
+    // stub pattern for targets where a backend is compiled-in but not enabled.
+    return {};
+}
+
 void Variant::attention_projection(const Tensor& hidden,
                                    const FullAttentionProjectionWeights& weights, Tensor& query,
                                    Tensor& gate, Tensor& key, Tensor& value, qwen3_6::TextPhase,

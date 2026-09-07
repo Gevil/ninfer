@@ -142,6 +142,9 @@ struct Variant {
     [[nodiscard]] static std::vector<GraphExecutionProfile>
     dflash_graph_profiles(std::uint32_t capacity, std::uint32_t draft_window,
                           std::uint32_t batch_size);
+    [[nodiscard]] static std::vector<GraphExecutionProfile>
+    dflash2_graph_profiles(std::uint32_t capacity, std::uint32_t draft_window,
+                           std::uint32_t batch_size);
 };
 
 } // namespace ninfer::targets::qwen3_6_27b::detail

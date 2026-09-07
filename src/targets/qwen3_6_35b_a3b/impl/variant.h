@@ -58,6 +58,9 @@ struct Variant {
     [[nodiscard]] static std::vector<GraphExecutionProfile>
     dflash_graph_profiles(std::uint32_t capacity, std::uint32_t draft_window,
                           std::uint32_t batch_size);
+    [[nodiscard]] static std::vector<GraphExecutionProfile>
+    dflash2_graph_profiles(std::uint32_t capacity, std::uint32_t draft_window,
+                           std::uint32_t batch_size);
 
     static void attention_projection(const Tensor& hidden,
                                      const FullAttentionProjectionWeights& weights, Tensor& query,

@@ -820,7 +820,7 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
         } else {
             // DFlash2 verify is the width-8 hq route; its instantiation tiers follow the
             // measured MTP split-grid steps plus the drafter's node set.
-            const auto profiles = dflash_graph_profiles(impl->capacity, impl->draft_window, 1);
+            const auto profiles = dflash2_graph_profiles(impl->capacity, impl->draft_window, 1);
             const std::size_t per_batch_allowance = graph_topology_allowance(
                 profiles,
                 [&](GraphExecutionProfile profile) {

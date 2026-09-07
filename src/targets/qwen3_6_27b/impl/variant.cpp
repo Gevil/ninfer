@@ -155,6 +155,21 @@ std::vector<GraphExecutionProfile> Variant::dflash_graph_profiles(std::uint32_t,
     return {};
 }
 
+std::vector<GraphExecutionProfile> Variant::dflash2_graph_profiles(std::uint32_t capacity,
+                                                                    std::uint32_t draft_window,
+                                                                    std::uint32_t batch_size) {
+    (void)draft_window;
+    (void)batch_size;
+    // DFlash2's local block-diffusion draft window (block_size=8, all-SWA-2048) does not yet
+    // have a tuned CUDA-graph frontier bucketing (unlike ordinary/MTP's measured split-policy
+    // transitions). A single profile spanning the full execution frontier is always a valid,
+    // gap-free, complete cover [0, capacity-1] -- correct by construction -- at the cost of
+    // coarser graph-capture granularity than a bucketed profile would give. Revisit with real
+    // bucket tuning once DFlash2 ships past the probe stage.
+    if (capacity == 0) { return {}; }
+    return graph_profiles_through(capacity - 1, {});
+}
+
 void Variant::attention_projection(const Tensor& hidden,
                                    const FullAttentionProjectionWeights& weights, Tensor& query,
                                    Tensor& gate, Tensor& key, Tensor& value, qwen3_6::TextPhase,
