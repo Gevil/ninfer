@@ -39,7 +39,14 @@ template <int Rows>
 void launch(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_t stream) {
     // Keep the predicated profile even on full tiles: the Full specialization regresses T=64.
     // A single activation stage makes K128 fit while retaining the common code/scale pipeline.
-    using Schedule = W8RowSplitMmaGemmSchedule<Rows, 64, 16, 16, 1, 2, 128, 1>;
+    //
+    // Rows == 16 halves the rows per CTA, so 5120 / 16 = 320 CTAs -- twice the 160 of Rows == 32
+    // -- read the same 64-column activation tile. `ca` keeps that tile in L1, where the CTAs
+    // co-resident on one SM hit it again; `cg` bypasses L1 and sends every one of those reads
+    // back to L2. Measured on [5120, 25600]: cg costs +12.8 % at T=57, +16.4 % at T=60 and
+    // +18.9 % at T=64, while at Rows == 32 (T=72..128) it is worth -0.7 ... -0.8 %.
+    constexpr Cache kActivationCache = Rows == 16 ? Cache::ca : Cache::cg;
+    using Schedule = W8RowSplitMmaGemmSchedule<Rows, 64, 16, 16, 1, 2, 128, 1, kActivationCache>;
     const dim3 grid(weight.n / Rows, (x.ne[1] + 63) / 64);
     const W8ContiguousOutput output{static_cast<__nv_bfloat16*>(out.data), weight.n};
     w8_rowsplit_gemm_mma_kernel<Schedule, false><<<grid, Schedule::THREADS, 0, stream>>>(

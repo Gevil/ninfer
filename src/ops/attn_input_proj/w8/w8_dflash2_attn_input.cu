@@ -124,7 +124,11 @@ void w8_dflash2_attn_input_mma_r64_c128_launch(const Tensor& x, const Weight& we
 
 void w8_dflash2_attn_input_mma_r16_c64_k128_launch(const Tensor& x, const Weight& w, Tensor& q,
                                                    Tensor& k, Tensor& v, cudaStream_t stream) {
-    using Schedule = W8RowSplitMmaGemmSchedule<16, 64, 16, 16, 1, 2, 128, 1>;
+    // BM = 16 puts 6144 / 16 = 384 CTAs on the same 64-column activation tile, twice the 192 of
+    // the BM = 32 routes beside it. `ca` keeps that tile in L1 so the CTAs co-resident on one SM
+    // reuse it; `cg` bypasses L1 and repeats every one of those reads out of L2, which costs
+    // +16.7 ... +17.9 % of the operation at T = 49..63.
+    using Schedule = W8RowSplitMmaGemmSchedule<16, 64, 16, 16, 1, 2, 128, 1, Cache::ca>;
     // This route owns only the partial 49..63-column tile.
     launch_mma<Schedule, false>(x, w, q, k, v, stream);
 }

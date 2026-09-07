@@ -27,7 +27,7 @@ union alignas(16) W8Bf16x8Bits {
 static_assert(sizeof(W8Bf16x8Bits) == 16);
 
 template <int BM_, int BN_, int WM_, int WN_, int MIN_BLOCKS_, int STAGES_ = 2, int BK_ = 64,
-          int ACTIVATION_STAGES_ = STAGES_>
+          int ACTIVATION_STAGES_ = STAGES_, Cache ActivationCache_ = Cache::cg>
 struct W8RowSplitMmaGemmSchedule {
     static constexpr int BM                = BM_;
     static constexpr int BN                = BN_;
@@ -44,7 +44,11 @@ struct W8RowSplitMmaGemmSchedule {
     static constexpr int KSUB              = BK / 16;
     static constexpr int STAGES            = STAGES_;
     static constexpr int ACTIVATION_STAGES = ACTIVATION_STAGES_;
-    static constexpr int SCALE_CACHE_BYTES = 16;
+    // Named in the family's lower-camel style rather than this struct's upper-case one, so that
+    // `git grep kActivationCache` lists this schedule alongside the other quantised GEMMs that
+    // carry the same knob.
+    static constexpr Cache kActivationCache = ActivationCache_;
+    static constexpr int SCALE_CACHE_BYTES  = 16;
     static constexpr int SMEM_BYTES =
         BM * BK * 2 + ACTIVATION_STAGES * BN * BK * 2 + BM * BK + BM * SCALE_CACHE_BYTES;
 
@@ -129,10 +133,11 @@ __global__ __launch_bounds__(Cfg::THREADS, Cfg::MIN_BLOCKS) void w8_rowsplit_gem
             const int nn = n0 + nl;
             auto* dst    = &Bs[stage][nl * BK + w8g32_swz64(nl, k8 * 8)];
             if constexpr (Full) {
-                cp_async<16, Cache::cg>(dst, &x[static_cast<std::int64_t>(nn) * k + kk]);
+                cp_async<16, Cfg::kActivationCache>(dst,
+                                                    &x[static_cast<std::int64_t>(nn) * k + kk]);
             } else {
                 const int valid = (nn < n && kk < k) ? min(8, k - kk) * 2 : 0;
-                ninfer::ops::cp_async_zfill<16>(
+                ninfer::ops::cp_async_zfill<16, Cfg::kActivationCache>(
                     dst, &x[static_cast<std::int64_t>(nn < n ? nn : 0) * k + (kk < k ? kk : 0)],
                     valid);
             }
@@ -156,8 +161,8 @@ __global__ __launch_bounds__(Cfg::THREADS, Cfg::MIN_BLOCKS) void w8_rowsplit_gem
             } else {
                 const bool valid_row  = output_tile.valid(grow, m);
                 const std::int64_t gi = static_cast<std::int64_t>(valid_row ? grow : 0) * kg + g0;
-                ninfer::ops::cp_async_zfill<16>(dst, &codes[gi * 32 + chunk * 16],
-                                                valid_row ? 16 : 0);
+                ninfer::ops::cp_async_zfill<16, ninfer::ops::Cache::cg>(
+                    dst, &codes[gi * 32 + chunk * 16], valid_row ? 16 : 0);
             }
         }
         if ((kt % SCALE_CACHE_TILES) == 0) {
@@ -173,7 +178,8 @@ __global__ __launch_bounds__(Cfg::THREADS, Cfg::MIN_BLOCKS) void w8_rowsplit_gem
                     const int valid_scales = valid_row && g0 < kg ? min(8, kg - g0) : 0;
                     const std::int64_t gi =
                         static_cast<std::int64_t>(valid_row ? grow : 0) * kg + min(g0, kg - 1);
-                    ninfer::ops::cp_async_zfill<16>(dst, &scales[gi * 2], valid_scales * 2);
+                    ninfer::ops::cp_async_zfill<16, ninfer::ops::Cache::cg>(dst, &scales[gi * 2],
+                                                                            valid_scales * 2);
                 }
             }
         }
