@@ -22,6 +22,8 @@ from tools.artifact.container import (
     Artifact,
     ArtifactIdentity,
     ArtifactWriter,
+    ResourceSpec,
+    TensorSpec,
 )
 from tools.convert.common.quantize import pick_device
 from tools.convert.common.safetensors import ShardReader
@@ -89,7 +91,16 @@ def graft(
                 f"missing={missing[:8]} extra={extra[:8]}"
             )
         carried = 0
-        with ArtifactWriter(out_path, identity, specs) as writer:
+        # Inventory/recipe specs are the converter-side classes; the writer
+        # plans container-side specs. Tensor specs map 1:1 (identical fields);
+        # resource specs take their byte size from the source artifact.
+        writer_specs = tuple(
+            ResourceSpec(spec.name, spec.encoding, len(source.payload(spec.name)))
+            if spec.kind == "resource"
+            else TensorSpec(spec.name, spec.shape, spec.format, spec.layout)
+            for spec in specs
+        )
+        with ArtifactWriter(out_path, identity, writer_specs) as writer:
             for obj in source.objects:
                 writer.write(obj.name, source.payload(obj))
                 carried += 1
