@@ -9977,7 +9977,9 @@ void ProgramImplCore::start_sequence(std::uint32_t lane, SequenceState& sequence
             speculative_backend == SpeculativeBackend::Mtp
                 ? std::min(capacity,
                            prompt_tokens + (initial_mtp_extent == 0 ? 0U : initial_mtp_extent - 1U))
-            : speculative_backend == SpeculativeBackend::DFlash ? prompt_tokens
+            : (speculative_backend == SpeculativeBackend::DFlash ||
+               speculative_backend == SpeculativeBackend::DFlash2)
+                ? prompt_tokens
                                                                 : 0U;
         materialize_sequence_kv(sequence, prompt_tokens, backend_materialized);
         install_sampling(sequence, request, request_plan.sampling);
@@ -11650,7 +11652,8 @@ ProgramImplCore::advance_prefill(SequenceState& sequence, RequestControl& reques
                 final_chunk_tokens     = result.processed_tokens;
                 sequence.text_kv_valid = staged.cursor;
                 if (staged.prepare_mtp) { sequence.mtp_kv_valid = staged.cursor; }
-                if (speculative_backend == SpeculativeBackend::DFlash) {
+                if (speculative_backend == SpeculativeBackend::DFlash ||
+                    speculative_backend == SpeculativeBackend::DFlash2) {
                     sequence.dflash_context_frontier = staged.cursor;
                 }
                 commit_sequence_kv(sequence, sequence.text_kv_valid, backend_kv_valid(sequence));
