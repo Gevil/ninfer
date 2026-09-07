@@ -805,10 +805,17 @@ single definition; templated the prefix kernels on the V-cache type (dflash2 loc
 bit-copy, dflash-v1/MTP main KV cache = K=BF16/V=FP16 converted — the old `__half*` was correct
 for those); generalized the cyclic window from hardcoded `&4095` to `cache.capacity` (the dflash2
 2048-slot local cache; dflash-v1 4096 caches identical); deleted the duplicate set + CMake entries,
-retargeted the test include. Op now defined in exactly one `.cu`. Build window (bg_7) running to
-verify compile + **link**. THEN the acceptance probe. Note: the v3 window's ctest runs host suites
-only — the 4 dflash2 op tests need a free-GPU ship G4, so the window verifies compile/link, not
-the op tests.
+retargeted the test include. Op now defined in exactly one `.cu`. **BUILD + LINK VERIFIED**
+(bg_9, 2026-09-07): `BUILD rc=0`, image `f4e8a775` tagged `t33dflash2-2a43ab2` (commit `2a43ab25`).
+The host ctest runs **5/6**: openai-schema, openai-responses, anthropic-schema,
+tool-call-parser, serve-options all pass. The 1 failure is `ninfer_qwen3_6_frontend_test`,
+aborted on a **pre-existing** hardcoded upstream-fixture path (`/home/neroued/models/llm/qwen/
+Qwen3.6-27B/base-hf-bf16/tokenizer.json` in `test_frontend.cpp:276-282`) — NOT touched by the
+dflash2 port (port-range log empty; last commit `1eff9672`), so it cannot pass on this machine
+regardless. Two port-introduced test fixes landed along the way: `fee84281` (paged prefix
+copy-unit missing `unit_in_token` arg) + `2a43ab25` (`verify_nvfp4full_dflash2` calling
+`resolve_weights(reader.identity())` → `reader`). THEN the acceptance probe. Note: the v3
+window's ctest runs host suites only — the 4 dflash2 op tests need a free-GPU ship G4.
 
 **Deferred (lane-stop windows — `ninfer-ship.sh` G4 ctest KILLS the OMP session by design;
 not run with the user asleep/unreachable):**
