@@ -36,7 +36,6 @@ from tools.artifact.container import (
     ArtifactIdentity,
     ArtifactWriter,
 )
-from tools.artifact.layouts import encode_direct
 from tools.convert.common.quantize import pick_device
 from tools.convert.common.safetensors import ShardReader
 from tools.convert.qwen3_6.common import conversion as family_conversion
@@ -140,11 +139,9 @@ def graft(
                 total = len(inventory.OBJECT_SPECS)
                 for index, spec in enumerate(inventory.OBJECT_SPECS, start=1):
                     if spec.name in module:
-                        tensor = convert.family_recipe_materialize(
-                            recipe.DFLASH2_RECIPES_BY_NAME[spec.name], reader
+                        payload = convert.materialize_dflash2_object(
+                            spec, reader, resolved_device, parents
                         )
-                        payload = encode_direct(tensor, spec.format)
-                        del tensor
                         writer.write(spec.name, payload)
                         del payload
                     elif spec.name in resources:
