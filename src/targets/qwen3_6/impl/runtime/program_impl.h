@@ -9853,7 +9853,8 @@ void ProgramImplCore::start_sequence(std::uint32_t lane, SequenceState& sequence
                     throw std::logic_error("retained prefix has incomplete MTP KV");
                 }
                 sequence.mtp_kv_valid = mtp_base;
-            } else if (speculative_backend == SpeculativeBackend::DFlash) {
+            } else if (speculative_backend == SpeculativeBackend::DFlash ||
+                       speculative_backend == SpeculativeBackend::DFlash2) {
                 const std::uint32_t source_backend = private_source != nullptr
                                                          ? private_source->dflash_context_frontier
                                                          : shared_source->backend_frontier;
@@ -9973,13 +9974,16 @@ void ProgramImplCore::start_sequence(std::uint32_t lane, SequenceState& sequence
         sequence.endpoint_valid = false;
         if (!preserving_source) { trim_sequence_kv(sequence, base, backend_kv_valid(sequence)); }
         bind_sequence_kv(sequence);
+        // DFlash2 has no sequence.kv->backend allocation (unlike DFlash v1) -- its local
+        // context lives entirely in the separate cyclic dflash2 state, not the generic
+        // backend-KV mechanism materialize_sequence_kv operates on. Passing it a nonzero
+        // backend_tokens here throws "backend KV materialization requested without an
+        // allocation" (found via gdb, 2026-09-07).
         const std::uint32_t backend_materialized =
             speculative_backend == SpeculativeBackend::Mtp
                 ? std::min(capacity,
                            prompt_tokens + (initial_mtp_extent == 0 ? 0U : initial_mtp_extent - 1U))
-            : (speculative_backend == SpeculativeBackend::DFlash ||
-               speculative_backend == SpeculativeBackend::DFlash2)
-                ? prompt_tokens
+            : speculative_backend == SpeculativeBackend::DFlash ? prompt_tokens
                                                                 : 0U;
         materialize_sequence_kv(sequence, prompt_tokens, backend_materialized);
         install_sampling(sequence, request, request_plan.sampling);
@@ -10161,7 +10165,8 @@ runtime::ExecutionTiming ProgramImplCore::resolve_pending_raw(
                 hidden                         = frame.target_hidden.slice(2, 0, batch);
                 selected     = frame.target_continuation_hidden.slice(1, 0, batch);
                 destinations = frame.state_destination_slots.slice(0, 0, batch);
-            } else if (speculative_backend == SpeculativeBackend::DFlash && io.dflash_decode) {
+            } else if ((speculative_backend == SpeculativeBackend::DFlash ||
+                       speculative_backend == SpeculativeBackend::DFlash2) && io.dflash_decode) {
                 qwen3_6::DFlashDecodeState& frame = *io.dflash_decode;
                 selector_tensor                   = frame.proposal_extents.slice(0, 0, batch);
                 hidden                            = frame.target_hidden.slice(2, 0, batch);
@@ -11325,7 +11330,8 @@ void ProgramImplCore::prepare_graphs() {
     if (speculative_backend == SpeculativeBackend::Mtp) {
         instantiate_graph_family(mtp_graphs, "MTP", device, prepare_representative);
     }
-    if (speculative_backend == SpeculativeBackend::DFlash) {
+    if (speculative_backend == SpeculativeBackend::DFlash ||
+        speculative_backend == SpeculativeBackend::DFlash2) {
         instantiate_graph_family(dflash_graphs, "DFlash", device, prepare_representative);
     }
     if (dflash2) {
@@ -12404,7 +12410,10 @@ ProgramImplCore::decode_dflash2_batch(std::span<const std::uint32_t> lanes,
             dflash_host_ingress->state_source_slots[row] = selectors.source;
             dflash_host_ingress->state_destination_slots[row] = selectors.destination;
             dflash_host_ingress->sampling[row]                = request.sampling_host;
-            materialize_sequence_kv(sequence, frontier + extent + 1U, frontier);
+            // DFlash2 has no sequence.kv->backend allocation (see the fix at ~9976); this call
+            // mirrored DFlash v1's decode dispatch (line 12244) verbatim, but v1 has a real
+            // backend KV allocation to materialize and DFlash2 does not.
+            materialize_sequence_kv(sequence, frontier + extent + 1U, 0);
         }
 
         schedule::DFlash2BatchContext schedule_state{
