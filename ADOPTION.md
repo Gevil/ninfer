@@ -1934,7 +1934,11 @@ lane-ship pipeline — pre-staged, see T33 Wave A ship gate).
   ship G4 free-GPU window.
 - **T34 guard** (`f4b128c6`): skipped as a RAM-tier dependency; port by hand into
   `src/targets/qwen3_6/impl/runtime/host_kv_safety_net.h` checkpoint branches per T34 step 5b.
-  Live quadlet runs `--host-kv-mib 32768`, so the T34 step-5a live-exposure question stays open.
+  Live quadlet runs `--host-kv-mib 32768`; the step-5a live-exposure question is RESOLVED in
+  Round 12 — the live tree `49400365` HAS the host-RAM tier (`src/core/host_kv_arena.{h,cpp}`)
+  and the rewrite-checkpoint restore path (`is_rewrite_checkpoint_restore`, program_impl.h ×7 +
+  request_plan_impl.h ×4) but NOT the mitigation (gzenz's new `host_kv_safety_net.h`);
+  `kv_ram_cache.cpp` is in neither line (gpillon's file, not ours). The live image IS exposed.
 
 ### T33 agentic cluster -> **T41 (hand-port, not cherry-pick)**
 - The cluster (RAM KV tier, sibling-prefix sharing, tagged request lanes, adaptive MTP widths,
