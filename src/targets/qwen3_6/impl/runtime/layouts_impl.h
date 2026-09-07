@@ -212,11 +212,12 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
             dflash2.local = plan_cyclic_kv_cache(builder, DFlash2Config::layers,
                                                  DFlash2Config::local_capacity,
                                                  DFlash2Config::kv_heads, DFlash2Config::head_dim,
-                                                 static_cast<std::int32_t>(plan.max_concurrency));
+                                                 static_cast<std::int32_t>(plan.max_concurrency),
+                                                 DType::BF16);
             dflash2.rewrite_checkpoint_local = plan_cyclic_kv_cache(
                 builder, DFlash2Config::layers, DFlash2Config::local_capacity,
                 DFlash2Config::kv_heads, DFlash2Config::head_dim,
-                static_cast<std::int32_t>(plan.max_concurrency));
+                static_cast<std::int32_t>(plan.max_concurrency), DType::BF16);
             dflash2.prefill_features = add_tensor(
                 builder, DType::BF16, {DFlash2Config::feature_rows, effective_prefill_chunk},
                 "DFlash2 prefill target features");

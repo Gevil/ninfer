@@ -49,7 +49,8 @@ std::ptrdiff_t layer_pitch(const std::vector<Tensor>& layers, const char* label)
 
 CyclicKVCacheLayout plan_cyclic_kv_cache(LayoutBuilder& builder, std::uint32_t layers,
                                          std::uint32_t capacity, std::int32_t num_kv_heads,
-                                         std::int32_t head_dim, std::int32_t lane_capacity) {
+                                         std::int32_t head_dim, std::int32_t lane_capacity,
+                                         DType v_dtype) {
     if (layers == 0 || capacity == 0 ||
         capacity > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) ||
         num_kv_heads <= 0 || head_dim <= 0 || lane_capacity <= 0) {
@@ -70,7 +71,10 @@ CyclicKVCacheLayout plan_cyclic_kv_cache(LayoutBuilder& builder, std::uint32_t l
         layout.k.push_back(builder.add_tensor(DType::BF16,
                                               {head_dim, padded, num_kv_heads, lane_capacity},
                                               kArenaAlign, prefix + " K"));
-        layout.v.push_back(builder.add_tensor(DType::FP16,
+        // DFlash2's local cache is a BF16 bit-copy of its target-layer hidden state (no
+        // conversion); dflash-v1/MTP main KV cache converts V through __half (FP16) --
+        // callers select via v_dtype (ADOPTION.md T33 Wave B, 2026-09-07).
+        layout.v.push_back(builder.add_tensor(v_dtype,
                                               {head_dim, padded, num_kv_heads, lane_capacity},
                                               kArenaAlign, prefix + " V"));
     }
