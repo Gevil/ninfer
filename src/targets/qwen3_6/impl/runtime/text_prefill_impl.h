@@ -30,6 +30,25 @@ DFlashFeatureSink make_dflash_prefill_sink(PrefillContext& state) {
         });
 }
 
+DFlashFeatureSink make_dflash2_prefill_sink(PrefillContext& state) {
+    if (!state.execution.io.dflash_decode || state.dflash_host_ingress == nullptr) {
+        throw std::logic_error("DFlash2 prefill controls are unavailable");
+    }
+    return dflash2_feature_sink(
+        state, [&state](const Tensor& features, const Tensor& positions, bool rewrite_checkpoint) {
+            auto& frame  = *state.execution.io.dflash_decode;
+            Tensor count = frame.append_counts.slice(0, 0, 1);
+            Tensor lane  = frame.active_lanes.slice(0, 0, 1);
+            ops::set_i32_scalar(count, features.ne[1], state.execution.device.stream);
+            const auto exact = static_cast<std::uint32_t>(features.ne[1]);
+            dflash2_append_context(state, features, positions, count, lane, {exact, exact});
+            if (rewrite_checkpoint) {
+                state.dflash2->save_rewrite_checkpoint(state.dflash_host_ingress->active_lanes[0],
+                                                       state.execution.device.stream);
+            }
+        });
+}
+
 } // namespace
 
 void configure_text_card(TextContext& card, const ExecutionCore& execution,
@@ -70,6 +89,11 @@ PrefillChunkResult prefill_text_chunk(PrefillContext& state, std::span<const Tok
         return card.prefill_chunk(prompt, state.text_kv_base, nominal_length, finalize_at_end,
                                   sink);
     }
+    if (state.dflash2 != nullptr) {
+        DFlashFeatureSink sink = make_dflash2_prefill_sink(state);
+        return card.prefill_chunk(prompt, state.text_kv_base, nominal_length, finalize_at_end,
+                                  sink);
+    }
     return card.prefill_chunk(prompt, state.text_kv_base, nominal_length, finalize_at_end);
 }
 
@@ -89,6 +113,11 @@ PrefillChunkResult prefill_multimodal_chunk(PrefillContext& state, const Prepare
                                                    : -1);
     if (state.dflash != nullptr) {
         DFlashFeatureSink sink = make_dflash_prefill_sink(state);
+        return card.prefill_chunk(prompt, state.text_kv_base, nominal_length, vision,
+                                  finalize_at_end, sink);
+    }
+    if (state.dflash2 != nullptr) {
+        DFlashFeatureSink sink = make_dflash2_prefill_sink(state);
         return card.prefill_chunk(prompt, state.text_kv_base, nominal_length, vision,
                                   finalize_at_end, sink);
     }

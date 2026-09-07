@@ -659,6 +659,7 @@ public:
     std::optional<GdnReplayRecords> replay_records;
     std::optional<ops::GdnReplayFoldPlan> replay_fold;
     std::optional<DFlashPersistentState> dflash;
+    std::optional<DFlash2PersistentState> dflash2;
     qwen3_6::RoundState io;
     Tensor prefill_hidden;
     std::optional<Tensor> score_hidden;
@@ -1214,6 +1215,9 @@ private:
     void enqueue_dflash_context_append(std::span<const std::uint32_t> lanes,
                                        std::span<const std::uint32_t> starts,
                                        std::span<const std::uint32_t> counts);
+    void enqueue_dflash2_context_append(std::span<const std::uint32_t> lanes,
+                                        std::span<const std::uint32_t> starts,
+                                        std::span<const std::uint32_t> counts);
     void validate_licensed_tokens(std::span<const TokenId> tokens) const;
     void mark_workspace_usage(std::size_t phase_bytes) noexcept;
     [[nodiscard]] runtime::BatchedGeneratedRound
@@ -1230,7 +1234,8 @@ private:
                         runtime::ExecutionTiming* failed_timing);
     [[nodiscard]] runtime::BatchedGeneratedRound
     decode_dflash2_batch(std::span<const std::uint32_t> lanes,
-                         std::span<const runtime::RoundBudget> budgets);
+                         std::span<const runtime::RoundBudget> budgets,
+                         runtime::ExecutionTiming* failed_timing);
     void resize_sequence_kv_entitlement(SequenceState& sequence, std::uint32_t text_pages,
                                         std::uint32_t backend_pages);
     void reserve_sequence_kv(SequenceState& sequence, std::uint32_t main_tokens,

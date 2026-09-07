@@ -626,6 +626,16 @@ schedule::DFlashEnvelopes dflash_envelopes(std::uint32_t min_frontier, std::uint
     };
 }
 
+schedule::DFlash2Envelopes dflash2_envelopes(std::uint32_t min_frontier, std::uint32_t max_frontier,
+                                            std::uint32_t k) {
+    (void)min_frontier;
+    return schedule::DFlash2Envelopes{
+        .local  = {0, max_frontier},
+        .append = {0, k + 1},
+        .full   = {0, max_frontier},
+    };
+}
+
 DecodeGraphProfile& select_graph_profile(DecodeGraphFamily& family, std::uint32_t batch_size,
                                          std::uint32_t frontier, const char* label) {
     const auto it = std::find_if(
@@ -771,7 +781,8 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
                    ? std::make_optional<PinnedHostBuffer>(sizeof(qwen3_6::MtpDecodeIngress) +
                                                           sizeof(qwen3_6::MtpDecodeEgress))
                    : std::nullopt),
-      dflash_host(plan.speculative_backend == SpeculativeBackend::DFlash
+      dflash_host(plan.speculative_backend == SpeculativeBackend::DFlash ||
+                  plan.speculative_backend == SpeculativeBackend::DFlash2
                       ? std::make_optional<PinnedHostBuffer>(sizeof(qwen3_6::DFlashDecodeIngress) +
                                                              sizeof(qwen3_6::DFlashDecodeEgress))
                       : std::nullopt),
@@ -784,6 +795,7 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
     }
     if (model.features != plan.features || model.mtp.has_value() != plan.features.mtp() ||
         model.dflash.has_value() != plan.features.dflash() ||
+        model.dflash2.has_value() != plan.features.dflash2() ||
         model.optimized_proposal.has_value() != plan.features.optimized_proposal() ||
         model.vision.has_value() != plan.features.vision) {
         throw std::invalid_argument(
@@ -881,6 +893,12 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
         }
         dflash.emplace(backing, *plan.persistent.dflash, *local);
     }
+    if (plan.persistent.dflash2) {
+        dflash2.emplace(backing, *plan.persistent.dflash2);
+    }
+    if (dflash2.has_value() != plan.features.dflash2()) {
+        throw std::logic_error("DFlash2 state does not match the frozen sequence plan");
+    }
     if (dflash.has_value() != plan.features.dflash()) {
         throw std::logic_error("DFlash state does not match the frozen sequence plan");
     }
@@ -941,10 +959,14 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
     if (io.ordinary.has_value() != (speculative_backend == SpeculativeBackend::None)) {
         throw std::logic_error("ordinary decode frame does not match the sequence plan");
     }
-    if (io.dflash_prefill.has_value() != (speculative_backend == SpeculativeBackend::DFlash)) {
+    if (io.dflash_prefill.has_value() !=
+        (speculative_backend == SpeculativeBackend::DFlash ||
+         speculative_backend == SpeculativeBackend::DFlash2)) {
         throw std::logic_error("DFlash prefill scratch does not match the sequence plan");
     }
-    if (io.dflash_decode.has_value() != (speculative_backend == SpeculativeBackend::DFlash)) {
+    if (io.dflash_decode.has_value() !=
+        (speculative_backend == SpeculativeBackend::DFlash ||
+         speculative_backend == SpeculativeBackend::DFlash2)) {
         throw std::logic_error("DFlash decode frame does not match the sequence plan");
     }
     prefill_hidden = plan.persistent.prefill_hidden.bind(backing);
@@ -11247,6 +11269,54 @@ void ProgramImplCore::prepare_graphs() {
         }
     }
 
+    if (speculative_backend == SpeculativeBackend::DFlash2) {
+        const auto batch_one_profiles = dflash_graph_profiles(capacity, draft_window, 1);
+        validate_graph_profiles(batch_one_profiles, capacity - 1, "DFlash2");
+        schedule::DFlash2BatchContext dflash2_state{execution_core(),
+                                                    *dflash2,
+                                                    decoder->text_kv,
+                                                    *io.dflash_decode,
+                                                    dflash_host_ingress,
+                                                    dflash_host_egress,
+                                                    state_images->continuation_hidden_store()};
+        const GraphExecutionProfile code_warm = batch_one_profiles.front();
+        const ops::CausalAttentionExecutionEnvelope code_warm_target{
+            1, static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                   capacity, static_cast<std::uint64_t>(code_warm.max) + draft_window + 1ULL))};
+        prepare_representative(code_warm.min, 1);
+        device.synchronize();
+        schedule::dflash2_decode_batch(dflash2_state, 1, draft_window,
+                                      dflash2_envelopes(code_warm.min, code_warm.max, draft_window),
+                                      code_warm_target, nullptr);
+        device.synchronize();
+
+        dflash_graphs.profiles.reserve(batch_one_profiles.size() * max_concurrency);
+        for (std::uint32_t batch_size = 1; batch_size <= max_concurrency; ++batch_size) {
+            const auto planned_profiles =
+                batch_size == 1 ? batch_one_profiles
+                                : dflash_graph_profiles(capacity, draft_window, batch_size);
+            validate_graph_profiles(planned_profiles, capacity - 1, "DFlash2");
+            for (const GraphExecutionProfile planned : planned_profiles) {
+                dflash_graphs.profiles.emplace_back();
+                DecodeGraphProfile& profile    = dflash_graphs.profiles.back();
+                profile.batch_size             = batch_size;
+                profile.min_execution_frontier = planned.min;
+                profile.max_execution_frontier = planned.max;
+                profile.topology_class =
+                    planned.topology_class * max_concurrency + (batch_size - 1U);
+                const ops::CausalAttentionExecutionEnvelope target_envelope{
+                    1,
+                    static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                        capacity, static_cast<std::uint64_t>(planned.max) + draft_window + 1ULL))};
+
+                schedule::capture_dflash2_decode_batch(
+                    dflash2_state, static_cast<std::int32_t>(batch_size), draft_window,
+                    dflash2_envelopes(planned.min, planned.max, draft_window), target_envelope,
+                    profile.definition);
+            }
+        }
+    }
+
     if (!ordinary_graphs.profiles.empty()) {
         instantiate_graph_family(ordinary_graphs, "ordinary", device, prepare_representative);
     }
@@ -11256,7 +11326,14 @@ void ProgramImplCore::prepare_graphs() {
     if (speculative_backend == SpeculativeBackend::DFlash) {
         instantiate_graph_family(dflash_graphs, "DFlash", device, prepare_representative);
     }
-
+    if (dflash2) {
+        CUDA_CHECK(cudaMemsetAsync(dflash2->prefill_features.data, 0,
+                                  dflash2->prefill_features.bytes(), device.stream));
+        CUDA_CHECK(cudaMemsetAsync(dflash2->prefill_positions.data, 0,
+                                  dflash2->prefill_positions.bytes(), device.stream));
+        CUDA_CHECK(cudaMemsetAsync(dflash2->pending_features.data, 0,
+                                  dflash2->pending_features.bytes(), device.stream));
+    }
     clear_stable_controls();
     state_images->zero_all(device.stream);
     if (dflash) {
@@ -12236,6 +12313,175 @@ ProgramImplCore::decode_dflash_batch(std::span<const std::uint32_t> lanes,
 }
 
 runtime::BatchedGeneratedRound
+ProgramImplCore::decode_dflash2_batch(std::span<const std::uint32_t> lanes,
+                                     std::span<const runtime::RoundBudget> budgets,
+                                     runtime::ExecutionTiming* failed_timing) {
+    runtime::ExecutionTimingRecorder timing(runtime::ExecutionTimingPhase::Submit, failed_timing);
+    if (speculative_backend != SpeculativeBackend::DFlash2 || !io.dflash_decode || !dflash2) {
+        throw std::logic_error("DFlash2 batch execution requires the DFlash2 backend");
+    }
+    if (lanes.empty() || lanes.size() > max_concurrency || budgets.size() != lanes.size()) {
+        throw std::invalid_argument("DFlash2 batch membership is invalid");
+    }
+
+    const std::uint32_t width           = draft_window + 1U;
+    std::uint32_t maximum_frontier      = 0;
+    std::uint32_t maximum_target_tokens = 1;
+    for (std::size_t row = 0; row < lanes.size(); ++row) {
+        const std::uint32_t lane = lanes[row];
+        if (lane >= max_concurrency ||
+            std::find(lanes.begin(), lanes.begin() + static_cast<std::ptrdiff_t>(row), lane) !=
+                lanes.begin() + static_cast<std::ptrdiff_t>(row)) {
+            throw std::invalid_argument("DFlash2 batch contains an invalid or duplicate lane");
+        }
+        const SequenceState& sequence = active_sequence(lane);
+        const RequestControl& request = requests[lane];
+        if (request.lifecycle != Lifecycle::Active ||
+            budgets[row].generated_tokens_remaining == 0 || !sequence.kv ||
+            text_kv_addresses->bound_row(sequence.kv->text) < 0 ||
+            sequence.execution_frontier >= capacity ||
+            sequence.text_kv_valid != sequence.execution_frontier ||
+            sequence.dflash_context_frontier > sequence.execution_frontier ||
+            sequence.execution_frontier - sequence.dflash_context_frontier > width ||
+            sequence.ledger_frontier != sequence.execution_frontier + 1 ||
+            sequence.ledger.size() != sequence.ledger_frontier ||
+            sequence.prefix_identity.size() != sequence.ledger_frontier ||
+            sequence.prefix_digests.size() != sequence.ledger_frontier) {
+            throw std::logic_error("DFlash2 batch row is not decode-ready");
+        }
+        const std::uint32_t max_by_budget = budgets[row].generated_tokens_remaining > 1
+                                                ? budgets[row].generated_tokens_remaining - 1U
+                                                : 0U;
+        const std::uint32_t extent =
+            std::min({draft_window, max_by_budget, capacity - sequence.execution_frontier - 1U});
+        maximum_frontier      = std::max(maximum_frontier, sequence.execution_frontier);
+        maximum_target_tokens =
+            std::max(maximum_target_tokens, sequence.execution_frontier + extent + 1U);
+    }
+
+    const auto started = Clock::now();
+    try {
+        DecodeGraphExecutable* executable = nullptr;
+        schedule::DFlash2Envelopes envelopes =
+            dflash2_envelopes(0, maximum_frontier, draft_window);
+        ops::CausalAttentionExecutionEnvelope target_envelope{1, maximum_target_tokens};
+        if (use_cuda_graph) {
+            DecodeGraphProfile& profile =
+                select_graph_profile(dflash_graphs, static_cast<std::uint32_t>(lanes.size()),
+                                     maximum_frontier, "DFlash2 batch");
+            executable      = &install_graph_profile(dflash_graphs, profile, "DFlash2 batch");
+            envelopes       = dflash2_envelopes(profile.min_execution_frontier,
+                                               profile.max_execution_frontier, draft_window);
+            target_envelope = {
+                1, static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                       capacity, static_cast<std::uint64_t>(profile.max_execution_frontier) +
+                                     draft_window + 1ULL))};
+        }
+
+        for (std::size_t row = 0; row < lanes.size(); ++row) {
+            SequenceState& sequence       = active_sequence(lanes[row]);
+            const RequestControl& request = requests[lanes[row]];
+            const std::uint32_t frontier  = sequence.execution_frontier;
+            const std::uint32_t max_by_budget = budgets[row].generated_tokens_remaining > 1
+                                                    ? budgets[row].generated_tokens_remaining - 1U
+                                                    : 0U;
+            const std::uint32_t extent =
+                std::min({draft_window, max_by_budget, capacity - frontier - 1U});
+            dflash_host_ingress->anchors[row] = sequence.ledger.back();
+            dflash_host_ingress->execution_frontiers[row] =
+                checked_i32(frontier, "DFlash2 batch frontier");
+            dflash_host_ingress->context_frontiers[row] =
+                checked_i32(sequence.dflash_context_frontier, "DFlash2 context frontier");
+            dflash_host_ingress->proposal_extents[row]     = static_cast<std::int32_t>(extent);
+            dflash_host_ingress->target_valid_columns[row] = static_cast<std::int32_t>(extent + 1U);
+            dflash_host_ingress->text_kv_table_rows[row]   =
+                text_kv_addresses->bound_row(sequence.kv->text);
+            dflash_host_ingress->active_lanes[row]       = static_cast<std::int32_t>(sequence.lane);
+            const StateImageSelectors selectors          = state_selectors(sequence);
+            dflash_host_ingress->state_source_slots[row] = selectors.source;
+            dflash_host_ingress->state_destination_slots[row] = selectors.destination;
+            dflash_host_ingress->sampling[row]                = request.sampling_host;
+            materialize_sequence_kv(sequence, frontier + extent + 1U, frontier);
+        }
+
+        schedule::DFlash2BatchContext schedule_state{execution_core(),
+                                                     *dflash2,
+                                                     decoder->text_kv,
+                                                     *io.dflash_decode,
+                                                     dflash_host_ingress,
+                                                     dflash_host_egress,
+                                                     state_images->continuation_hidden_store()};
+
+        mark_workspace_usage(workspace_plan.dflash_round);
+        schedule::dflash2_decode_batch(schedule_state, static_cast<std::int32_t>(lanes.size()),
+                                      draft_window, envelopes, target_envelope, executable);
+        timing.begin_wait();
+        device.synchronize();
+        timing.end_wait();
+
+        const double seconds = std::chrono::duration<double>(Clock::now() - started).count();
+        for (std::size_t row = 0; row < lanes.size(); ++row) {
+            SequenceState& sequence   = active_sequence(lanes[row]);
+            RequestControl& request   = requests[lanes[row]];
+            const std::uint32_t base_E = sequence.execution_frontier;
+            const std::uint32_t base_S = sequence.ledger_frontier;
+            const std::int32_t count_i = dflash_host_egress->licensed_counts[row];
+            const std::int32_t accepted_i = dflash_host_egress->accepted_drafts[row];
+            const std::uint32_t extent =
+                static_cast<std::uint32_t>(dflash_host_ingress->proposal_extents[row]);
+            if (count_i <= 0 || count_i > static_cast<std::int32_t>(width) || accepted_i < 0 ||
+                accepted_i + 1 != count_i || accepted_i > static_cast<std::int32_t>(extent) ||
+                static_cast<std::uint32_t>(count_i) > budgets[row].generated_tokens_remaining ||
+                static_cast<std::uint64_t>(base_E) + static_cast<std::uint32_t>(count_i) >
+                    capacity) {
+                throw std::runtime_error("DFlash2 batch returned invalid row metadata");
+            }
+            const std::span<const TokenId> row_tokens(dflash_host_egress->licensed_tokens.data() +
+                                                          row * width,
+                                                      static_cast<std::size_t>(count_i));
+            validate_licensed_tokens(row_tokens);
+            if (extent == 0) {
+                request.speculative_stats.fallback_steps += 1;
+            } else {
+                request.speculative_stats.rounds += 1;
+                request.speculative_stats.drafted_tokens += extent;
+                request.speculative_stats.accepted_tokens += static_cast<std::uint32_t>(accepted_i);
+                for (std::int32_t i = 0; i < accepted_i; ++i) {
+                    request.speculative_stats.accepted_per_position[static_cast<std::size_t>(i)] +=
+                        1;
+                }
+            }
+            sequence.dflash_context_frontier = base_E;
+            request.pending                  = PendingCandidate{
+                                 .kind          = PendingKind::Speculative,
+                                 .base_E        = base_E,
+                                 .base_S        = base_S,
+                                 .prompt_tokens = 0,
+                                 .produced      = static_cast<std::uint32_t>(count_i),
+            };
+            request.lifecycle = Lifecycle::Pending;
+            request.timings.decode_seconds += seconds;
+        }
+        return runtime::BatchedGeneratedRound{
+            .tokens     = std::span<const TokenId>(dflash_host_egress->licensed_tokens.data(),
+                                                   lanes.size() * width),
+            .row_counts = std::span<const std::int32_t>(dflash_host_egress->licensed_counts.data(),
+                                                        lanes.size()),
+            .row_stride = width,
+            .timing     = timing.finish(),
+        };
+    } catch (...) {
+        timing.begin_wait();
+        try {
+            device.synchronize();
+        } catch (...) {}
+        timing.end_wait();
+        clear_execution_failure_lanes(lanes);
+        throw;
+    }
+}
+
+runtime::BatchedGeneratedRound
 ProgramImplCore::decode_raw(std::span<const std::uint32_t> lanes,
                             std::span<const runtime::RoundBudget> budgets,
                             runtime::ExecutionTiming* failed_timing) {
@@ -12244,6 +12490,9 @@ ProgramImplCore::decode_raw(std::span<const std::uint32_t> lanes,
     }
     if (speculative_backend == SpeculativeBackend::Mtp) {
         return decode_mtp_batch(lanes, budgets, failed_timing);
+    }
+    if (speculative_backend == SpeculativeBackend::DFlash2) {
+        return decode_dflash2_batch(lanes, budgets, failed_timing);
     }
     return decode_dflash_batch(lanes, budgets, failed_timing);
 }
