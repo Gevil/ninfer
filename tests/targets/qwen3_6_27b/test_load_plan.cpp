@@ -303,7 +303,7 @@ static std::size_t validate_only_objects(const ArtifactLoadPlan& plan) {
 
 static int verify_nvfp4full_dflash2(const std::filesystem::path& path) {
     ninfer::artifact::Reader reader(path);
-    if (Package::resolve_weights(reader.identity()) != WeightsProfile::Qwen38Nvfp4Full) {
+    if (Package::resolve_weights(reader) != WeightsProfile::Qwen38Nvfp4Full) {
         std::cerr << "nvfp4full identity resolved to the wrong profile\n";
         return 1;
     }
