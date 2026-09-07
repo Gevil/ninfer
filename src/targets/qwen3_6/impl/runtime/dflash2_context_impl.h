@@ -30,11 +30,11 @@ CyclicKVCacheLayerView DFlash2PersistentState::local_layer(std::uint32_t layer) 
 }
 
 void DFlash2PersistentState::save_rewrite_checkpoint(std::int32_t lane, cudaStream_t stream) {
-    rewrite_checkpoint_local.copy_lane_from(local, lane, stream);
+    rewrite_checkpoint_local.copy_slot_from(local, lane, lane, stream);
 }
 
 void DFlash2PersistentState::restore_rewrite_checkpoint(std::int32_t lane, cudaStream_t stream) {
-    local.copy_lane_from(rewrite_checkpoint_local, lane, stream);
+    local.copy_slot_from(rewrite_checkpoint_local, lane, lane, stream);
 }
 
 } // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS

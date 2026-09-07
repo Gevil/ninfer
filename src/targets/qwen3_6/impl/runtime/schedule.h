@@ -58,6 +58,7 @@ struct PrefillContext {
     std::int32_t state_destination_slot                     = 0;
     std::uint32_t mtp_proposal_extent                       = 0;
     const qwen3_6::DFlashDecodeIngress* dflash_host_ingress = nullptr;
+    DFlash2PersistentState* dflash2                           = nullptr;
 };
 
 struct OrdinaryBatchContext {
@@ -101,6 +102,7 @@ struct DFlash2BatchContext {
     const qwen3_6::DFlashDecodeState& decode_state;
     qwen3_6::DFlashDecodeIngress* ingress = nullptr;
     qwen3_6::DFlashDecodeEgress* egress = nullptr;
+    Tensor& continuation_hidden_store;
 };
 
 struct DFlash2AppendContext {
