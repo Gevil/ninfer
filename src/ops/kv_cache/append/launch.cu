@@ -109,8 +109,7 @@ void launch_paged(const Tensor& k, const Tensor& v, const Tensor& positions, con
                   const KVCacheAppendPrefixPlan& plan, cudaStream_t stream) {
     validate_plan(k, plan);
     if (plan.max_count == 0) return;
-    auto* cache_k       = static_cast<__nv_bfloat16*>(cache.k_pages.data);
-    auto* cache_v       = static_cast<__half*>(cache.v_pages.data);
+    auto* cache_k   = static_cast<__nv_bfloat16*>(cache.k_pages.data);
     const auto* input_k = static_cast<const __nv_bfloat16*>(k.data);
     const auto* input_v = static_cast<const __nv_bfloat16*>(v.data);
     const auto* pos     = static_cast<const std::int32_t*>(positions.data);
@@ -119,9 +118,19 @@ void launch_paged(const Tensor& k, const Tensor& v, const Tensor& positions, con
     const auto* tables  = static_cast<const std::int32_t*>(cache.block_tables.data);
 
     const dim3 grid(1 + (plan.max_count - 1) / 4, k.ne[3], 1);
-    kv_cache_append_prefix_paged_kernel<<<grid, kBlock, 0, stream>>>(
-        input_k, input_v, pos, count, rows, cache_k, cache_v, tables, cache.k_pages.ne[2],
-        cache.block_tables.ne[0], plan.min_count, plan.max_count, plan.tokens);
+    if (cache.v_pages.dtype == DType::BF16) {
+        kv_cache_append_prefix_paged_kernel<__nv_bfloat16><<<grid, kBlock, 0, stream>>>(
+            input_k, input_v, pos, count, rows, cache_k,
+            static_cast<__nv_bfloat16*>(cache.v_pages.data), tables, cache.k_pages.ne[2],
+            cache.block_tables.ne[0], plan.min_count, plan.max_count, plan.tokens);
+    } else if (cache.v_pages.dtype == DType::FP16) {
+        kv_cache_append_prefix_paged_kernel<__half><<<grid, kBlock, 0, stream>>>(
+            input_k, input_v, pos, count, rows, cache_k, static_cast<__half*>(cache.v_pages.data),
+            tables, cache.k_pages.ne[2], cache.block_tables.ne[0], plan.min_count, plan.max_count,
+            plan.tokens);
+    } else {
+        throw std::invalid_argument("kv_cache_append_prefix: unsupported paged value dtype");
+    }
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -130,19 +139,27 @@ void launch_cyclic(const Tensor& k, const Tensor& v, const Tensor& positions, co
                    const KVCacheAppendPrefixPlan& plan, cudaStream_t stream) {
     validate_plan(k, plan);
     if (plan.max_count == 0) return;
-    auto* cache_k       = static_cast<__nv_bfloat16*>(cache.k.data);
-    auto* cache_v       = static_cast<__half*>(cache.v.data);
+    auto* cache_k   = static_cast<__nv_bfloat16*>(cache.k.data);
     const auto* input_k = static_cast<const __nv_bfloat16*>(k.data);
     const auto* input_v = static_cast<const __nv_bfloat16*>(v.data);
     const auto* pos     = static_cast<const std::int32_t*>(positions.data);
     const auto* count   = static_cast<const std::int32_t*>(counts.data);
     const auto* lane    = static_cast<const std::int32_t*>(lanes.data);
     const int padded    = static_cast<int>(cache.padded_capacity);
+    const int window    = static_cast<int>(cache.capacity);
 
     const dim3 grid(1 + (plan.max_count - 1) / 4, k.ne[3], 1);
-    kv_cache_append_prefix_cyclic_kernel<<<grid, kBlock, 0, stream>>>(
-        input_k, input_v, pos, count, lane, cache_k, cache_v, plan.min_count, plan.max_count,
-        plan.tokens, padded);
+    if (cache.v.dtype == DType::BF16) {
+        kv_cache_append_prefix_cyclic_kernel<__nv_bfloat16><<<grid, kBlock, 0, stream>>>(
+            input_k, input_v, pos, count, lane, cache_k, static_cast<__nv_bfloat16*>(cache.v.data),
+            plan.min_count, plan.max_count, plan.tokens, padded, window);
+    } else if (cache.v.dtype == DType::FP16) {
+        kv_cache_append_prefix_cyclic_kernel<__half><<<grid, kBlock, 0, stream>>>(
+            input_k, input_v, pos, count, lane, cache_k, static_cast<__half*>(cache.v.data),
+            plan.min_count, plan.max_count, plan.tokens, padded, window);
+    } else {
+        throw std::invalid_argument("kv_cache_append_prefix: unsupported cyclic value dtype");
+    }
     CUDA_CHECK(cudaGetLastError());
 }
 

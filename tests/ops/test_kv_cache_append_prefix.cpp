@@ -1,4 +1,4 @@
-#include "ninfer/ops/kv_cache_append_prefix.h"
+#include "ninfer/ops/kv_cache_append.h"
 #include "ops/op_tester.h"
 
 #include <cuda_runtime.h>

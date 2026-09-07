@@ -69,8 +69,9 @@ void kv_cache_append(const Tensor& k, const Tensor& v, const Tensor& positions,
  *
  * k/v are contiguous BF16 [128,8,T,B], positions is contiguous device I32 [T,B], and counts and
  * table_rows are contiguous device I32 [B]. For row b and i in [0,counts[b]), k/v[:, :, i, b]
- * store K bit-for-bit and V as FP16_RNE(BF16 input) at logical position positions[i,b] through
- * table row table_rows[b]. The paged planes use head-major order [128,64,Nphysical,8]. No byte
+ * store K bit-for-bit as BF16 and V in the v-plane dtype (BF16 bit-for-bit, or FP16 from the
+ * BF16 input) at logical position positions[i,b] through table row table_rows[b]. The paged
+ * planes use head-major order [128,64,Nphysical,8]. No byte
  * belonging only to the rejected physical tail [counts[b],T) is written. Inputs are unchanged,
  * and the Op neither decides nor publishes a committed frontier.
  *
@@ -87,12 +88,12 @@ void kv_cache_append_prefix(const Tensor& k, const Tensor& v, const Tensor& posi
  * Append device-selected BF16 prefixes to lane-owned cyclic storage.
  *
  * k/v, positions, counts, and their storage-conversion and mutation contracts match the paged
- * overload; lanes[b] selects the destination lane. The fixed geometry is D=128, Hkv=8,
- * capacity=4096, and absolute position p maps to slot p mod 4096. The caller guarantees that each
- * row's existing live interval ends immediately before positions[0,b], advancing it by counts[b]
- * makes every overwritten old slot dead, and one row commits at most the ring capacity.
- * Consequently, no two live writes race for one physical slot. The Op does not own or publish the
- * lane frontier.
+ * overload; lanes[b] selects the destination lane. The fixed geometry is D=128, Hkv=8; capacity
+ * is a power of two in [1024, 4096] and absolute position p maps to slot p mod capacity. The
+ * caller guarantees that each row's existing live interval ends immediately before positions[0,b],
+ * advancing it by counts[b] makes every overwritten old slot dead, and one row commits at most
+ * the ring capacity. Consequently, no two live writes race for one physical slot. The Op does not
+ * own or publish the lane frontier.
  */
 void kv_cache_append_prefix(const Tensor& k, const Tensor& v, const Tensor& positions,
                             const Tensor& counts, const Tensor& lanes,
