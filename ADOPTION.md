@@ -780,6 +780,25 @@ QUASAR+DFlash2 model — DFlash2 as a bolt-on drafter, never gpillon's nvfp4full
   `encode_direct`, BF16 direct copy — the gpillon `materialize_dflash2_object` NVFP4
   re-quantization is gone after the T41 merge); the nvfp4full graft driver got the same fix.
 
+**⚠️ CORRECTION (2026-09-07):** the compile-fix layer resolved only the OP-layer errors
+(dense/paged gqa signature, `PagedKVBatchLayerView.dtype/quant_group`, the 8-arg paged
+launcher). The dflash2 **runtime** (`dflash2_impl.h` + `dflash2_context_impl.h`) was NOT fully
+reconciled — the v3 build-window re-run (2026-09-07) still fails on ~7 API mismatches:
+the ported runtime uses dflash-v1 field names (`state.frame`/`host_ingress`/`host_egress`)
+against the dflash2 `DFlash2BatchContext` (`decode_state`/`ingress`/`egress`); references
+`DFlashDecodeState.lanes`, `ExecutionCore.rope_frequencies`, `TargetVerifyFrameView.lanes`
+that don't exist in our tree; and uses gpillon-specific `ops::RopeFrequencies`/`RopeSide`/
+`rope_linear_frequencies`/`GqaExecutionEnvelope` (our rope API is
+`rope(positions, rotary_dim, float theta, x, stream)`; the target-verify envelope is
+`CausalAttentionExecutionEnvelope`). The "engine port complete" claim was premature.
+**Reconciliation COMPLETE (`e022a06b`, 2026-09-07):** all 7 mismatches + the
+`kv_cache_append_prefix.h` redefinition + `PrefillContext.dflash2` resolved. Rope semantics
+verified IDENTICAL to gpillon's (their `rope_linear_frequencies` "linear" names the table
+layout, not the spacing — same geometric `theta^(-2i/R)` ladder; the drafter's unscaled 1e7
+table is `attention_factor=1.0`). Field names corrected to our tree's: `frame.active_lanes`
+(not `lanes`), `CausalAttentionExecutionEnvelope` (not `GqaExecutionEnvelope`). Next: the
+build+ctest window (verify the engine compiles + the 4 dflash2 op tests).
+
 **Deferred (lane-stop windows — `ninfer-ship.sh` G4 ctest KILLS the OMP session by design;
 not run with the user asleep/unreachable):**
 - **Build+ctest window**: build the `t33dflash2` image + the 4 dflash2 op tests (free-GPU).
