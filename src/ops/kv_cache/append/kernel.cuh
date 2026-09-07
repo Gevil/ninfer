@@ -447,7 +447,7 @@ __global__ void kv_cache_append_prefix_paged_kernel(
     position      = __shfl_sync(0xffffffffu, position, 0);
     physical_page = __shfl_sync(0xffffffffu, physical_page, 0);
     if (token < count) {
-        kv_cache_append_prefix_copy_paged_unit<VCache>(k, v, cache_k, cache_v, token,
+        kv_cache_append_prefix_copy_paged_unit<VCache>(k, v, cache_k, cache_v, token, unit_in_token,
                                                position & (kKVCacheAppendPrefixPage - 1),
                                                physical_page, physical_pages);
     }

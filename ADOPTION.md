@@ -791,13 +791,24 @@ that don't exist in our tree; and uses gpillon-specific `ops::RopeFrequencies`/`
 `rope_linear_frequencies`/`GqaExecutionEnvelope` (our rope API is
 `rope(positions, rotary_dim, float theta, x, stream)`; the target-verify envelope is
 `CausalAttentionExecutionEnvelope`). The "engine port complete" claim was premature.
-**Reconciliation COMPLETE (`e022a06b`, 2026-09-07):** all 7 mismatches + the
-`kv_cache_append_prefix.h` redefinition + `PrefillContext.dflash2` resolved. Rope semantics
+**Runtime reconciliation landed (`e022a06b`, 2026-09-07); verified COMPILING, link still pending:**
+all 7 runtime mismatches + the `PrefillContext.dflash2` pointer resolved. Rope semantics
 verified IDENTICAL to gpillon's (their `rope_linear_frequencies` "linear" names the table
 layout, not the spacing — same geometric `theta^(-2i/R)` ladder; the drafter's unscaled 1e7
 table is `attention_factor=1.0`). Field names corrected to our tree's: `frame.active_lanes`
-(not `lanes`), `CausalAttentionExecutionEnvelope` (not `GqaExecutionEnvelope`). Next: the
-build+ctest window (verify the engine compiles + the 4 dflash2 op tests).
+(not `lanes`), `CausalAttentionExecutionEnvelope` (not `GqaExecutionEnvelope`). The build
+window (2026-09-07) confirmed the runtime **compiles** (all objects + both variant targets).
+**Link duplicate resolved (`de13f514`, 2026-09-07); build window running to verify:** the gpillon
+pick had added a PARALLEL duplicate `kv_cache_append_prefix` op (`src/ops/launcher/kv_cache_append_prefix.{cu,h}`
++ wrapper/kernel/include + a stale bench). Kept the existing `src/ops/kv_cache/append/` op as the
+single definition; templated the prefix kernels on the V-cache type (dflash2 local cache = BF16
+bit-copy, dflash-v1/MTP main KV cache = K=BF16/V=FP16 converted — the old `__half*` was correct
+for those); generalized the cyclic window from hardcoded `&4095` to `cache.capacity` (the dflash2
+2048-slot local cache; dflash-v1 4096 caches identical); deleted the duplicate set + CMake entries,
+retargeted the test include. Op now defined in exactly one `.cu`. Build window (bg_7) running to
+verify compile + **link**. THEN the acceptance probe. Note: the v3 window's ctest runs host suites
+only — the 4 dflash2 op tests need a free-GPU ship G4, so the window verifies compile/link, not
+the op tests.
 
 **Deferred (lane-stop windows — `ninfer-ship.sh` G4 ctest KILLS the OMP session by design;
 not run with the user asleep/unreachable):**
