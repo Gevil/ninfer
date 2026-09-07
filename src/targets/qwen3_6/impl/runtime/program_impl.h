@@ -12404,13 +12404,17 @@ ProgramImplCore::decode_dflash2_batch(std::span<const std::uint32_t> lanes,
             materialize_sequence_kv(sequence, frontier + extent + 1U, frontier);
         }
 
-        schedule::DFlash2BatchContext schedule_state{execution_core(),
-                                                     *dflash2,
-                                                     decoder->text_kv,
-                                                     *io.dflash_decode,
-                                                     dflash_host_ingress,
-                                                     dflash_host_egress,
-                                                     state_images->continuation_hidden_store()};
+        schedule::DFlash2BatchContext schedule_state{
+            schedule::ExecutionCore{device, model, work, state_images->linear(),
+                                    replay_records ? &*replay_records : nullptr, io,
+                                    prefill_hidden, prefill_chunk, proposal_head,
+                                    rope_scaling_factor, rope_scaling_original_context},
+            *dflash2,
+            decoder->text_kv,
+            *io.dflash_decode,
+            dflash_host_ingress,
+            dflash_host_egress,
+            state_images->continuation_hidden_store()};
 
         mark_workspace_usage(workspace_plan.dflash_round);
         schedule::dflash2_decode_batch(schedule_state, static_cast<std::int32_t>(lanes.size()),
