@@ -456,7 +456,7 @@ void bind_quasar_nvfp4_text_layers(artifact::Binder& binder, BindingPlan& out) {
             target.attention.projection = FusedAttentionProjectionPlan{
                 .query_key_gate_value = bind_nvfp4_weight(
                     binder, prefix + "attention/query_key_gate_value", 14336, 5120,
-                    prefix + "attention/input_projection/input_scale_scale_divisor"),
+                    prefix + "attention/input_projection/input_scale_divisor"),
             };
             target.attention.query_norm = artifact::bind_device_tensor(
                 binder, prefix + "attention/query_norm", NumericFormat::BF16, {256});
