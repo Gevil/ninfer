@@ -578,11 +578,21 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, WeightsProfile weights_
     out.vision_merger_norm = qwen3_6::bind_vision_merger_norm(binder, vision_placement);
 
     // DFlash2 module (weight-only NVFP4 matrices, BF16 norms/conv bases; local
-    // SWA-2048 drafter at target hidden width). The module is part of the
-    // qwen3.8/nvfp4full identity's complete product image; the other registered
-    // 27B profiles do not carry it. Placement follows the DFlash2 startup
-    // feature exactly like v1's rows on the 35B.
-    if (weights_profile == WeightsProfile::Qwen38Nvfp4Full) {
+    // SWA-2048 drafter at target hidden width). The bundle is self-describing:
+    // it rides the qwen3.8/nvfp4full identity and the grafted quasar artifact;
+    // the other registered 27B artifacts carry no dflash2/ objects. When the
+    // bundle is present it is always bound so the selected target consumes it
+    // regardless of profile -- a profile gate would leave the appended objects
+    // unconsumed and fail Binder::finish with "artifact object was not
+    // consumed by the selected target". Placement follows the DFlash2 startup
+    // feature: device only under --spec dflash2, validate-only otherwise
+    // (the kill switch for a grafted artifact).
+    const bool has_dflash2_bundle = binder.contains("dflash2/feature_projection");
+    if (features.dflash2() && !has_dflash2_bundle) {
+        throw artifact::ArtifactError(
+            "DFlash2 was selected but the artifact has no DFlash2 weight bundle");
+    }
+    if (has_dflash2_bundle) {
     const artifact::TensorPlacement dflash2_placement =
         features.dflash2() ? artifact::TensorPlacement::Device
                            : artifact::TensorPlacement::ValidateOnly;
