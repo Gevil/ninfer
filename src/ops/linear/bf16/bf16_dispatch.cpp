@@ -11,12 +11,18 @@ namespace ninfer::ops::detail {
 Bf16Launch select_bf16_a16_launch(std::int32_t n, std::int32_t k, std::int32_t t) {
     const bool n256_k5120 = n == 256 && k == 5120;
     const bool supported_problem =
-        (n == 14336 && k == 5120) || (n == 5120 && k == 6144) || n256_k5120;
+        (n == 14336 && k == 5120) || (n == 5120 && k == 6144) || n256_k5120 ||
+        (n == 248320 && k == 5120);
     if (!supported_problem || t <= 0) {
         throw std::invalid_argument("bf16 linear: unsupported shape or T");
     }
     if (n256_k5120) { return launch_bf16_n256_k5120; }
     if (t == 1) { return launch_bf16_decode; }
+    if (n == 248320) {
+        // The vocabulary problem has no small-T kernel geometry; its multi-token
+        // prefill rounds use the MMA GEMM, which is generic in T.
+        return launch_bf16_mma;
+    }
     const std::int32_t small_t_end =
         n == 5120 ? kBf16SmallTMaxTokens : kBf16LinearSmallTDispatchEnd;
     if (t <= small_t_end) { return launch_bf16_small_t; }
