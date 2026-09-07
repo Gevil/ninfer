@@ -41,9 +41,17 @@ def graft(
     dflash2_model_dir: str | Path,
     out_path: str | Path,
     *,
+    head_source: str | Path | None = None,
     device: str | torch.device = "cuda",
 ) -> Path:
-    """Append the stock DFlash2 suffix to a completed QUASAR artifact."""
+    """Append the stock DFlash2 suffix to a completed QUASAR artifact.
+
+    If ``head_source`` is given, only ``text/output_head`` is carried from
+    that artifact: the engine's DFlash2 full-proposal path (ops::linear_topk)
+    requires a quantized full-vocabulary head, so the dflash2 graft ships
+    the QUASAR-QAT W8G32 output head while every other object keeps the
+    source's encodings.
+    """
     started = time.perf_counter()
     artifact_path = Path(artifact_path)
     base_dir = Path(base_dir)
@@ -70,6 +78,27 @@ def graft(
         flush=True,
     )
 
+    head_source_path = Path(head_source) if head_source is not None else None
+    w8_head_spec: TensorSpec | None = None
+    w8_head_payload: bytes | None = None
+    if head_source_path is not None:
+        with Artifact(head_source_path) as head_src:
+            head_obj = head_src.find("text/output_head")
+            if head_obj.format != "W8G32_F16S":
+                raise RuntimeError(
+                    f"head source output_head format is {head_obj.format!r}, "
+                    "expected 'W8G32_F16S'"
+                )
+            w8_head_spec = TensorSpec(
+                head_obj.name, head_obj.shape, head_obj.format, head_obj.layout
+            )
+            w8_head_payload = bytes(head_src.payload(head_obj))
+        print(
+            f"head source: carrying W8G32 output_head from {head_source_path} "
+            f"({len(w8_head_payload)} bytes)",
+            flush=True,
+        )
+
     identity = ArtifactIdentity(inventory.MODEL_ID, inventory.WEIGHTS_ID)
     specs = tuple(inventory.OBJECT_SPECS) + tuple(
         dflash2_inventory.DFLASH2_TENSOR_SPECS
@@ -95,14 +124,21 @@ def graft(
         # plans container-side specs. Tensor specs map 1:1 (identical fields);
         # resource specs take their byte size from the source artifact.
         writer_specs = tuple(
-            ResourceSpec(spec.name, spec.encoding, len(source.payload(spec.name)))
-            if spec.kind == "resource"
-            else TensorSpec(spec.name, spec.shape, spec.format, spec.layout)
+            w8_head_spec
+            if spec.name == "text/output_head" and w8_head_spec is not None
+            else (
+                ResourceSpec(spec.name, spec.encoding, len(source.payload(spec.name)))
+                if spec.kind == "resource"
+                else TensorSpec(spec.name, spec.shape, spec.format, spec.layout)
+            )
             for spec in specs
         )
         with ArtifactWriter(out_path, identity, writer_specs) as writer:
             for obj in source.objects:
-                writer.write(obj.name, source.payload(obj))
+                if obj.name == "text/output_head" and w8_head_payload is not None:
+                    writer.write("text/output_head", w8_head_payload)
+                else:
+                    writer.write(obj.name, source.payload(obj))
                 carried += 1
             with ShardReader.from_file(
                 dflash2_model_dir / "model.safetensors"
@@ -143,6 +179,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     parser.add_argument("--dflash2-model", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument(
+        "--head-source",
+        default=None,
+        type=Path,
+        help="artifact to carry the W8G32 text/output_head from",
+    )
     parser.add_argument("--device", default="cuda")
     arguments = parser.parse_args(argv)
     graft(
@@ -150,6 +192,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         arguments.base,
         arguments.dflash2_model,
         arguments.out,
+        head_source=arguments.head_source,
         device=arguments.device,
     )
 

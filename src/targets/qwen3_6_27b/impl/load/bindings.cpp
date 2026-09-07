@@ -546,7 +546,15 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, WeightsProfile weights_
     }
     out.final_norm =
         artifact::bind_device_tensor(binder, "text/final_norm", NumericFormat::BF16, {5120});
-    out.output_head = bind_weight(binder, "text/output_head", vocabulary_format, {248320, 5120});
+    // DFlash2 full-proposal scoring (ops::linear_topk) only accepts quantized
+    // full-vocabulary heads (W8/FP8); the QUASAR-QAT release ships the output
+    // head as W8G32 (as in the Qwen38Nvfp4 profile), so the quasar profile
+    // binds the head as W8G32 while the embedding stays BF16.
+    const NumericFormat head_format =
+        weights_profile == WeightsProfile::Qwen38Nvfp4QuasarBf16
+            ? NumericFormat::W8G32_F16S
+            : vocabulary_format;
+    out.output_head = bind_weight(binder, "text/output_head", head_format, {248320, 5120});
     const artifact::TensorPlacement proposal_placement =
         features.optimized_proposal() ? artifact::TensorPlacement::Device
                                       : artifact::TensorPlacement::ValidateOnly;
