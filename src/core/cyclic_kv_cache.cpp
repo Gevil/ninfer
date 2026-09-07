@@ -99,10 +99,18 @@ CyclicKVCache::CyclicKVCache(DeviceSpan backing, const CyclicKVCacheLayout& layo
     }
     const std::array<std::int32_t, 4> expected_shape{
         head_dim_, static_cast<std::int32_t>(padded_capacity_), num_kv_heads_, lane_capacity_};
+    // V's dtype is a per-caller choice (plan_cyclic_kv_cache's v_dtype): BF16 bit-copy for
+    // DFlash2's local context, FP16-converted for dflash-v1/MTP's main KV cache. Validate
+    // internal consistency (every layer agrees, and the value is one of the two supported
+    // dtypes) rather than hardcoding one caller's convention.
+    const DType expected_v_dtype = layout.v.front().dtype;
+    if (expected_v_dtype != DType::BF16 && expected_v_dtype != DType::FP16) {
+        throw std::invalid_argument("Cyclic KV layer layout is inconsistent");
+    }
     k_.reserve(layout.k.size());
     v_.reserve(layout.v.size());
     for (std::size_t layer = 0; layer < layout.k.size(); ++layer) {
-        if (layout.k[layer].dtype != DType::BF16 || layout.v[layer].dtype != DType::FP16 ||
+        if (layout.k[layer].dtype != DType::BF16 || layout.v[layer].dtype != expected_v_dtype ||
             layout.k[layer].shape != expected_shape || layout.v[layer].shape != expected_shape) {
             throw std::invalid_argument("Cyclic KV layer layout is inconsistent");
         }
