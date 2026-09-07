@@ -2187,3 +2187,29 @@ passes.
   RAM>=12GiB gate -> clone sync (origin) -> build -> host ctest (6 host suites) -> ALWAYS lane restart.
   ETA ~30-55 min. Note: the main session's own backend is the lane model, so the session is suspended for the
   window's duration and resumes with the script's always-restart.
+
+## Round 17 (2026-09-07, ~10:30 CEST) - T33 Wave B v3 window result: build clean, 1 env-gap ctest fail
+
+The v3 build window (log `~/.local/share/ninfer/logs/t33waveb-v3-build-window-2026-09-06.log`, exited
+2026-09-07T10:04) synced to the pushed tip `2a43ab2` (not the `bd16fde` recorded at launch) and produced:
+- **BUILD rc=0**: image `f4e8a7750587` tagged `t33dflash2-2a43ab2` (2.92 GB). The engine build+link is clean.
+- **CTEST rc=8 — 5/6 pass.** The single failure is `ninfer_qwen3_6_frontend_test (Subprocess
+  aborted)`: `what(): failed to open test resource:
+  /home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/tokenizer.json`. This is the KNOWN
+  tokenizer-resources environment gap (the frontend suite hardcodes the upstream resource path; the
+  host-suite container does not bind-mount it) — **not a T33 regression** (it is a missing-file
+  `std::runtime_error`, not a segfault/assertion). The other 5 suites pass. The prior
+  "host-ctest already green at 2a43ab25" note was wrong on the 6th suite.
+- Lane auto-restarted clean (`/v1/models` http=200 ~10s); the live lane is unchanged
+  (`:quasar` = `2b17722dc2fb`, the shipped t33serve image).
+
+**T33 state:** the Wave B engine image `t33dflash2-2a43ab2` is built + ready. Next = the plan Step-4
+acceptance gate (adopt-vs-keep-MTP). For the fresh session: the dflash2 acceptance is **not** a plain
+journal line — it lives in the `speculative_round` op layer (`speculative_accept_greedy_drafts` /
+`speculative_select_accepted_hidden`), so the 1.5K/8K/32K accepted-per-round probe needs real
+measurement tooling (not a journal grep), plus greedy parity + the full 16-gate battery + the 3 CUDA op
+tests (G4 ctest, with the Qwen3.6-27B tokenizer resources bound to clear the frontend env gap). That is
+a large session-suspending quadlet-override window (image -> `t33dflash2-2a43ab2`, `--spec mtp
+--draft-tokens 3` -> `--spec dflash2 --draft-tokens 7`, verbatim Exec backup+restore + always-restart
+trap); deferred to a fresh session for full attention. The live Exec to preserve verbatim on restore is
+the current quadlet line 80 (`--host-kv-mib 32768`, no `--chat-template-file`, `--model-id qwen3.8-27b`).
