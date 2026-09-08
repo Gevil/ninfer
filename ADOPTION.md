@@ -1540,11 +1540,12 @@ it. Probe window waits for the next quiet window (after t33bg2).
 | 41 | **wall-time-to-accurate-answer (T2A) research & plan** (W0–W6; supersedes the token-ranking) | **NEW 09-06** — research complete on the live lane (P0–P6 sequencing); harness-side levers (W0/W1/W2/W3/E/W4) + engine-side half = the T33 gpillon cluster |
 | 42 | **#211 KV stream-ordering hotfix (fixes #210 agent GPU lockup)** | **P0 09-08 — vulnerable pattern VERIFIED in our live engine** (`t33-gpillon-quasar` `logical_kv_store.h:901`: activate→`commit_activation` with no stream arg; `:953` default `nullptr` = legacy default stream, unordered vs NonBlocking compute streams). PR #211 = 3-line stream threading. Cherry-pick into the next image build; gate: ctest + battery + multi-turn agent replay. Unfixed residuals: `release_page()` free without stream fence; staged-tail COW for non-64-aligned prefixes (our 114k prefix ≡ 41 mod 64 exercises it) |
 | 43 | **upstream master convergence wave 3** (`a16b6442`→`7f14d963`) | **NEW — cherry-pick (none in the gpillon line, merge-base `863aa8a5`)**: `ee9d5192` nvfp4 W4A4 TMA raster (supersedes T36's `c735909b` re-pick), `b158afe2` BPE flat open-addressed merge table, `641ef3e7` skip NFC on pure-ASCII; + `0f84adaf` (#195 context-cost weights fallback, 1 file). MoE-only commits ride along, dead path |
-| 44 | **md MTP/decode ops perf** (for the live mtp3 lane) | **NEW — cherry-pick candidates on `a16b6442`, acceptance-gated (T7)**: `505d1af7` MTP draft-hidden buffer ping-pong, `1f155fed` MTP stem-norm+residual fusion, `perf/mtp-layer-graph-nodes` (4 ops files), `38f52b34` argmax winner-init kernel, `61250e89` (#194 nvfp4 SwiGLU fast), `ed150906` (#201 w8 rowsplit cache policy — only if 27b-W8 lands) |
+| 44 | **md MTP/decode ops perf** (for the live mtp3 lane) | **NEW — cherry-pick candidates on `a16b6442`, acceptance-gated (T7); triage VERIFIED 09-08**: `505d1af7` MTP draft-hidden buffer ping-pong (`mtp_impl.h`), `1f155fed` MTP stem-norm+residual fusion + `perf/mtp-layer-graph-nodes` (both = mtp_pack ops + `text_context_impl.h`), `38f52b34` argmax winner-init kernel, `61250e89` (#194 nvfp4 SwiGLU fast) — all cross-target: `qwen3_6/impl/runtime/` is the **shared family base** (27B target subtree has no `impl/runtime` of its own — only config/bindings/variant; single `mtp_impl.h` in the tree; 27B `variant.h` wires MTP projections onto the base runtime; same evidence class as the #210 `logical_kv_store.h` hit in our engine). `ed150906` (#201 w8 rowsplit cache policy) stays conditional on 27b-W8 landing |
 | 45 | **#174 full-vocab Q4G64 MTP proposal head** | **NEW — PROBE (acceptance-gated)**: optional third head for `--spec mtp`, FP8 lm_head → row-split Q4G64 full 248,320 rows; restores the structured-output coverage `--lm-head-draft` (131,072 rows) loses (JSON acceptance 86%→99% in their data) at +187 µs/proposal + 0.63 GiB; +8.9% coding tok/s, +3.4% @440K. Implementation exists on the reporter's YaRN fork (release `b5f2d1a9`) — cherry-pick + probe on the live mtp3 profile |
 | 46 | **cometkim PDL decode chain** (`feat/kernel-perf` @ `5b89e5be`) | **NEW — WATCH→PROBE**: programmatic dependent launch across the decode kernel chain (w8 rowsplit/small-T, nvfp4 linears, attn/GDN projections, GEMV, rmsnorm/rope/gate); claimed +77% cumulative / +56% MTP3 @262k — **unverified on our base**; diverged base with 3 force-pushes → re-derive + verify the claim on a 5090 before any window. Also on the branch: per-request error boundary (host exception fails one request, not the engine — attractive reliability fix), i8 prompt key-split |
 | 47 | **nvfp4qat QUASAR-QAT artifact profile** (cometkim `ad5334cb`) | **NEW — A/B candidate (low effort)**: 5th weights profile for `qwen3_6_27b` = NVFP4 copied word-for-word from a QUASAR-QAT artifact (QAT-calibrated global scales), GDN a/b→BF16; 2-commit cherry-pick + artifact. Quality A/B vs current QUASAR nvfp4 — still QUASAR-lineage, so the operator constraint holds |
 | 48 | **dylan/experimental agentic-runtime slices** | **NEW — WATCH (feeds T41)**: `42c9c7d4` exit p-less thinking cycles without rebuilding L (shared sampling/spec-runtime), `a39c5c25` W4/W6 multi-request decode projection aggregation (27b variant). Branch is 126 commits ahead of upstream (base `0c94153b`); re-derive slices individually; GDN/dflash/qwen4 work = dead path |
+| 49 | **#208 stability watch — 5090 NVFP4+MTP `cudaErrorIllegalAddress`** | **NEW — STABILITY (top-priority alongside T42)**: intermittent illegal-address crash on the exact model+GPU+spec stack (Qwen3.8-27B NVFP4, MTP, RTX 5090, sustained agentic load; full E2E completes under `CUDA_LAUNCH_BLOCKING=1` → async-race class). May share the #210 root cause (KV publish stream ordering) — if our lane ever surfaces it, engage upstream #208 with our repro data; a pre-T42 occurrence would be direct corroboration of the hotfix priority |
 
 **Sequencing (round 6).** (1) **T37** chat-template switch — config-only, no build, immediate operator
 value, and it must settle BEFORE T33/T35 so decode A/Bs are measured against a stable render path. — **settled 2026-09-06: ADOPTED** (result block above).
@@ -2517,6 +2518,18 @@ Window: ~18:10–18:45 CEST. `git fetch --all --prune` (force-pushes: cometkim �
    (`67bf4b78` softmax fold) + T36b probe (`ce71f787`, acceptance-gated) → ctest + battery
    16/16 → ship.
 
+6. **Stability-first re-frame + triage verification (18:55).** Two open issues (#208, #210) sit on our
+   exact model+MTP+GPU stack — they are top-priority **stability** tiers, not perf branches:
+   #210 verified in our engine → **T42 (P0)**; #208 → **T49 (stability watch)**. T44 triage
+   verified against the tree: `src/targets/qwen3_6/impl/runtime/` is the **shared family base** —
+   the 27B target subtree has no `impl/runtime` of its own (only `config.h`/`load/`/`variant.*`),
+   there is a single `mtp_impl.h` in the tree, 27B `variant.h` wires MTP projections onto the base
+   runtime, and the 35B target likewise has no runtime of its own (MoE-specific code lives in
+   `src/ops/sparse_moe*` + the 35b variant files). MTP items under `qwen3_6/impl/runtime` +
+   `src/ops` (mtp_pack/argmax/swiglu) are cross-target → stay in T44. Mirko's dflash-slot fix
+   (`text_prefill_impl.h`) is likewise shared-base but remains dead path for us on feature
+   grounds (DFlash v1 unsupported on the 27B target; no checkpoint feature in the lane).
+
 **Sequencing (round 22).** (1) **T42 P0** — ride the combined build window, or a slim
 ~1.5 h solo build if the lockup risk must be retired sooner. (2) **Combined window**
 T42+T43+T44+T36 (the quiet-window candidate). (3) **T45** #174 full-vocab Q4 head probe
@@ -2525,4 +2538,4 @@ heavy, which is exactly where `--lm-head-draft` loses coverage). (4) **T46** PDL
 re-derive + verify the +77% claim on our base, then window. (5) T31/T34 re-derivation from
 gzenz `51d6ba6a` (scout), then window. (6) **T47** nvfp4qat A/B (low effort). (7) T41
 agentic line continues, absorbing #211/#197/#169/#168/#148 + T48 slices. (8) Watches: T38,
-T32, T39, #208, #165, #213, #61. T40: no standalone probe (re-scoped). T33: stays parked.
+T32, T39, #165, #213, #61 (stability: **T49 #208 watch** tracks T42). T40: no standalone probe (re-scoped). T33: stays parked. **Stability precedes perf: T42 (verified P0) and T49 framing come before any decode/perf tier.**
