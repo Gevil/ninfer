@@ -1371,6 +1371,26 @@ only; leave the VRAM-resident checkpoint restore path untouched) and port `ac603
 (MTP RAM-vs-VRAM restore comparison test) as a permanent guard. Expected cost ≈8% of restores fall
 back to `full_reset`. Skip `eaf2037b` (hyperquant, off-lane).
 
+**T34 5a verdict (2026-09-07, read-only, no lane) — LIVE IMAGE NOT EXPOSED; T34 reduced to this note.**
+Live tree is `9737d75c` (T18 `cd47dc7f` + the 3 T33 Wave A serve picks — none touch host-KV), running
+`mirko_quasar.ninfer`, kv 225280 nvfp4, `--host-kv-mib 8192`, mtp3 + `--lm-head-draft`. `checkpoint_hash`
+appears **nowhere** in the live tree: the T31 bug branch (the `checkpoint_hash` match branch in
+plan_match offering host records for rewrite-checkpoint restore) does not exist in the gevil/T18
+lineage — that bug class is gzenz-lineage-specific. Live host-KV is page-replica-based: pages carry a
+`host_replica` with `content_epoch`/`committed_columns` identity checks (logical_kv_store.h:460–475);
+`host_kv_extent_store.h` attaches/detaches/rebinds host extents per page+epoch; the only restore path is
+`host_kv_restore_transaction.h` — a per-lane deferred evicting restore that addresses "the EXACT
+deferred entry id, not the lane". A host replica cannot be offered with another request's state: it is
+tied 1:1 to one logical page under epoch checks, and demote/promote
+(`DemoteRewriteToHost`/`DemoteSharedToHost`/…) migrates that page's own content. **Verdict: the live
+lane is NOT exposed to T31-class cross-request host-RAM checkpoint contamination; no
+`--host-kv-mib 0` mitigation window is warranted.** The safety-net port (append-at-frontier-only
+host reuse, `host_kv_safety_net.h`) becomes required only if/when a gzenz rewrite-checkpoint
+(checkpoint-hash-matching) lineage is adopted — T34 steps 5c–5e (conflict matrix, kv-0 window, g3b2
+window) are CANCELLED pending such an adoption. Residual (not verdict-changing): the exact
+prefix-match walk's treatment of host-resident pages was not traced; page-identity semantics make the
+contamination verdict independent of it.
+
 **T35 — draft-window k=3→5 (zero-code probe).** md measures +17.3% with *higher* acceptance at k=5.
 Our lane pins `--draft-tokens 3`. Probe: serve-flag A/B at 3 vs 5 (and the `6870d530` 15-token-window
 enabler if the ceiling blocks it), gated on acceptance/round + decode fresh/8k + battery.
@@ -1453,6 +1473,14 @@ T33's graft-onto-QUASAR approach. Re-check only if it publishes E2E quality for 
 
 **T40 — dylan `cdd1b6c1` "accelerate C1-4 speculative decode" (PROBE).** On-lane (27B NVFP4, C=4).
 Verify portability (dylan's line historically carries 35B-only dflash assumptions), then decode A/B.
+**T40 pre-check (2026-09-07, read-only): portable — no dflash-support gating.** The diff contains
+no `supports_dflash`/`DFlashConfig::supported` dependency (only a `DFlashConfig` type alias inside
+dflash_impl.h templates). The win is spec-backend-agnostic grouped fixed-width GDN+Linear work
+across requests plus C3-W5 / Q4 proposal-head specialization; the commit's own MTP4 numbers
+(C2/C3/C4 +4.52%/+13.92%/+6.37% vs 40f6e4c5) confirm the MTP path benefits, and dflash_impl.h
+changes are compile-only on our MTP lane. Caveat: the specialized paths are W5/Q4 while our lane is
+MTP3 (W4) — the general grouping benefit applies, W5-specific gains may not; the A/B probe settles
+it. Probe window waits for the next quiet window (after t33bg2).
 
 ### Status changes this round
 
@@ -1499,17 +1527,24 @@ Verify portability (dylan's line historically carries 35B-only dflash assumption
 | 28 | dylan dflash2 wave | **SUPERSEDED by T33** — DFlash v1 is permanently off the 27B target |
 | 29 | Mirko dynamic-MTP decode wave | DECIDED 09-05 — T29a port pending; T29b levers no-win |
 | 30 | Mirko KVaRN line | DEFERRED — `114b0fcb` adds a greedy-parity fix if revived |
-| 31 | gzenz host-KV safety-net port | **BLOCKED** — 2 bugs (B2 entitlement, B3 frontier); pick set INVALID (re-derive from `5f23c37e`); approach reframed by **T34** |
+| 31 | gzenz host-KV safety-net port | **BLOCKED → RE-EVAL 09-08**: 2 bugs (B2 entitlement, B3 frontier) on the old pick set; gzenz line moved to `51d6ba6a` (25 commits in 2 days: artificial max-8 caps removed, scatter-gather backend KV, frontier relaxation, e2e 58P/4W/1F, review addressed at tip) → re-derive the pick set from `51d6ba6a` before re-porting |
 | 32 | upstream prefix/context-cache cluster (#176–#181, #142) | WATCH — +#184; #181 mirrors our T14 finding |
-| 33 | **DFlash2 drafter grafted onto the QUASAR artifact** | **NEW — PROBE-FIRST, top priority.** Engine port from `gpillon/coding` + quasar-side graft using `z-lab/Qwen3.8-27B-DFlash2`; keeps QUASAR weights; gate on acceptance/round @1.5K/8K/32K — **serve-fixes LIVE 09-06** (t33serve-9737d75c, battery 16/16, Round 10); Wave B file-set port in progress (agent) |
+| 33 | **DFlash2 drafter grafted onto the QUASAR artifact** | **REJECTED 09-08 (Round 21) — permanently parked.** gpillon line R18/19 (decode loss all contexts + 182k real-workload 9× collapse + 8k parity mismatch); master-rebase line `t33bg2-quasar-port` @ `4008da6d` (native dflash2 `385b30ce` + W8G32 head bind fix) booted clean at kv 225280 and passed the thinking-free decode/acceptance gate (R20: 2.40–2.43 tok/round @1.5k/8k vs mtp3 ~1.95; 194/141/52 tps), but the t33adopt window's same-image parity gate FAILED 3/3 (greedy reasoning+content diverge from non-spec at every context) → the R18 parity defect is engine-level, not lineage-specific. Revisit only if upstream fixes dflash2 verify-path greedy parity; all lane-side work retained (image, artifact, W8-head graft) |
 | 34 | **host-KV restore correctness (reframes T31)** | **NEW — ADOPT the mitigation shape**: host-RAM reuse = append-at-frontier only; do NOT relax the frontier invariant; port `ac60331d` as a guard |
 | 35 | **draft window k=3→5** | **REVERTED 09-06** — probe complete: battery 16/16, fresh +8.5% but 8k −6.8% + long-ctx acceptance degraded → plan rule: revert to k=3 (baseline frozen for T33/T36) |
-| 36 | **md dense-lane ops wave** | **PORT SET DERIVED 09-06** (Round 11): branch `t36-mdops2-quasar` from `9737d75c` = re-picks `67bf4b78` (8767dac7 softmax-fold) + `11f528fd` (c735909b TMA raster groups), byte-identical to the previously host-build-verified wave; `16c66809` no-op (contained via T23 `bb535075`); `ce71f787` = separate acceptance-gated probe (T36b). Build + probe window sequenced after the Wave B verdict |
+| 36 | **md dense-lane ops wave** | **RE-SCOPED 09-08 (Round 22)**: `c735909b` TMA-raster re-pick is superseded — upstreamed as `ee9d5192` (identical file set); surviving wave = `67bf4b78` softmax-fold re-pick, folded into the combined T42+T43+T44 build window; `ce71f787` remains a separate acceptance-gated probe (T36b) |
 | 37 | **chat template → artifact-embedded ReasoningEffort @xhigh** | **ADOPTED 09-06** — live since 09-05 21:42; quiet battery 15/16 (LEDGER window artifact only); decode-neutral vs Sharp (140.6/155.4); new render-path decode baseline recorded |
 | 38 | **upstream `--chat-template FILE` (#183/#182) + stream-slot (#184)** | **NEW — WATCH/adopt-on-merge**; reconcile flag naming with our `--chat-template-file` |
 | 39 | **Astrangemaninhere/ninfer-fusion** | **NEW — WATCH**; sub-floor KV REJECT (perplexity-only); its DFlash2 < MTP3 by its own data |
-| 40 | **dylan `cdd1b6c1` C1-4 speculative decode** | **NEW — PROBE**: on-lane 27B NVFP4 at our exact C=4 |
+| 40 | **dylan `cdd1b6c1` C1-4 speculative decode** | **RE-SCOPED 09-08 → standalone probe dropped**: the commit's file set is GDN-centric (`gdn_gating_proj`/`gdn_input_proj` = 35B/qwen4 linear attention) — dead path for the dense 27B; only the shared `linear.cpp`/`nvfp4_dispatch` slices transfer, and they ride upstream if merged |
 | 41 | **wall-time-to-accurate-answer (T2A) research & plan** (W0–W6; supersedes the token-ranking) | **NEW 09-06** — research complete on the live lane (P0–P6 sequencing); harness-side levers (W0/W1/W2/W3/E/W4) + engine-side half = the T33 gpillon cluster |
+| 42 | **#211 KV stream-ordering hotfix (fixes #210 agent GPU lockup)** | **P0 09-08 — vulnerable pattern VERIFIED in our live engine** (`t33-gpillon-quasar` `logical_kv_store.h:901`: activate→`commit_activation` with no stream arg; `:953` default `nullptr` = legacy default stream, unordered vs NonBlocking compute streams). PR #211 = 3-line stream threading. Cherry-pick into the next image build; gate: ctest + battery + multi-turn agent replay. Unfixed residuals: `release_page()` free without stream fence; staged-tail COW for non-64-aligned prefixes (our 114k prefix ≡ 41 mod 64 exercises it) |
+| 43 | **upstream master convergence wave 3** (`a16b6442`→`7f14d963`) | **NEW — cherry-pick (none in the gpillon line, merge-base `863aa8a5`)**: `ee9d5192` nvfp4 W4A4 TMA raster (supersedes T36's `c735909b` re-pick), `b158afe2` BPE flat open-addressed merge table, `641ef3e7` skip NFC on pure-ASCII; + `0f84adaf` (#195 context-cost weights fallback, 1 file). MoE-only commits ride along, dead path |
+| 44 | **md MTP/decode ops perf** (for the live mtp3 lane) | **NEW — cherry-pick candidates on `a16b6442`, acceptance-gated (T7)**: `505d1af7` MTP draft-hidden buffer ping-pong, `1f155fed` MTP stem-norm+residual fusion, `perf/mtp-layer-graph-nodes` (4 ops files), `38f52b34` argmax winner-init kernel, `61250e89` (#194 nvfp4 SwiGLU fast), `ed150906` (#201 w8 rowsplit cache policy — only if 27b-W8 lands) |
+| 45 | **#174 full-vocab Q4G64 MTP proposal head** | **NEW — PROBE (acceptance-gated)**: optional third head for `--spec mtp`, FP8 lm_head → row-split Q4G64 full 248,320 rows; restores the structured-output coverage `--lm-head-draft` (131,072 rows) loses (JSON acceptance 86%→99% in their data) at +187 µs/proposal + 0.63 GiB; +8.9% coding tok/s, +3.4% @440K. Implementation exists on the reporter's YaRN fork (release `b5f2d1a9`) — cherry-pick + probe on the live mtp3 profile |
+| 46 | **cometkim PDL decode chain** (`feat/kernel-perf` @ `5b89e5be`) | **NEW — WATCH→PROBE**: programmatic dependent launch across the decode kernel chain (w8 rowsplit/small-T, nvfp4 linears, attn/GDN projections, GEMV, rmsnorm/rope/gate); claimed +77% cumulative / +56% MTP3 @262k — **unverified on our base**; diverged base with 3 force-pushes → re-derive + verify the claim on a 5090 before any window. Also on the branch: per-request error boundary (host exception fails one request, not the engine — attractive reliability fix), i8 prompt key-split |
+| 47 | **nvfp4qat QUASAR-QAT artifact profile** (cometkim `ad5334cb`) | **NEW — A/B candidate (low effort)**: 5th weights profile for `qwen3_6_27b` = NVFP4 copied word-for-word from a QUASAR-QAT artifact (QAT-calibrated global scales), GDN a/b→BF16; 2-commit cherry-pick + artifact. Quality A/B vs current QUASAR nvfp4 — still QUASAR-lineage, so the operator constraint holds |
+| 48 | **dylan/experimental agentic-runtime slices** | **NEW — WATCH (feeds T41)**: `42c9c7d4` exit p-less thinking cycles without rebuilding L (shared sampling/spec-runtime), `a39c5c25` W4/W6 multi-request decode projection aggregation (27b variant). Branch is 126 commits ahead of upstream (base `0c94153b`); re-derive slices individually; GDN/dflash/qwen4 work = dead path |
 
 **Sequencing (round 6).** (1) **T37** chat-template switch — config-only, no build, immediate operator
 value, and it must settle BEFORE T33/T35 so decode A/Bs are measured against a stable render path. — **settled 2026-09-06: ADOPTED** (result block above).
@@ -1934,7 +1969,11 @@ lane-ship pipeline — pre-staged, see T33 Wave A ship gate).
   ship G4 free-GPU window.
 - **T34 guard** (`f4b128c6`): skipped as a RAM-tier dependency; port by hand into
   `src/targets/qwen3_6/impl/runtime/host_kv_safety_net.h` checkpoint branches per T34 step 5b.
-  Live quadlet runs `--host-kv-mib 32768`, so the T34 step-5a live-exposure question stays open.
+  Live quadlet runs `--host-kv-mib 32768`; the step-5a live-exposure question is RESOLVED in
+  Round 12 — the live tree `49400365` HAS the host-RAM tier (`src/core/host_kv_arena.{h,cpp}`)
+  and the rewrite-checkpoint restore path (`is_rewrite_checkpoint_restore`, program_impl.h ×7 +
+  request_plan_impl.h ×4) but NOT the mitigation (gzenz's new `host_kv_safety_net.h`);
+  `kv_ram_cache.cpp` is in neither line (gpillon's file, not ours). The live image IS exposed.
 
 ### T33 agentic cluster -> **T41 (hand-port, not cherry-pick)**
 - The cluster (RAM KV tier, sibling-prefix sharing, tagged request lanes, adaptive MTP widths,
@@ -2054,3 +2093,436 @@ Port set: branch `t36-mdops2-quasar` cut from `9737d75c`, cherry-picked re-picks
 touched files byte-identical to the prior wave's (host-build-verified) post-image,
 pushed to gevil. Build + ctest + battery + decode A/B = a pre-stopped-lane window
 sequenced after the T33 Wave B verdict (batch or sequence the window).
+
+## Round 12 (2026-09-06, ~17:50 CEST) - T31/T34 re-derivation complete; port plan ready
+
+Scout re-derivation (T31T34ReDerive) against the clean base `t33-gpillon-quasar @ 9737d75c`:
+- **gzenz's line moved again**: master tip `c17de1cc` = `local/combined 5f23c37e` + `1b11452c`
+  (the "master == 5f23c37e" note is stale). The whole safety-net line is now ONE 25-file commit
+  `d00e5f0b` (+3877/-64; true merge-base with our base = `da49c0d6`, not the d17a5f1f recorded
+  earlier). `1b11452c` (5 files) is REQUIRED: it fixes the two prior ship blockers — the
+  slot-budget guard (root cause of Bug 2's StateImage entitlement fatal) and worker-level
+  `logic_error` recovery (Bug 3 frontier fatal blast radius: engine death -> bounded
+  per-request failure, livelock-guarded).
+- **T34 mitigation lands in gzenz's new `host_kv_safety_net.h`** (609 lines, taken verbatim):
+  close BOTH checkpoint-offer branches in `find()` (lines 311-329 + the session-key fallback
+  369-375), keep the execution-frontier prefix match; ~8% of restores fall back to full_reset
+  (gpillon's `kv_ram_cache.cpp` exists in neither the gzenz line nor our tree — the mitigation
+  targets gzenz's file shape, not gpillon's).
+- **Frontier invariant preserved, not relaxed**: engine_core.h:1350 ("completed prefill did
+  not reach the admitted prompt frontier") + related checks; the StateImage entitlement throw
+  at program_impl.h:10460 stays intact (the slot-budget guard fixes its root cause).
+- **Guard test**: port gpillon `ac60331d` -> new `tests/targets/qwen3_6_27b/test_host_kv_ram_guard.cpp`
+  (a host-RAM restore must reproduce EXACTLY the continuation the same checkpoint produced while
+  VRAM-resident; `kv_ram_restores` counter +1; adapt to our PrefixReusePath enum).
+- **Port shape**: hunk-by-hunk manual re-application (our engine files are 221-1569 lines diverged
+  from gzenz's): `cherry-pick -n d00e5f0b` -> resolve on the high-risk files (engine_core.h,
+  materialization_planner.h, resource_manager.h, program_impl.h, program.h, chat_template.cpp —
+  the froggeric-specific hunks re-derived against our post-T37 ReasoningEffort template; mostly
+  inert on the --preserve-thinking lane) -> apply the T34 mitigation -> `cherry-pick -n 1b11452c`
+  -> guard test. Skip: stats_json.cpp (no /stats endpoint in our serve layer), tools/monitor +
+  e2e (optional), all other gzenz-range commits (froggeric, NVFP4 KV, YaRN, ... — off-lane).
+  Do NOT touch host_kv_extent_store.h / host_kv_restore_transaction.h (coexist with the T18-line
+  evicting-restore machinery).
+- **Ship gates (7)**: ctest incl. the guard test; battery 16/16 + 4XX zero; Bug 2 signature absent
+  OR per-request recovery only (the throw must still be present in the built binary); Bug 3
+  large-restore completes AND the invariant still trips on a deliberately corrupt fixture; journal
+  shows no rewrite-checkpoint restore served from host RAM; render byte-identical under
+  --preserve-thinking; decode/prefill within the post-T37 band.
+
+Execution is sequenced after the T33 Wave B + T36 windows (plan order), on a fresh branch
+`t31-hostkv2-quasar` from the then-current live base. Reference material in /tmp/t3134/.
+
+## Round 13 (2026-09-06, ~18:20 CEST) - T33 Wave B port complete; host-build window live
+
+- Port complete on `t33-dflash2-quasar` @ `a7893d93` (pushed to gevil; force-with-lease
+  replaced the stale pre-Wave-A `a3ba415f`, preserved in the local reflog): 12 of 14 picks
+  applied; `34a33720`/`1953f2f4` became net-empty after adaptation (our evolved op-layer form
+  and our runtime region already covered them). Engine surface verified: `--spec dflash2`
+  parses, `DFlash2Config` params exact, module is ValidateOnly unless the flag is set.
+  Conflict-resolution policy: op layer (swa / kv_cache_append_prefix / bidirectional) taken at
+  the evolved `b4087269` form; program_impl.h + request_plan_impl.h + text_prefill dflash2-sink
+  kept OURS (second-convention runtime region, per the threshold rule) — those are the
+  follow-up-wave files; new staged `dflash2_*` headers kept.
+- Host-build window (detached): script `/tmp/t33waveb-build-window.sh`, log
+  `~/.local/share/ninfer/logs/t33waveb-build-window-2026-09-06.log` (PID 2486064):
+  45s delivery sleep -> lane stop -> RAM >=12GiB gate (600s; ABORT-RAM restarts the lane,
+  exit 2) -> podman build --cpus 16 tagged `t33dflash2-a7893d9` (no `:quasar`/`:latest`
+  retag) -> fresh /build -j16 BUILD_TESTING=ON + host-suite ctest (6 Wave A targets) ->
+  ALWAYS lane restart + /v1/models poll (300s) -> final line `BUILD rc=.. CTEST rc=..
+  IMAGE .. LANE http=..`
+- Test-coverage correction: the three dflash2 op tests (selector_predecessors /
+  selector_scores / topk_walk) use CUDA device buffers — GPU-required, NOT in the host-suite
+  run; they first execute in the next free-GPU ship's G4 ctest.
+
+## Round 14 (2026-09-06, ~18:35 CEST) - T33 Wave B first build attempt FAILED (bad flag); fix dispatched
+
+First host-build-window run failed fast (~80s total, 17:53:46-17:55:06): the window script
+invoked `podman build --cpus 16 ...`, but `--cpus` is a `podman run`/`create` flag, not a
+`build` flag. `BUILD rc=125`, no image produced; the subsequent host ctest (`rc=99`) is bogus
+noise (nothing existed to test). Lane safety held: the script's always-restart fired regardless
+of build outcome, `/v1/models` verified 200 within ~10s on the unchanged `:quasar` image — no
+live-service damage, no image needed replacing.
+- Fix dispatched (hub send to `T33WaveBPicks`): mirror `ninfer-ship.sh`'s proven G2 invocation
+  exactly — `podman -H unix:///run/user/1000/podman/podman.sock build -t
+  localhost/ninfer-nvfp4:t33dflash2-a7893d9 "$CLONE"` with `$CLONE=/home/gevil/containers/ninfer-github`
+  (the shared build clone, synced to the pushed `t33-dflash2-quasar` tip `a7893d93` first), no
+  CPU-limiting flag at all, no `:quasar`/`:latest` retag (probe build, not a ship). Rest of the
+  window script (45s delivery sleep, lane stop, RAM gate, host ctest, always-restart) was correct
+  and is unchanged. Agent re-running the same window with the corrected build command.
+
+## Round 15 (2026-09-06, ~18:20 CEST) - T33 Wave B build window v2 launched (2nd bug caught+fixed)
+
+Before relaunching, the agent self-verified and found a SECOND bug in its own window script
+that Round 14's fix did not surface: the ctest step used `podman run --entrypoint /bin/bash`,
+which fails with "cannot execute binary file" against this build image layout. Fixed to match
+the pipeline's proven G4 pattern exactly (no `--entrypoint`, `bash -lc` as the command, mounts
+the synced clone) instead of guessing a second time.
+- v2 launched: PID `2524216`, log `~/.local/share/ninfer/logs/t33waveb-build-window-2026-09-06.log`
+  (v2 section), started 18:18:04. Build command now verbatim-matches `ninfer-ship.sh` G2:
+  `podman -H unix:///run/user/1000/podman/podman.sock build -t
+  localhost/ninfer-nvfp4:t33dflash2-a7893d9 /home/gevil/containers/ninfer-github`, no CPU flag;
+  clone synced G1-style (fetch origin + checkout + hard-reset; pre-verified
+  `origin/t33-dflash2-quasar` = `a7893d93`, clean tree) before building.
+- Expected window length ~50-70 min (longer than the original ~20-40 min estimate) because the
+  agent's own reasoning backend IS the lane model — it cannot stay active while the lane it just
+  stopped is down, so it started a host-side hub-process watcher (`waveb-window-watch`, not a
+  lane-model subagent) polling for the script's completion marker; that watcher's delivery
+  revives the agent to report the final result. Main independently scheduled a redundant
+  host-side (non-lane) delayed log check as a second safety net.
+- Process note (session-wide): default `task`/`scout` subagents in this session inherit the
+  ninfer lane as their backend model unless a non-lane pattern (like the ship's `shipwatch`
+  supervisor) is deliberately used. Mid-session correction: stopped spawning read-only scouts
+  for prep work while the lane is shared with live user sessions and a build window; do that
+  kind of investigation directly instead.
+
+## Round 16 (2026-09-06, ~18:55 CEST) - v3 window launched (compile fix bd16fdeb); subagent absorbed into main session
+
+v2 window result: build FAILED at step 38/327 in `src/ops/launcher/bidirectional_gqa_attention.cu` - dense/paged
+signature mismatch. Pick `c1dfcfed` (cherry-pick of upstream `ec7b1fc6`, "feat(ops): add bidirectional gqa
+attention") landed the launcher + local header + public header + wrapper at the pre-paged-migration state, while
+the in-tree `src/ops/kernel/bidirectional_gqa_attention.cuh` is the paged-cache version (byte-identical to
+`gpillon/feat/dflash2-local` tip). The three kernel call sites (split-partial direct/split + reduce) instantiate
+the paged signature (valid_columns/table_rows/block_tables/physical+logical pages) that the dense launcher never
+passes.
+- Scope decision: the 33-file "drift vs gpillon tip" pre-scan was mostly intentional branch divergence (noise);
+  the fix is scoped strictly to the 4-file bidirectional-GQA family the compiler named.
+- Fix `bd16fdeb` (pushed to gevil; clone origin Gevil/ninfer has it): adopted gpillon-tip state verbatim for
+  `src/ops/launcher/bidirectional_gqa_attention.cu`, `src/ops/launcher/bidirectional_gqa_attention.h`,
+  `include/ninfer/ops/bidirectional_gqa_attention.h`, `src/ops/wrapper/bidirectional_gqa_attention.cpp`.
+  (`.cuh` untouched - already identical.) Verified: all four byte-identical to tip; commit contains exactly those
+  four files; worktree clean; `BidirectionalGqaRoute` resolves in the adopted launcher-local header (the public
+  include header legitimately carries no paged fields - first sanity grep was a false alarm).
+- Process change (user instruction): the main session now runs on the same local lane model as the subagent, so the
+  separate-agent pattern has no remaining upside. `T33WaveBPicks` confirmed stand-down (it had restored the .cuh
+  to its committed state, keeping the tree clean) and was retired. Lane-stop survival is now provided by
+  host-side watchers (plain async bash, zero lane consumption) instead of lane-model agent watchers.
+- v3 window launched by the main session: script `/tmp/t33waveb-v3-build-window.sh`, tag `t33dflash2-bd16fde`,
+  log `~/.local/share/ninfer/logs/t33waveb-v3-build-window-2026-09-06.log`. Window: 45s grace -> lane stop ->
+  RAM>=12GiB gate -> clone sync (origin) -> build -> host ctest (6 host suites) -> ALWAYS lane restart.
+  ETA ~30-55 min. Note: the main session's own backend is the lane model, so the session is suspended for the
+  window's duration and resumes with the script's always-restart.
+
+## Round 17 (2026-09-07, ~10:30 CEST) - T33 Wave B v3 window result: build clean, 1 env-gap ctest fail
+
+The v3 build window (log `~/.local/share/ninfer/logs/t33waveb-v3-build-window-2026-09-06.log`, exited
+2026-09-07T10:04) synced to the pushed tip `2a43ab2` (not the `bd16fde` recorded at launch) and produced:
+- **BUILD rc=0**: image `f4e8a7750587` tagged `t33dflash2-2a43ab2` (2.92 GB). The engine build+link is clean.
+- **CTEST rc=8 — 5/6 pass.** The single failure is `ninfer_qwen3_6_frontend_test (Subprocess
+  aborted)`: `what(): failed to open test resource:
+  /home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/tokenizer.json`. This is the KNOWN
+  tokenizer-resources environment gap (the frontend suite hardcodes the upstream resource path; the
+  host-suite container does not bind-mount it) — **not a T33 regression** (it is a missing-file
+  `std::runtime_error`, not a segfault/assertion). The other 5 suites pass. The prior
+  "host-ctest already green at 2a43ab25" note was wrong on the 6th suite.
+- Lane auto-restarted clean (`/v1/models` http=200 ~10s); the live lane is unchanged
+  (`:quasar` = `2b17722dc2fb`, the shipped t33serve image).
+
+**T33 state:** the Wave B engine image `t33dflash2-2a43ab2` is built + ready. Next = the plan Step-4
+acceptance gate (adopt-vs-keep-MTP). For the fresh session: the dflash2 acceptance is **not** a plain
+journal line — it lives in the `speculative_round` op layer (`speculative_accept_greedy_drafts` /
+`speculative_select_accepted_hidden`), so the 1.5K/8K/32K accepted-per-round probe needs real
+measurement tooling (not a journal grep), plus greedy parity + the full 16-gate battery + the 3 CUDA op
+tests (G4 ctest, with the Qwen3.6-27B tokenizer resources bound to clear the frontend env gap). That is
+a large session-suspending quadlet-override window (image -> `t33dflash2-2a43ab2`, `--spec mtp
+--draft-tokens 3` -> `--spec dflash2 --draft-tokens 7`, verbatim Exec backup+restore + always-restart
+trap); deferred to a fresh session for full attention. The live Exec to preserve verbatim on restore is
+the current quadlet line 80 (`--host-kv-mib 32768`, no `--chat-template-file`, `--model-id qwen3.8-27b`).
+
+## Round 18 (2026-09-07, ~20:40 CEST) - T33 probe gate executed: dflash2 REJECTED — keep `--spec mtp`
+
+Window `t33df2i-527f70d` (branch `t33-dflash2-quasar` @ `527f70d8`, image `bb12223f…` tagged
+`t33df2i-527f70d`; log `~/.local/share/ninfer/logs/t33df2i-window-2026-09-07.log`;
+20:26:59→20:36:39, rc=0). Sequence: stop → RAM gate (34 GiB) → build rc=0 → host ctest
+exit 8 (5/6; only the known pre-existing `qwen3_6_frontend` tokenizer-resource failure) →
+PHASE A `--spec dflash2 --draft-tokens 7` (no `--lm-head-draft`) + 3 probes → PHASE B mtp3/3
+control + 3 probes → parity → FINAL restore (live profile, engine ready ~10s). Watchdog
+(100-min deadline) disarmed on clean finish. The earlier 12:47 `t33df2f` run (image
+`t33df2-e46a3a5`) had failed PHASE A on the engine's rejected `--spec dflash2` +
+`--lm-head-draft` pair ("DFlash2 requires the full proposal head"); this window's PHASE A
+flag set drops the flag and the engine boots clean — **first successful dflash2 lane boot**
+(kv 49152 nvfp4, no `--host-kv-mib`, ready in ~17s; no int8 KV fallback needed).
+
+**Phase A — dflash2/7 (grafted NVFP4 artifact, kv 49152 nvfp4):**
+
+| ctx | tokens | wall probe tok/s | journal decode | dflash2 accepted | ≈tok/round |
+|---|---|---|---|---|---|
+| 1.5k | 256 | 141.7 | 153.4 | 169/592 (28.5%) | 3.0 |
+| 8k | 200 (stop token) | 100.9 | 147.0 | 144/392 (36.7%) | 3.6 |
+| 32k | 256 | 38.3 | 75.9 | 176/535 (32.9%) | 3.4 |
+
+**Phase B — mtp3/3 control (same image/artifact/kv):**
+
+| ctx | tokens | wall probe tok/s | journal decode | mtp accepted | ≈tok/round |
+|---|---|---|---|---|---|
+| 1.5k | 256 | 178.3 | 198.5 | 161/278 (57.9%) | 2.8 |
+| 8k | 256 | 127.8 | 188.7 | 159/288 (55.2%) | 2.7 |
+| 32k | 256 | 53.6 | 181.4 | 159/285 (55.8%) | 2.7 |
+
+(≈tok/round = output tokens ÷ (candidates ÷ draft-tokens); round latency = wall ÷ rounds.)
+
+**Verdict: REJECT — the lane keeps `--spec mtp --draft-tokens 3`.** Plan gate 4d: adopt only
+if acceptance/round beats the incumbent at all three contexts AND decode improves with parity
+intact. dflash2 does accept more per round (3.0/3.6/3.4 vs 2.8/2.7/2.7) but each 7-candidate
+verify round costs ~1.4–1.7× more than MTP's 3-candidate round (21/36/88 ms vs 15/21/51 ms),
+so wall-time decode loses at every context: 141.7/100.9/38.3 vs 178.3/127.8/53.6 tok/s
+(1.26×/1.27×/1.40× slower). Parity is a genuine **MISMATCH**: on identical greedy prompts
+(temp=0, max_tokens=256), the 8k pair — both non-empty — produced entirely different wording
+("…increases context capacity…" vs "…trades numerical accuracy…"), i.e. the two speculative
+backends do not track the same token stream.
+
+**Probe caveat (probe design flaw, not an engine error):** the probes ran with the default
+xhigh thinking and a 256-token output budget; two of the six outputs carried zero
+`message.content` (A-1500, B-32k — the whole budget spent in `reasoning_content`), so the
+1.5k/32k parity diffs are confounded (the probe only captures `message.content`). The 8k pair
+is unaffected and is the decisive evidence. Fix for future probe windows: capture
+`reasoning_content` + `content` (or pin `reasoning_effort` in the probe body), and add a
+back-to-back identical-run determinism control under MTP alone (two live-lane requests, no
+lane stop) to separate engine sampling non-determinism on the thinking path from a true
+dflash2 acceptance divergence.
+
+**Lane state after the window:** live profile restored and verified — `:quasar`
+(`2b17722dc2fb`, the shipped t33serve image), mirko artifact, int8 KV 225280 +
+`--host-kv-mib 32768`, mtp3 + `--lm-head-draft`, engine ready 20:36:39 (this session runs on
+it). dflash2 PARKED, not merged into the lane: branch `t33-dflash2-quasar` @ `527f70d8`,
+image `t33df2i-527f70d`, and the grafted `qwen3_8_27b_quasar_dflash2.ninfer` artifact stay
+available. A revisit is only worthwhile with a cheaper verify round (fewer draft tokens) or
+after the parity question is characterized.
+
+## Round 19 (2026-09-07, ~21:05 CEST) - Operator override: dflash2 deployed live, judged, rolled back; upstream master now has native dflash2
+
+1. **Operator override (20:54).** Despite the Round 18 REJECT, the operator chose to run
+dflash2 and judge it directly. Deployed 20:53:56: image `t33df2i-527f70d` (ID `bb12223f…`,
+verified by running-image ID, not http code), grafted `qwen3_8_27b_quasar_dflash2.ninfer`,
+`--spec dflash2 --draft-tokens 7`, `--kv-dtype nvfp4`, KV 225,280 (boot ledger: "KV 225,280
+tokens, nvfp4, explicit", host KV 32.0 GiB pinned, weights 16.6 GiB incl. dflash2 module).
+First deploy attempt used a stale systemd unit (missing `daemon-reload`) and came back on the
+old profile; the corrected run did daemon-reload first + image-ID verification.
+2. **Real-world judgment (this session, ~182k context, xhigh thinking):** `dflash2 accepted
+396/1,701 (23.3%)` and `577/2,254 (25.6%)`, decode ~17 tok/s at 182k context (req#1: 181,908
+prompt, TTFT 59.6s — the cache-0 there was the one-time cold re-prefill caused by the int8→nvfp4
+kv-dtype switch invalidating the host-KV prefix cache, not a dflash2 property). Versus mtp3 at
+similar context earlier the same day: 151–162 tok/s. ~9× decode collapse at the lane's working
+context size.
+3. **Rollback (21:05:23, image-ID verified).** `:quasar` mtp3/int8 225,280 restored from
+`ninfer-nvfp4.container.bak-df2-2026-09-07`. One-command rollback path now proven twice.
+4. **Root-cause update (verified via git, not just the README).** upstream/master carries
+native dflash2: `385b30ce feat(engine): integrate dflash2 with configurable draft counts` plus
+op/perf commits (`55ca1d77` vectorized dflash2 embedding gathers, `a84a066f` dflash2 rmsnorm
+row geometries, `487f8977` small-T sparse_moe one-CTA-per-token + warp merge, `ce7dee50`
+single-request serving results = the 321±16 tok/s NVFP4 AIME table), and master's README:
+Qwen3.8-27B artifacts **with the DFlash2 companion weights** support `--spec dflash2
+--draft-tokens 7` (draft counts 1..15). Our `t33df2i` engine was built from the gpillon/coding
+lineage (`a00648cb`, which predates all of the above): it hard-rejected the optimized proposal
+head (engine error: "DFlash2 requires the full proposal head (candidates span the whole
+vocabulary)"), where master's README explicitly supports "either full or optimized proposal
+heads" (the announcement post's enable line used `--lm-head-draft`), and it ran verify rounds
+2–8× slower (21 ms/round @1.5k → ~95 ms/round @32k, vs ~11 ms/round implied by upstream's
+321 tok/s at ~3.4 tok/round).
+5. **Conclusion.** T33 as executed (gpillon-era port + z-lab module graft) is a dead end, but
+the tier is not: rebase on upstream master's native dflash2 (fresh upstream artifact with
+companion weights, no graft) and re-probe at 1.5k/8k/32k/182k before judging the lane again.
+Baseline caveat: mtp3/int8 numbers remain the baseline; dflash2-on-master is unproven on this
+lane until probed.
+
+## Round 20 (2026-09-08, ~08:10 CEST) — t33bg2d: master-line dflash2 re-probe passes decode+acceptance gate; parity + battery pending
+
+The gpillon-line reject (R18/R19) was correctly scoped to that engine. This round executes R19's
+conclusion: the master-rebase line (`t33bg2-quasar-port`, base `a16b6442` — carries native dflash2
+`385b30ce` plus the op/perf commits `487f8977`/`ce7dee50`) was probed overnight.
+
+1. **W8 full-proposal-head fix (commit `4008da6d`, pushed to `Gevil/ninfer:t33bg2-quasar-port`).**
+   The engine's `ops::linear_topk` DFlash2 full-proposal path only accepts quantized
+   full-vocabulary heads (W8/F8), but the QUASAR profile bound `text/output_head` as BF16 →
+   engine rejected the grafted artifact ("DFlash2 requires the full proposal head (candidates
+   span the whole vocabulary)"). Fix: quasar profile binds the head as `W8G32_F16S` (row-split
+   k128-v1, 1,350,860,800 B) exactly as the `Qwen38Nvfp4` profile does — the QUASAR-QAT release
+   ships the head W8, same as the live lane's head today; the graft tool gained `--head-source`
+   to carry the W8 head from the live nvfp4 artifact into the grafted QUASAR artifact (all other
+   1,333 objects keep their encodings; artifact shrinks 22,166,004,224 → 20,974,068,224 B,
+   −1.19 GiB). Host-verified pre-window (CPU re-graft): head spec/format/bytes exact, identity
+   `nvfp4-quasar-bf16` unchanged.
+2. **Window t33bg2d (09-07 23:23–23:35, tag `t33bg2-4008da6`, 12 min, CONV/GRAFT/BUILD/CTEST/G3B
+   all green, trap-restore + pure-shell watchdog both verified).** G3B profile: image
+   `t33bg2-4008da6`, grafted W8-head artifact, kv 131072 nvfp4 + `--host-kv-mib 8192`,
+   `--spec dflash2 --draft-tokens 7` (no `--lm-head-draft` — full head path), `--vision`.
+   CTEST 6 pass + 1 skip (`dflash2_real` by design).
+3. **Probe numbers (greedy, max_tokens=256):**
+   | ctx | wall tps (probe) | engine decode tok/s | dflash2 accepted | tok/round (k=7) |
+   |---|---|---|---|---|
+   | 1.5k | 194.4 | 231.8 | 139/406 (34.2%) | 2.40 |
+   | 8k | 141.2 | 230.5 | 180/519 (34.7%) | 2.43 |
+   | 32k | 52.3 | 210.7 | 178/530 (33.6%) | 2.35 |
+   | 126k | 8.1 (TTFT 30.3s-dominated) | 206.7 | 187/466 (40.1%) | 2.81 |
+   vs clean mtp3 baseline (R18: 178.3/127.8/53.6 wall tps @1.5k/8k/32k, ~1.95 tok/round):
+   **dflash2-on-master wins 1.5k (+9%) and 8k (+11%), ties 32k (−2%)**, and shows **no
+   long-context collapse** (126k engine decode 206.7 tok/s, acceptance rises to 40.1% — the
+   9× 182k collapse of R19 was a gpillon-engine property, not a dflash2 property).
+   (The R18 mtp3 8k control is the clean one; the earlier t33df2f 8k mtp3 figure of 26.5 tps was
+   a queue-confounded artifact and is not used.)
+4. **Gate status.** Plan 4d adoption gate: acceptance-per-round beats incumbent at all three
+   contexts ✓ (2.40/2.43/2.35 vs ~1.95); decode improves with parity intact — decode ✓, **parity
+   UNRUN** in this window (G3B ran the 4 probes only; no parity phase). R18's 8k parity MISMATCH
+   occurred on the gpillon engine and is unexplained: either a real verify-path divergence or
+   xhigh-thinking-path non-determinism at temp=0 (R18's own caveat — the probe only captured
+   `message.content`, two of six outputs had empty content). Next: (a) MTP-alone back-to-back
+   determinism control on the live lane (no lane stop) to characterize thinking-path
+   determinism, (b) dflash2 parity suite on the master engine with `reasoning_content`+`content`
+   capture, (c) battery 16/16, (d) kv-225280 boot test (R19 booted 225,280 nvfp4 with 16.6 GiB
+   weights incl. the module; t33bg2d deliberately used 131072 to keep the window conservative).
+5. **Lane state:** verbatim-restore confirmed by window FINAL + watchdog — live `:quasar`
+   `2b17722dc2fb` (t33serve image), mirko artifact, nvfp4 KV 225,280 + `--host-kv-mib 8192`,
+   mtp3 + `--lm-head-draft`, engine ready, /v1/models 200. dflash2 artifacts/images retained:
+   grafted W8-head artifact `qwen3.8-27b-quasar-dflash2-stock/qwen3_8_27b_quasar_dflash2.ninfer`
+   (20,974,068,224 B), image `t33bg2-4008da6` (`6d6f2778aaf0`).
+6. **Workload caveat (superseded by Round 21 item 3).** Item 3's numbers are thinking-free
+   probe numbers. An early read of the t33adopt window (A-short 62.31 s vs the 08:08 mtp3
+   control's 1.64 s) suggested a thinking-mode collapse, but the window's timing proved
+   interfered (non-physical C-8k slower than C-32k inversion, Round 21 item 3) — no
+   thinking-mode decode claim is made from this window.
+
+## Round 21 (2026-09-08, ~17:46 CEST) — t33adopt window: master-line dflash2 parity FAIL → T33 REJECTED, permanently parked
+
+1. **Window (17:41–17:46, 5 min).** PROFILE A: `t33bg2-4008da6` + grafted W8-head artifact,
+   kv 225,280 nvfp4 + `--host-kv-mib 8192`, `--spec dflash2 --draft-tokens 7` (no
+   `--lm-head-draft`) — **booted clean at kv 225280 first try**, no 131072 fallback needed.
+2. **Parity gate (decisive).** dflash2 (A) vs non-speculative (C, same image + artifact, no
+   `--spec`), greedy temp=0, `reasoning_content`+`content` byte-compared. The 08:08 control
+   had first proven the MTP-alone thinking path byte-deterministic, so same-image A↔C
+   divergence is a true engine difference, not thinking-path non-determinism:
+   | prompt | A (dflash2) wall | C (non-spec) wall | result |
+   |---|---|---|---|
+   | short (~1.5k) | 62.31 s | 4.03 s | MISMATCH: reasoning at char 87, content from char 0 |
+   | 8k | 2.9 s | 77.61 s | MISMATCH: reasoning at char 31 |
+   | 32k | 32.04 s | 8.07 s | MISMATCH: reasoning at char 257 |
+   **PARITY FAIL 3/3.** R18's "two speculative backends do not track the same token stream"
+   is NOT a gpillon-engine artifact: it persists on the master-native dflash2 line (full W8
+   proposal head, master's op/perf commits). The dflash2 verify path does not reproduce the
+   target's greedy output — a correctness defect under the plan's T7 lesson (a speculative
+   win that changes outputs is a reject).
+3. **Timing caveat: this window's per-request walls are unreliable.** Non-spec C-8k (77.61 s)
+   is slower than non-spec C-32k (8.07 s) — a non-physical inversion proving host/GPU
+   interference during the window (A-short 62.31 s vs A-8k 2.9 s is the same signature).
+   No decode/tok-s claim is made from this window; the byte-comparison is
+   interference-immune and is the sole basis of the verdict. (R19's sustained 17 tok/s at
+   182k on the gpillon line stands as the real-workload evidence; master-line thinking-mode
+   decode was never measured clean.)
+4. **Verdict: REJECTED — T33 permanently parked.** Plan gate 4d requires greedy parity; 3/3
+   fail. dflash2 is not adopted; the lane keeps mtp3. Revisit only when an upstream engine
+   fix makes the dflash2 verify path reproduce greedy outputs byte-for-byte (watch upstream
+   master); all lane-side work (W8-head binding `4008da6d`, graft `--head-source`, t33bg2
+   image, grafted W8-head artifact) is retained and re-runnable if that lands.
+5. **Collateral finding:** C-short (non-spec on t33bg2) produced 664 ch reasoning where the
+   08:08 mtp3 control (t33serve image) produced 694 ch on the identical prompt — the
+   master-based image also shifts non-speculative greedy output vs the live image (perf/kernel
+   commits change argmax ties). If t33bg2 is ever shipped for non-dflash2 reasons, expect
+   greedy output drift vs today's live profile.
+6. **Lane state:** verbatim restore confirmed — quadlet byte-identical to the window backup,
+   `:quasar` `2b17722dc2fb` (t33serve), mtp3 + `--lm-head-draft`, nvfp4 KV 225,280 +
+   `--host-kv-mib 8192`, /v1/models 200, engine ready 17:46:12.
+
+## Round 22 (2026-09-08, ~18:45 CEST) — full re-audit: upstream + 7 forks + PRs/issues → P0 hotfix, T42–T48
+
+Window: ~18:10–18:45 CEST. `git fetch --all --prune` (force-pushes: cometkim ×4 branches),
+`gh pr list` / `gh issue list` on Neroued/ninfer. No movement: gpillon, eason.
+
+1. **Upstream master `a16b6442` → `7f14d963` (6 commits).** Three shared, lane-relevant:
+   `ee9d5192` (nvfp4 W4A4 TMA CTAs token-fastest + one activation-scale-box fetch — **identical
+   file set to T36's `c735909b` re-pick: it is upstreamed**), `b158afe2` (BPE merge rules in a
+   flat open-addressed table), `641ef3e7` (skip NFC normalisation on pure-ASCII text); three
+   MoE-only dead-path (`7f14d963`, `ce954918`, `437e9f98`). None of the five lane-relevant
+   commits are in the gpillon line (merge-base `863aa8a5`) → all cherry-pickable → **T43**.
+2. **P0 — #210/#211: agent-workload GPU lockup, verified in our engine.** Issue #210: hard
+   device assert + full-GPU lockup (host reboot required) at request #54 of a real
+   coding-agent session (114,812-token prompt, 99.5% prefix hit, small concurrent lane).
+   Root cause: `bind_sequence_kv() → activate() → commit_activation()` publishes block
+   membership via `cudaMemcpyAsync` on the **legacy default stream**
+   (`logical_kv_store.h:895-903→954`, `paged_kv_cache.cpp:831-832`); engine streams are
+   `cudaStreamNonBlocking` → publish unordered vs compute. **Verified present in our live
+   engine**: `t33-gpillon-quasar` `logical_kv_store.h:901` calls
+   `commit_activation(std::move(reservation))` — no stream arg → `:953` default `nullptr` =
+   legacy stream. Our lane (multi-turn agentic, catalog re-activation, C=4) is exactly the
+   re-activation profile that triggers it; synthetic reproducers missed it for the same
+   reason they missed it upstream. PR #211 = 3-line stream threading. → **T42 (P0
+   cherry-pick into the next image build).** Unfixed residuals from #210's own audit:
+   `release_page()` frees without a stream fence (page-aliasing); staged-tail COW for
+   non-64-aligned prefixes — our 114k prefix ≡ 41 (mod 64) exercises it. Related watch:
+   **#208** (intermittent `cudaErrorIllegalAddress`, 5090, Qwen3.8-27B NVFP4 + MTP4, WSL2;
+   clean run under `CUDA_LAUNCH_BLOCKING=1`) — same stack family, same async-hazard class;
+   engage upstream if it reproduces post-T42.
+3. **Fork movement.**
+   - **md** — 13 new branches; lane-relevant on `a16b6442`: MTP perf `505d1af7` (draft-hidden
+     buffer ping-pong, `mtp_impl.h`), `1f155fed` (stem-norm + residual fusion),
+     `perf/mtp-layer-graph-nodes` (4 ops files), `38f52b34` (argmax winner-init kernel),
+     `61250e89` (#194 nvfp4 SwiGLU fast), `ed150906` (#201 w8 rowsplit cache policy),
+     `0f84adaf` (#195 context-cost fallback); `59d1bccb` (#202 L2 linear-attention pin) =
+     dead path; `perf/moe-*` = dead path. → **T44** (acceptance-gated).
+   - **dylan/experimental** `da15ab6a`→`42c9c7d4` (126 ahead, base `0c94153b`): `42c9c7d4`
+     feat(sampling) exit p-less thinking cycles without rebuilding L; `a39c5c25` perf(decode)
+     W4/W6 multi-request projection aggregation (27b variant); `cdd1b6c1` C1-4 spec decode
+     — **file set is GDN-centric (35B/qwen4 linear attention) → dead path for dense 27B →
+     T40 re-scoped, standalone probe dropped**; bulk of the branch (qwen4, GDN, dflash) =
+     dead path. → **T48** (agentic slices feed T41).
+   - **gzenz** `fix/checkpoint-host-demotion` → `51d6ba6a` (100 ahead, base `da49c0d6`): 25
+     commits in 2 days — artificial max-8 LRU caps removed, scatter-gather backend-KV
+     allocation, frontier relaxation (accept non-decreasing), admission safety-margin
+     add→revert→rework, review addressed at tip; e2e 58 PASS / 4 WARN / 1 FAIL. The source
+     line may have addressed our B2/B3 blockers → **T31/T34 RE-EVAL: re-derive the pick set
+     from `51d6ba6a`** before re-porting.
+   - **cometkim** (force-pushes ×4): `feat/mtp7` (1 commit: MTP draft-tokens-7 option,
+     `speculative_options.h` + 27b — WATCH; probe only after T45/T46, since T35 k5 already
+     reverted on acceptance), `feat/qwen3.8-nvfp4qat` (`ad5334cb`: QUASAR-QAT word-for-word
+     NVFP4 profile — **T47**), `feat/kernel-perf` → `5b89e5be` (PDL decode chain, +77%/+56%
+     claims, per-request error boundary, i8 key-split — **T46**).
+   - **mirko**: `master` → `8debca38` (= upstream through `ce7dee50` + 12 commits: 48 dflash2
+     ops files + `fix: refresh dflash prefill state slot after checkpoint forks` — DFlash
+     v1 = dead path for 27B); `feat/kvarn-production` `cf63feac` k4v2-g128 groups =
+     sub-floor KV, REJECT (no E2E quality evidence); `integration/upstream-master-through-ce7dee50`
+     = diverged integration line, cherry-pick only. Remains WATCH.
+   - **gpillon / eason**: no movement.
+4. **PRs/issues delta.** New open PRs: #211 (→T42), #213 (groupwise-W8 variant for 27B text
+   projections + W8 leading-dim fix — WATCH; makes #201 relevant if 27b-W8 lands), #202/#200/
+   #199 (MoE/GDN dead path), #201 (w8 rowsplit — conditional), #197 (serve `ignore_eos` —
+   T41 input), #195/#194 (→T43/T44). Unchanged watches: #183 (T38), #173 (sub-floor
+   REJECT), #163/#162 (ergonomics), #152/#148/#142 (T32 agentic-cache cluster), #107/#97/
+   #84/#59/#54 (known), #61 (per-image vision budget — WATCH, we run `--vision`). Issues:
+   #210 (→T42), #208 (see item 2), #174 (→T45), #165 (YaRN — WATCH; hosts #174's
+   implementation fork release `b5f2d1a9`), #172/#169/#168 (agentic serve — T41 inputs),
+   #185 (idle unload — our sentinel partially covers), #192 (Qwen3.8-27B 262K on one 5090
+   use-case report — external validation of our 225k profile), #188 (dflash2 upstreamed —
+   known, T33 parked), #212/#196 (ignore), T32 cluster (#176–#181/#184) unchanged.
+5. **T36 re-scope.** `c735909b` re-pick is redundant (upstream `ee9d5192`, identical file
+   set). The next quiet window is one combined build: **T42** (#211 hotfix) + **T43**
+   (upstream cherry-picks) + **T44** (md MTP/decode ops) + surviving T36 re-pick
+   (`67bf4b78` softmax fold) + T36b probe (`ce71f787`, acceptance-gated) → ctest + battery
+   16/16 → ship.
+
+**Sequencing (round 22).** (1) **T42 P0** — ride the combined build window, or a slim
+~1.5 h solo build if the lockup risk must be retired sooner. (2) **Combined window**
+T42+T43+T44+T36 (the quiet-window candidate). (3) **T45** #174 full-vocab Q4 head probe
+(acceptance-gated; direct win on the live mtp3 profile — our workload is structured-output
+heavy, which is exactly where `--lm-head-draft` loses coverage). (4) **T46** PDL:
+re-derive + verify the +77% claim on our base, then window. (5) T31/T34 re-derivation from
+gzenz `51d6ba6a` (scout), then window. (6) **T47** nvfp4qat A/B (low effort). (7) T41
+agentic line continues, absorbing #211/#197/#169/#168/#148 + T48 slices. (8) Watches: T38,
+T32, T39, #208, #165, #213, #61. T40: no standalone probe (re-scoped). T33: stays parked.
