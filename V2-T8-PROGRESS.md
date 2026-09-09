@@ -218,3 +218,33 @@ Verified: cmake reconfigure with BUILD_TESTING=ON (needs python3, apt-installed
 in the buildstage image), ninja build of the test target RC=0 (compile + link),
 binary runs the SKIP path (rc 77) without a GPU. GPU execution (ctest) is part
 of the supervised runtime gate together with the host-RAM A/B + battery.
+
+## GPU suite run (2026-09-10, commit 2d7128ca) — **OK: kv_ram_cache**
+
+Ran `ninfer_qwen3_6_kv_ram_cache_test` on the 5090 (buildstage container
+`ed65cb9d878e`, quiet window, lane untouched). All five sub-tests green.
+The WIP suite encoded five WIP-side mechanisms that the baseline does — fixed
+in the test, not the engine:
+
+- **irregular runs**: baseline `materialize(count)` takes a single free run of
+  >= count when one exists (`find_if(run.count >= count)`), so the WIP's
+  3-page request came back as the whole `[5,8)` run, never touching the released
+  page. Request 4 (no run >= 4) to force the stitch fallback -> genuine
+  two-run set `{2,5,6,7}`; dst/verify counts follow (4 pages, frontier 4).
+- **restore targets**: baseline `unpack_device` rejects stream-only targets
+  (`text_cache` + non-empty `text_pages` required — it always copies the host
+  image into device pages). Index-match and eviction tests now restore into the
+  source pool's own live leases (self-restore; geometry identical).
+- **multi-claim balance**: WIP test claimed twice then released twice after one
+  consume; baseline `consume` already decrements a claim, so the second release
+  threw "RAM cache entry is not claimed". One release per net claim.
+- **eviction pressure**: records are 1024B each for this spec, so the WIP's
+  96KiB budget never applied pressure. Calibrated to 2560B (fits two, third
+  evicts the coldest unpinned rank-0 record); expectations updated (two
+  resident, one eviction).
+- **spec**: `attention_head_dim` 64 -> 256 (real qwen3.8-27b head dim; the WIP
+  value made the host image trivially small).
+
+No engine code changed by the fixes. Remaining gate unchanged: host-RAM hit
+path A/B + battery in a supervised lane window (shipwatch), per the plan's Gate
+section.
