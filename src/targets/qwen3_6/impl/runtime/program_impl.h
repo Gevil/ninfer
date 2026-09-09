@@ -735,6 +735,7 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
       proposal_head(plan.proposal_head), vision_enabled(plan.features.vision),
       use_cuda_graph(plan.use_cuda_graph), causal_scoring(plan.causal_scoring),
       kv_payload_bytes(plan.persistent.kv_payload_bytes),
+      kv_ram_capacity_bytes(plan.kv_ram_capacity_bytes),
       graph_allowance_bytes(plan.graph_allowance_bytes), workspace_plan(plan.workspace),
       persistent(plan.persistent.bytes), workspace_storage(plan.workspace.capacity),
       work(DeviceSpan{workspace_storage.base(), plan.workspace.general_capacity}),
@@ -910,6 +911,10 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
         if (extent_capacity != 0) {
             host_kv_extents = std::make_unique<HostKVExtentStore>(
                 *host_kv_arena, static_cast<std::uint32_t>(extent_capacity));
+        }
+
+        if (kv_ram_capacity_bytes != 0) {
+            kv_ram_cache_.emplace(kv_ram_capacity_bytes, *host_kv_arena);
         }
     }
 
@@ -4443,6 +4448,7 @@ ProgramImplCore::reserve_materialization(AdmissionCandidate&& plan, PreparedProm
             vision.control = std::move(control);
             vision.control_plan.reset();
         }
+    const bool host_input_consumed_pending = prompt.has_media() && !!request_plan.vision;
         if (prompt.has_media() && !request_plan.vision) { prompt.release_all_media_payloads(); }
 
         materialization_ledger_.assign(prompt.token_ids.begin(), prompt.token_ids.end());
@@ -4470,6 +4476,8 @@ ProgramImplCore::reserve_materialization(AdmissionCandidate&& plan, PreparedProm
             .prepare_mtp        = request_plan.prepare_mtp,
             .reuse              = request_plan.reuse,
             .mtp_bridge         = request_plan.mtp_bridge,
+            .reuse_source           = request_plan.reuse_source,
+            .host_input_consumed_pending = host_input_consumed_pending,
         };
         request.prefill.emplace(std::move(prefill));
         if (request.prefill->vision_plan) {
@@ -11433,9 +11441,10 @@ ProgramImplCore::advance_prefill(SequenceState& sequence, RequestControl& reques
     if (staged.pending_capture_offer != 0) {
         throw std::logic_error("prefill cannot advance while a capture offer is pending");
     }
-    const runtime::BeginSummary summary{.prompt_tokens        = staged.prompt_tokens,
-                                        .reused_prompt_tokens = staged.base,
-                                        .prefix_reuse_path    = staged.reuse};
+    const runtime::BeginSummary summary{.prompt_tokens         = staged.prompt_tokens,
+                                       .reused_prompt_tokens   = staged.base,
+                                       .prefix_reuse_path      = staged.reuse,
+                                       .prefix_reuse_source    = staged.reuse_source};
     std::uint32_t processed_prompt_tokens = 0;
     const auto started                    = Clock::now();
     try {
@@ -12354,6 +12363,12 @@ MemorySummary ProgramImplCore::memory_summary() const noexcept {
         out.host_kv_capacity_bytes = host_kv_arena->capacity_bytes();
         out.host_kv_occupied_bytes = host_kv_arena->occupied_bytes();
     }
+    if (kv_ram_cache_) {
+        const detail::KvRamSnapshot ram = kv_ram_cache_->snapshot();
+        out.kv_ram_capacity_bytes      = ram.capacity_bytes;
+        out.kv_ram_entry_count         = ram.entry_count;
+        out.kv_ram_used_bytes          = ram.used_bytes;
+    }
     return out;
 }
 
@@ -12377,4 +12392,178 @@ void ProgramImplCore::reset_memory_peaks() noexcept {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// V2-T8 finished-chat host-RAM KV tier (gpillon de386ad6 cluster, re-targeted onto the split
+// executor). A settled lane is captured wholesale -- ledger, identity, paged KV image,
+// continuation state image -- into the shared host KV arena, and a later prompt whose hash
+// chain matches the record is restored from it instead of re-prefilling.
+// ---------------------------------------------------------------------------
+
+bool ProgramImplCore::capture_retained_lane(std::uint32_t lane) {
+    if (!kv_ram_cache_) { return false; }
+    if (lane >= requests.size()) { throw std::logic_error("retained lane is out of range"); }
+    const SequenceState& sequence = active_sequence(lane);
+    if (!sequence.kv || sequence.ledger.empty() || sequence.execution_frontier == 0 ||
+        sequence.execution_frontier > sequence.ledger.size()) {
+        return false;
+    }
+    if (!sequence.state.read.valid() ||
+        state_store->residency(sequence.state.read) == StateReplicaResidency::HostOnly) {
+        return false;
+    }
+
+    const std::uint32_t text_page_count = text_kv_addresses->mapped_pages(sequence.kv->text);
+    std::vector<DeviceKVPageHandle> text_pages;
+    text_pages.reserve(text_page_count);
+    for (std::uint32_t page = 0; page < text_page_count; ++page) {
+        text_pages.push_back(text_kv_addresses->physical_page(sequence.kv->text, page));
+    }
+    if (text_pages.empty()) { return false; }
+    std::vector<DeviceKVPageHandle> backend_pages;
+    if (sequence.kv->backend) {
+        const std::uint32_t backend_page_count =
+            backend_kv_addresses->mapped_pages(*sequence.kv->backend);
+        backend_pages.reserve(backend_page_count);
+        for (std::uint32_t page = 0; page < backend_page_count; ++page) {
+            backend_pages.push_back(
+                backend_kv_addresses->physical_page(*sequence.kv->backend, page));
+        }
+    }
+
+    const auto ledger_span = std::span<const TokenId>(sequence.ledger.data(), sequence.ledger.size());
+    RamCaptureSource source;
+    source.execution_frontier        = sequence.execution_frontier;
+    source.ledger_frontier           = sequence.ledger_frontier;
+    source.rope_delta                = sequence.rope_delta;
+    source.text_kv_valid             = sequence.text_kv_valid;
+    source.mtp_kv_valid              = sequence.mtp_kv_valid;
+    source.dflash_context_frontier   = sequence.dflash_context_frontier;
+    source.tail_hidden_valid         = sequence.tail_hidden_valid;
+    source.tail_hidden               = sequence.tail_hidden_valid ? &sequence.tail_hidden : nullptr;
+    source.rewrite_valid             = sequence.rewrite_checkpoint.valid;
+    source.rewrite_kind              = sequence.rewrite_checkpoint.kind;
+    source.rewrite_frontier          = sequence.rewrite_checkpoint.frontier;
+    source.rewrite_checkpoint_hidden =
+        sequence.rewrite_checkpoint.valid ? &sequence.rewrite_checkpoint_hidden : nullptr;
+    source.ledger  = ledger_span;
+    source.identity = &sequence.prefix_identity;
+    source.hash_f   = prefix_hash_at(ledger_span, sequence.prefix_identity, sequence.execution_frontier);
+    source.hash_c   = source.rewrite_valid
+                          ? prefix_hash_at(ledger_span, sequence.prefix_identity, source.rewrite_frontier)
+                          : PrefixHash128{};
+    source.hash_c_valid = source.rewrite_valid;
+    source.text_pages    = std::span(text_pages.data(), text_pages.size());
+    source.backend_pages = std::span(backend_pages.data(), backend_pages.size());
+    source.text_cache    = &decoder->text_kv;
+    source.backend_cache = backend_kv_cache();
+    source.state_image   = state_images.get();
+    source.state_slot    = state_store->physical_slot(sequence.state.read);
+    source.state_checkpoint_slot =
+        sequence.rewrite_state ? state_store->physical_slot(*sequence.rewrite_state) : -1;
+    source.stream       = device.stream;
+    source.capture_kind = RamCaptureKind::Terminal;
+    return kv_ram_cache_->capture(source, RamCapturePolicy::AllowEviction);
+}
+
+void ProgramImplCore::restore_ram_entry(std::uint32_t lane, std::uint64_t entry_id,
+                                        const AdmissionCandidate& candidate) {
+    if (!kv_ram_cache_) { throw std::logic_error("RAM tier is disabled"); }
+    if (lane >= requests.size()) { throw std::logic_error("restored lane is out of range"); }
+    if (!candidate.impl_ || candidate.impl_->reuse_source != PrefixReuseSource::HostRam ||
+        candidate.impl_->ram_entry_id != entry_id) {
+        throw std::logic_error("restored candidate is not a RAM entry");
+    }
+    const std::uint32_t reuse_base = candidate.impl_->reuse_base;
+    SequenceState& sequence = active_sequence(lane);
+    if (sequence.kv) {
+        throw std::logic_error("restored lane already owns a KV bundle");
+    }
+    const RamRestoredHost host = kv_ram_cache_->load_host(entry_id);
+
+    // Materialize the lane's KV bundles to the reuse frontier, then restore the page contents
+    // from the record's host image (stream-async). The bundles must be engine-owned rows:
+    // creation here uses the candidate entitlement and the lane's own execution row.
+    std::uint32_t text_entitlement = std::max<std::uint32_t>(
+        1U, kv_pages_for_frontier(reuse_base));
+    sequence.kv.emplace();
+    sequence.kv->text = *text_kv_addresses->create_active(text_entitlement, static_cast<std::int32_t>(lane));
+    text_kv_addresses->ensure_mapped_to_tokens(sequence.kv->text, reuse_base, device.stream);
+    const std::uint32_t restore_text_pages = text_kv_addresses->mapped_pages(sequence.kv->text);
+    std::vector<DeviceKVPageHandle> text_dest;
+    text_dest.reserve(restore_text_pages);
+    for (std::uint32_t page = 0; page < restore_text_pages; ++page) {
+        text_dest.push_back(text_kv_addresses->physical_page(sequence.kv->text, page));
+    }
+    std::vector<DeviceKVPageHandle> backend_dest;
+    if (host.backend_image_present && backend_kv_cache()) {
+        sequence.kv->backend =
+            *backend_kv_addresses->create_active(text_entitlement, static_cast<std::int32_t>(lane));
+        backend_kv_addresses->ensure_mapped_to_tokens(*sequence.kv->backend, reuse_base,
+                                                       device.stream);
+        const std::uint32_t restore_backend_pages =
+            backend_kv_addresses->mapped_pages(*sequence.kv->backend);
+        backend_dest.reserve(restore_backend_pages);
+        for (std::uint32_t page = 0; page < restore_backend_pages; ++page) {
+            backend_dest.push_back(
+                backend_kv_addresses->physical_page(*sequence.kv->backend, page));
+        }
+    }
+
+    auto destination_state = state_store->reserve_destination();
+    if (!destination_state) { throw std::logic_error("no state image remains for RAM restore"); }
+
+    RamRestoreTarget target;
+    target.text_pages        = std::span(text_dest.data(), text_dest.size());
+    target.backend_pages     = std::span(backend_dest.data(), backend_dest.size());
+    target.text_cache        = &decoder->text_kv;
+    target.backend_cache    = const_cast<qwen3_6::PagedKVCache*>(backend_kv_cache());
+    target.tail_hidden       = sequence.tail_hidden_valid ? &sequence.tail_hidden : nullptr;
+    target.rewrite_checkpoint_hidden =
+        host.rewrite_valid ? &sequence.rewrite_checkpoint_hidden : nullptr;
+    target.state_image    = state_images.get();
+    target.state_slot     = state_store->physical_slot(*destination_state);
+    target.stream         = device.stream;
+
+    kv_ram_cache_->claim(entry_id);
+    kv_ram_cache_->unpack_device(entry_id, target);
+
+    sequence.state              = ActiveStateBinding{.read       = *destination_state,
+                                                      .write      = *destination_state};
+    sequence.ledger             = host.ledger;
+    sequence.prefix_identity    = host.identity;
+    sequence.execution_frontier = host.execution_frontier;
+    sequence.ledger_frontier    = host.ledger_frontier;
+    sequence.rope_delta         = host.rope_delta;
+    sequence.text_kv_valid      = host.text_kv_valid;
+    sequence.mtp_kv_valid       = host.mtp_kv_valid;
+    sequence.dflash_context_frontier = host.dflash_context_frontier;
+    sequence.tail_hidden_valid  = host.tail_hidden_valid;
+    sequence.endpoint_valid     = true;
+}
+
+void ProgramImplCore::claim_ram_entry(std::uint64_t entry_id) {
+    if (!kv_ram_cache_) { return; }
+    kv_ram_cache_->claim(entry_id);
+}
+
+void ProgramImplCore::release_ram_entry(std::uint64_t entry_id) {
+    if (!kv_ram_cache_) { return; }
+    kv_ram_cache_->release(entry_id);
+}
+
+void ProgramImplCore::consume_ram_entry(std::uint64_t entry_id) {
+    if (!kv_ram_cache_) { return; }
+    kv_ram_cache_->consume(entry_id);
+}
+
+qwen3_6::detail::KvRamSnapshot ProgramImplCore::kv_ram_snapshot() const noexcept {
+    if (!kv_ram_cache_) { return {}; }
+    return kv_ram_cache_->snapshot();
+}
+
+std::uint64_t ProgramImplCore::kv_ram_index_version() const noexcept {
+    if (!kv_ram_cache_) { return 0; }
+    return kv_ram_cache_->index_version();
+}
 } // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS

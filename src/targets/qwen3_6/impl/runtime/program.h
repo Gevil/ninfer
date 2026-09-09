@@ -15,6 +15,7 @@
 #include "targets/qwen3_6/impl/runtime/host_kv_extent_store.h"
 #include "targets/qwen3_6/impl/runtime/logical_kv_store.h"
 #include "targets/qwen3_6/impl/runtime/state_image_store.h"
+#include "targets/qwen3_6/impl/runtime/kv_ram_cache.h"
 #include "targets/qwen3_6/impl/runtime/prefix_identity.h"
 #include "targets/qwen3_6/impl/runtime/resource_projection.h"
 #include "targets/qwen3_6/impl/runtime/text_context.h"
@@ -257,6 +258,8 @@ struct AdmissionCandidateImpl<NINFER_QWEN36_VARIANT> : ResourceCandidateState {
     std::uint32_t root_rebuild_tail_begin = 0;
     bool text_retained_tail_release       = false;
     bool backend_retained_tail_release    = false;
+    PrefixReuseSource reuse_source        = PrefixReuseSource::None;
+    std::uint64_t ram_entry_id           = 0;
 };
 
 template <>
@@ -482,6 +485,8 @@ struct RequestControl {
         bool prepare_mtp                    = false;
         ReusePath reuse                     = ReusePath::Root;
         MtpBridgeMode mtp_bridge            = MtpBridgeMode::None;
+        PrefixReuseSource reuse_source          = PrefixReuseSource::None;
+        bool host_input_consumed_pending        = false;
     };
 
     std::optional<Prefill> prefill;
@@ -528,6 +533,22 @@ public:
         const PreparedPromptData& prompt, const RequestBasePlan& base, runtime::LaneId destination,
         const ContinuationHandle* source, const SharedPrefixHandle* shared_source,
         std::optional<runtime::CheckpointRef> checkpoint, bool must_retain_private_source);
+
+    // V2-T8 finished-chat host-RAM KV tier (gpillon de386ad6 cluster, re-targeted onto the
+    // split executor). `plan_ram_reuse` is the catalog-free RAM-replica inspection: it looks the
+    // prompt up in the RAM index and answers with a host-RAM candidate; the engine claims the
+    // entry, restores it into the admitted lane, then consumes it.
+    [[nodiscard]] std::optional<AdmissionCandidate> plan_ram_reuse(const PreparedPromptData& prompt,
+                                                                   const RequestBasePlan& base,
+                                                                   runtime::LaneId destination);
+    [[nodiscard]] bool capture_retained_lane(std::uint32_t lane);
+    void restore_ram_entry(std::uint32_t lane, std::uint64_t entry_id,
+                           const AdmissionCandidate& candidate);
+    void claim_ram_entry(std::uint64_t entry_id);
+    void release_ram_entry(std::uint64_t entry_id);
+    void consume_ram_entry(std::uint64_t entry_id);
+    [[nodiscard]] qwen3_6::detail::KvRamSnapshot kv_ram_snapshot() const noexcept;
+    [[nodiscard]] std::uint64_t kv_ram_index_version() const noexcept;
     [[nodiscard]] std::optional<AdmissionCandidate> seal_materialization(
         const AdmissionCandidate& admission, const PreparedPromptData& prompt,
         std::span<const ContinuationHandle* const> pressure_owners,
@@ -635,6 +656,7 @@ public:
     const bool use_cuda_graph;
     const bool causal_scoring;
     const std::size_t kv_payload_bytes;
+    const std::size_t kv_ram_capacity_bytes;
     const std::size_t graph_allowance_bytes;
     const WorkspacePlan workspace_plan;
 
@@ -643,6 +665,7 @@ public:
     WorkspaceArena work;
     std::unique_ptr<qwen3_6::DecoderState> decoder;
     std::unique_ptr<HostKVArena> host_kv_arena;
+    std::optional<qwen3_6::detail::KVRamCache> kv_ram_cache_;
     std::unique_ptr<LogicalKVPageStore> text_kv_pages;
     std::unique_ptr<KVAddressSpaceStore> text_kv_addresses;
     std::unique_ptr<LogicalKVPageStore> backend_kv_pages;

@@ -167,6 +167,7 @@ struct EngineOptions {
     int device                         = 0;
     std::uint32_t max_context          = 2048; // Logical ceiling of one request or score window.
     KvCapacityPolicy kv_capacity       = KvCapacityPolicy::explicit_capacity(2048);
+    std::size_t kv_ram_capacity_bytes  = 0;
     std::uint32_t max_concurrency      = 1;
     std::uint32_t max_pending_requests = 16;
     std::uint32_t pending_timeout_ms   = 30000;
@@ -716,6 +717,15 @@ enum class PrefixReusePath : std::uint8_t {
     RestoreResponseCheckpoint,
 };
 
+// Where a reused prompt prefix physically came from (V2-T8). `VramResident` covers the
+// baseline's in-device checkpoints and shared prefixes; `HostRam` is the finished-chat
+// system-RAM KV replica tier.
+enum class PrefixReuseSource : std::uint8_t {
+    None,
+    VramResident,
+    HostRam,
+};
+
 // Why bounded pressure planning stopped for the materialization decision committed to one request.
 enum class MaterializationStopReason : std::uint8_t {
     NoPressure,
@@ -775,6 +785,7 @@ struct GenerationResult {
     std::optional<std::string> matched_stop_string;
     std::uint32_t reused_prompt_tokens = 0;
     PrefixReusePath prefix_reuse_path  = PrefixReusePath::Root;
+    PrefixReuseSource prefix_reuse_source = PrefixReuseSource::None;
     MaterializationDiagnostics materialization;
     GenerationTimings timings;
     GenerationEngineTiming engine_timing;
@@ -823,6 +834,11 @@ struct MemorySummary {
     std::size_t workspace_logical_peak_bytes      = 0;
     std::size_t cuda_graph_allowance_bytes        = 0;
     std::size_t kv_payload_bytes                  = 0;
+    std::size_t kv_ram_capacity_bytes             = 0;
+    // Live host-RAM residents only (claimed included). Not pinned-arena occupancy;
+    // a retired copy may still occupy the pin until its D2H/H2D event is reaped.
+    std::size_t kv_ram_used_bytes                 = 0;
+    std::size_t kv_ram_entry_count                = 0;
     std::uint32_t host_state_capacity_slots       = 0;
     std::uint32_t host_state_occupied_slots       = 0;
     std::size_t host_kv_capacity_bytes            = 0;
@@ -875,6 +891,10 @@ struct RuntimeStats {
     std::uint32_t materializing_requests    = 0;
     std::uint32_t capture_pending_requests  = 0;
     std::uint32_t terminal_pending_requests = 0;
+    std::uint64_t kv_ram_captures                 = 0;
+    std::uint64_t kv_ram_restores                 = 0;
+    std::uint64_t kv_ram_evictions                = 0;
+    std::uint64_t kv_ram_drops                    = 0;
     std::uint64_t active_captures_completed = 0;
     std::uint64_t active_captures_aborted   = 0;
 

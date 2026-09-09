@@ -524,6 +524,13 @@ private:
         RuntimeStats snapshot = cumulative_stats_;
         resources_.populate_runtime_stats(*instance_.program, snapshot);
         {
+            const auto ram = instance_.program->kv_ram_snapshot();
+            snapshot.kv_ram_captures  = ram.captures;
+            snapshot.kv_ram_restores  = ram.restores;
+            snapshot.kv_ram_evictions = ram.evictions;
+            snapshot.kv_ram_drops     = ram.drops;
+        }
+        {
             std::lock_guard lock(queue_mutex_);
             snapshot.waiting_requests = static_cast<std::uint32_t>(pending_.size());
         }

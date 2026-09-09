@@ -2,6 +2,7 @@
 
 #include "ninfer/types.h"
 #include "runtime/contract/types.h"
+#include "targets/qwen3_6/impl/runtime/kv_ram_snapshot.h"
 #include <ninfer/targets/qwen3_6/prepared_prompt.h>
 
 #include <cstddef>
@@ -848,6 +849,20 @@ public:
                       const SharedPrefixHandle<Variant>* shared_source,
                       std::optional<runtime::CheckpointRef> checkpoint,
                       bool must_retain_private_source);
+    // V2-T8 finished-chat host-RAM KV tier. Catalog-free inspection of the RAM index: the
+    // prompt's hash chain is matched against captured whole-lane records and, on a hit, a
+    // host-RAM candidate is returned (the engine then claims/restores/consumes the entry).
+    [[nodiscard]] std::optional<AdmissionCandidate<Variant>>
+    plan_ram_reuse(const PreparedPrompt& prompt, const RequestBasePlan<Variant>& base,
+                   runtime::LaneId destination);
+    [[nodiscard]] bool capture_retained_lane(std::uint32_t lane);
+    void restore_ram_entry(std::uint32_t lane, std::uint64_t entry_id,
+                           const AdmissionCandidate<Variant>& candidate);
+    void claim_ram_entry(std::uint64_t entry_id);
+    void release_ram_entry(std::uint64_t entry_id);
+    void consume_ram_entry(std::uint64_t entry_id);
+    [[nodiscard]] qwen3_6::detail::KvRamSnapshot kv_ram_snapshot() const noexcept;
+    [[nodiscard]] std::uint64_t kv_ram_index_version() const noexcept;
     [[nodiscard]] std::optional<ResourcePlan<Variant>>
     seal_identity(const AdmissionCandidate<Variant>& candidate, const PreparedPrompt& prompt,
                   runtime::FinalScheduleIntent intent);

@@ -1307,4 +1307,87 @@ ProgramImplCore::shared_capture_split_prefill_work(const AdmissionCandidate& can
     return projected.impl_->remaining_prefill_work;
 }
 
+
+std::optional<AdmissionCandidate>
+ProgramImplCore::plan_ram_reuse(const PreparedPromptData& prompt, const RequestBasePlan& base_plan,
+                                runtime::LaneId destination) {
+    if (base_plan.impl_ == nullptr) { throw std::logic_error("request base plan is empty"); }
+    const RequestBasePlanImpl& base = *base_plan.impl_;
+    if (!kv_ram_cache_ || !base.allow_prefix_reuse || !prompt.identity.reusable) {
+        return std::nullopt;
+    }
+
+    const std::vector<PrefixHash128> chain = prefix_hash_chain(prompt);
+    const std::optional<RamMatch> match = kv_ram_cache_->plan_match(prompt, chain);
+    if (!match || match->reuse_base == 0) { return std::nullopt; }
+
+    // The host record carries the captured lane's ledger/identity; the chain match above proves
+    // the prompt extends the same lineage, so the record's frontiers are reusable candidates
+    // exactly like a published private endpoint or catalog checkpoint.
+    const RamRestoredHost host = kv_ram_cache_->load_host(match->entry_id);
+
+    ReusePath reuse = ReusePath::FullReset;
+    std::uint32_t reuse_base = 0;
+    const bool dflash_append_ready =
+        !is_masked_draft_backend(speculative_backend) ||
+        host.dflash_context_frontier >= host.execution_frontier;
+    if (host.execution_frontier != 0 && dflash_append_ready &&
+        qwen3_6::detail::prefix_matches(prompt, host.ledger, host.identity,
+                                       host.execution_frontier)) {
+        reuse       = ReusePath::PrivateEndpoint;
+        reuse_base  = host.execution_frontier;
+    } else if (host.rewrite_valid && host.rewrite_frontier != 0 &&
+               host.rewrite_frontier < host.ledger.size() &&
+               qwen3_6::detail::prefix_matches(prompt, host.ledger, host.identity,
+                                               host.rewrite_frontier)) {
+        reuse      = restore_path(host.rewrite_kind);
+        reuse_base = host.rewrite_frontier;
+    }
+    if (reuse_base == 0) { return std::nullopt; }
+
+    // Readiness mirrors the catalog admission checks for the same reuse classes: a private
+    // endpoint needs its tail hidden plus the MTP draft KV, a rewrite/anchor restore needs the
+    // MTP draft KV (or none, when the backend is ordinary decode), and masked-draft restore
+    // needs the captured DFlash context image.
+    if (speculative_backend == SpeculativeBackend::Mtp) {
+        const bool append_ready =
+            reuse == ReusePath::PrivateEndpoint && host.tail_hidden_valid &&
+            decoder->mtp_cache() != nullptr &&
+            (reuse_base == 0 || host.mtp_kv_valid >= reuse_base - 1);
+        const bool checkpoint_ready =
+            (is_rewrite_checkpoint_restore(reuse) || reuse == ReusePath::PrivateLongAnchor ||
+             reuse == ReusePath::SharedStablePrefix) &&
+            decoder->mtp_cache() != nullptr && reuse_base != 0 &&
+            host.mtp_kv_valid >= reuse_base - 1;
+        if (reuse != ReusePath::Root && !append_ready && !checkpoint_ready) {
+            return std::nullopt;
+        }
+    }
+    if ((is_rewrite_checkpoint_restore(reuse) || reuse == ReusePath::PrivateLongAnchor ||
+         reuse == ReusePath::SharedStablePrefix) &&
+        is_masked_draft_backend(speculative_backend) &&
+        (!dflash || !host.backend_image_present || host.dflash_context_frontier < reuse_base)) {
+        return std::nullopt;
+    }
+
+    auto impl = std::make_unique<AdmissionCandidateImpl>();
+    impl->destination    = destination;
+    impl->reuse          = reuse;
+    impl->reuse_base     = reuse_base;
+    impl->reuse_source   = PrefixReuseSource::HostRam;
+    impl->ram_entry_id   = match->entry_id;
+    impl->summary.reusable_prompt_tokens = reuse_base;
+    impl->summary.prefix_reuse_path    = reuse;
+    impl->summary.reuse_source         = PrefixReuseSource::HostRam;
+    impl->summary.ram_entry_id         = match->entry_id;
+    if (speculative_backend == SpeculativeBackend::Mtp) {
+        impl->prepare_mtp = reuse != ReusePath::Root;
+        if (impl->prepare_mtp) {
+            impl->mtp_bridge = reuse_base < base.summary.prompt_tokens
+                                   ? MtpBridgeMode::BeforeSuffix
+                                   : MtpBridgeMode::AfterExactHit;
+        }
+    }
+    return AdmissionCandidate(std::move(impl));
+}
 } // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS

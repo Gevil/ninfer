@@ -67,7 +67,7 @@ KvCapacityPolicy parse_kv_capacity(const char* text) {
 std::string serve_usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
            " <model.ninfer> [--host H] [--port N] [--api-key KEY] "
-           "[--model-id ID] [--max-context N] [--kv-capacity N|auto] [--max-concurrency N] "
+           "[--model-id ID] [--max-context N] [--kv-capacity N|auto] [--kv-ram-capacity-mib N] "
            "[--max-pending-requests N] [--pending-timeout-ms N] "
            "[--prefill-chunk N] [--log-stats-interval-ms N] [--device N] "
            "[--context-cost-presets FILE] "
@@ -160,6 +160,13 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--kv-capacity") {
             options.kv_capacity  = parse_kv_capacity(require_value("--kv-capacity"));
             kv_capacity_explicit = true;
+        } else if (arg == "--kv-ram-capacity-mib") {
+            const std::uint64_t mib =
+                parse_u64(require_value("--kv-ram-capacity-mib"), "kv-ram-capacity-mib");
+            if (mib > std::numeric_limits<std::uint64_t>::max() / (1ULL << 20)) {
+                throw std::invalid_argument("--kv-ram-capacity-mib is out of range");
+            }
+            options.kv_ram_capacity_mib = mib;
         } else if (arg == "--max-concurrency") {
             options.max_concurrency = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--max-concurrency"), "max-concurrency"));

@@ -452,6 +452,8 @@ struct RequestPlanSummary {
     PrefixReusePath prefix_reuse_path     = PrefixReusePath::Root;
     std::uint64_t service_work_quanta     = 0;
     bool publish_continuation             = true;
+    std::uint64_t ram_entry_id        = 0;
+    PrefixReuseSource reuse_source    = PrefixReuseSource::None;
 };
 
 enum class MaterializationPhysicalStatus : std::uint8_t {
@@ -579,6 +581,7 @@ struct BeginSummary {
     std::uint32_t prompt_tokens        = 0;
     std::uint32_t reused_prompt_tokens = 0;
     PrefixReusePath prefix_reuse_path  = PrefixReusePath::Root;
+    PrefixReuseSource prefix_reuse_source = PrefixReuseSource::None;
 
     [[nodiscard]] friend constexpr bool operator==(BeginSummary, BeginSummary) noexcept = default;
 };

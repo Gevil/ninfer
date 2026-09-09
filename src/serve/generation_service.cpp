@@ -237,6 +237,7 @@ GenerationService::GenerationService(ServeOptions options, StartupObserver start
     engine_options.device                   = options_.device;
     engine_options.max_context              = options_.max_context;
     engine_options.kv_capacity              = options_.kv_capacity;
+    engine_options.kv_ram_capacity_bytes = options_.kv_ram_capacity_mib << 20;
     engine_options.max_concurrency          = options_.max_concurrency;
     engine_options.max_pending_requests     = options_.max_pending_requests;
     engine_options.pending_timeout_ms       = options_.pending_timeout_ms;
