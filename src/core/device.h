@@ -22,6 +22,10 @@ struct DeviceContext {
     int device                   = 0;
     cudaStream_t stream          = nullptr;
     cudaStream_t transfer_stream = nullptr;
+    // Host-side wait for stream completion. Created with cudaEventBlockingSync so
+    // synchronize() sleeps instead of busy-waiting a host core while GPU work runs
+    // (the 100% CPU seen during decode under the default Auto/Spin schedule).
+    cudaEvent_t host_wait        = nullptr;
     cudaDeviceProp props{};
 
     explicit DeviceContext(int device_id = 0);
