@@ -211,9 +211,10 @@ separable from gpillon's DFLASH2 engine by construction.
   `src/targets/qwen3_6/impl/frontend/tool_call_parser.cpp` — its test file 3-way-merges;
   `093c1fdd`: drop the `concurrent_executor.h` hunk, keep the 2 merging files).
 - **V2-T8 — HAND-PORT cluster:** picks 1–11 + 13 (the RAM-KV tier + tagged lanes), including the
-  T34 guard (pick 6). Design decision to be recorded before picking: port `kv_ram_cache.{h,cpp}`
-  onto `scheduler.h`/`resource_manager.h` and choose **integrate-with vs replace** the existing
-  host-KV extent store. Effort: weeks.
+  T34 guard (pick 6). **Design decision recorded 2026-09-09 (§6.5): integrate, not replace** — re-target
+  the 12 picks onto the split executor (`scheduler.h`/`resource_manager.h`/`EngineCore`), plug the
+  two-tier eviction into `ResourceManager` pressure planning, and share the `--host-kv-mib` pool with the
+  `HostKVExtentStore` demotion mirror. Effort: weeks.
 - **V2-T9 — MTP-conditional:** picks 18–20 (adaptive MTP widths trio) — only if the lane returns
   to `--spec mtp`; today it runs upstream dflash2.
 
@@ -231,6 +232,52 @@ gpillon's `src/serve/webui_update.cpp` is Windows-first; their own
 `/tmp/gpillon-wt-linux.patch` (+33/−1) cover it. None of the 20 picks above touches that file, but
 any broader gpillon adoption must carry the fix.
 
+### 6.5 V2-T8 hand-port design note (recorded 2026-09-09)
+
+Grounded by a read-only map of `v2/t3-path-remap` @ `458376c4` + `gpillon/gpillon/coding` @ `a00648cb`.
+**Conclusion: integrate, not replace.** The baseline has no `ram_kv`, but already owns both halves the
+hand-port touches; the work is re-targeting 12 picks onto a split executor, not building new substrate.
+
+**F1 — the baseline already owns both host-RAM roles.**
+- *Logical* eviction substrate (present): `Scheduler<Request>` (`scheduler.h`, admission/round; driven
+  from `engine_core.h:1925` `worker_loop` → `build_round_membership`), `ResourceManager<Package>`
+  (`resource_manager.h`, cache policy + pressure planning), `admission_policy.h` (backfill/protection).
+  Four `RetentionClass` (`contract/types.h:360`: `SharedStable`/`LiveSession`/`RecentPrivate`/`Disposable`)
+  with private-retention weights **`SharedStable`=0 / `LiveSession`=16 / `RecentPrivate`=4 / `Disposable`=1**
+  (`resource_manager.h:1419-1430`), plus hit-history (`RetentionObservation`), publication-order, and
+  degrade-or-evict pressure counters (`pressure_*_owners_{degraded,evicted}`, `include/ninfer/types.h:910-912`).
+- *Spatial* host-KV demotion mirror (present): `HostKVArena` (`src/core/host_kv_arena.h`, fixed pinned pool,
+  `--host-kv-mib` → `host_kv_capacity_bytes`, default 8 GiB `include/ninfer/types.h:28`, lane 16 GiB; pure
+  allocator, no eviction) + `HostKVExtentStore` (`host_kv_extent_store.h`, logical-pages↔host-extents, D2H
+  publish / H2D restore; header: "no checkpoint, retention, or scheduling policy"). A per-owner device↔host
+  safety net, not a cache.
+- `concurrent_executor.h` is **gone**: 0 matches in the baseline tree; scheduling half → `Scheduler`,
+  cache-policy half → `ResourceManager`, protection half → `admission_policy.h`, worker thread/loop →
+  `EngineCore` (`engine_core.h:1925`/`:2055`).
+
+**F2 — gpillon's RAM-KV cluster (picks 1–11 + 13) is a third, *temporal* role.**
+`KVRamCache` (over its own `HostPinnedArena`) caches finished/agentic-chat KV by content hash, with a
+distinct two-tier eviction (`evict_unpinned()` FIFO-cold where `live_count==0` vs protected/multi-claim;
+`RamCapturePolicy{AllowEviction,PreserveExisting}`), active-lane prefix sharing
+(`RamCaptureKind{Terminal,ActiveSibling,SharedBoundary,DynamicBoundary}`), and coding-agent prefix
+preservation (`RewriteCheckpoint`/`TurnClosure`, `RequestClass::Agents`, T34 guard = pick 6 `f4b128c6`).
+
+**Decision (integrate):**
+1. *Eviction plugs into, doesn't duplicate.* Map capture kinds → existing `RetentionClass`; drive the
+   two-tier probation/protected eviction through `ResourceManager` pressure planning (hit-history +
+   publication-order → `VictimDisposition{Retained,Evicted}`), not a parallel policy.
+2. *RAM pool is shared, not forked.* `KVRamCache` draws on the same `--host-kv-mib`/`HostKVArena` pool as
+   the `HostKVExtentStore`; the demotion mirror is the higher-priority tenant, `KVRamCache` yields under
+   pressure. A separate pool risks unbounded host-RAM — A/B shared-vs-separate on a multi-lane agentic load.
+3. *Wiring goes to `EngineCore::worker_loop`* (`engine_core.h:1925`) + `ResourceManager` — where the
+   executor's stats/eviction duties already live; the dropped executor is not resurrected.
+4. *The 11-of-20 `concurrent_executor.h` dependency is the bulk of the hand-port:* each pick's executor
+   hunk re-targets to its correct half (scheduling → `Scheduler`/`EngineCore`, cache-policy →
+   `ResourceManager`, RAM-snapshot/stats → `KVRamCache` + `EngineCore`).
+
+**Gate:** TTFT / decode / cache-hit-rate A/B + battery + greedy parity (V2-T8 is decode-affecting via the
+cache-hit path); the shared-vs-separate pool decision settled by a host-RAM-accounting A/B.
+
 ## 7. V2 tier plan (the next tiers, in adoption order)
 
 Order: stability → cheap agentic wins → re-adopt our own still-unique work → external perf →
@@ -246,7 +293,7 @@ the big hand-port. Every tier ships through the supervised pipeline (§10.2).
 | **V2-T5** | md single-commit decode wave: `38f52b34` (argmax winner-init kernel), `61250e89` (#194 nvfp4 SwiGLU fast), `ed150906` (#201 w8 rowsplit cache policy), `1dfeed7e` (draft-head-narrow branch, 9 commits). Excluded with reasons: `0d9841d2` (bpe-flat-merge-table) — **ABSORBED** (upstreamed as `b158afe2`; content-identical diffstat `tokenizer.{cpp,h}` +82/−15); `0deee4d8` (l2-pin linear-attention state) — GDN dead path for 27B (T44 triage); `01591621` (fp8-a8-tma-staging) — is PR #167's own head, already covered by V2-T4's `52fabe3e` | `md/*` branches | acceptance-gated (§10.5: adopt only if acceptance AND decode improve AND battery green) |
 | **V2-T6** | cometkim: `c17ccc30` (`feat/qwen3.8-nvfp4qat`, 11 commits — QUASAR-QAT NVFP4 profile; our `f7727926` already carries the `Qwen38Nvfp4*` family → A/B against ours, adopt only if upstream merges their form or the A/B wins) + `6c3fdbf4` (`feat/kernel-perf`, 14 commits — PDL decode chain; the +77 %/+56 % claims must be re-derived on our base first: 3 force-pushes since the 09-08 audit) | `cometkim/*` | profile A/B on the live artifact; PDL claim re-measured on 5090 before any window |
 | **V2-T7** | gzenz host-KV safety-net re-derivation (old T31/T34) from `62b857c1` (117 ahead, 2026-09-09): show the B2 (entitlement) / B3 (frontier) blockers are fixed in the current line, then re-derive the pick set | `gzenz/fix/checkpoint-host-demotion` | only if host-KV re-enable is approved; ctest + host-KV soak |
-| **V2-T8 (large)** | gpillon RAM-KV agentic cluster hand-port: picks 1–11 + 13 (§6.2). Port `kv_ram_cache.{h,cpp}` onto `scheduler.h`/`resource_manager.h` (the upstream executor refactor that removed `concurrent_executor.h`); choose integrate-with vs replace the host-KV extent store. Includes the T34 guard (pick 6) + `ac60331d` guard test. Feeds from T48 slices `42c9c7d4`/`a39c5c25` where they overlap | `gpillon/gpillon/coding` + `dylan/experimental` | design note first; TTFT/decode/cache-hit-rate A/B + battery 16/16 + greedy parity |
+| **V2-T8 (large)** | gpillon RAM-KV agentic cluster hand-port: picks 1–11 + 13 (§6.2). Port `kv_ram_cache.{h,cpp}` onto the split executor (the upstream refactor that removed `concurrent_executor.h`); **design note recorded 2026-09-09 (§6.5): integrate, not replace** — plug the two-tier eviction into `ResourceManager` pressure planning + share the `--host-kv-mib` pool with the `HostKVExtentStore` demotion mirror. Includes the T34 guard (pick 6) + `ac60331d` guard test. Feeds from T48 slices `42c9c7d4`/`a39c5c25` where they overlap | `gpillon/gpillon/coding` + `dylan/experimental` | design note recorded (§6.5); TTFT/decode/cache-hit-rate A/B + battery 16/16 + greedy parity |
 | **V2-T9 (conditional)** | adaptive MTP widths trio `c2708ec8` → `9d86436c` → `9bef0f73` + MTP items `505d1af7`, `1f155fed` (= our `fa12e8ef`) — **only if the lane returns to `--spec mtp`**; today it runs upstream dflash2 | `gpillon/gpillon/coding`, `md/*` | acceptance + decode A/B under MTP |
 | **Watches** | #208 (stability, tracks V2-T1), #213/#201 (groupwise-W8 for 27B text projections), #197 `ignore_eos`, #183 `--chat-template FILE` (T38), #152/#163/#162 (serve ergonomics; T32 cluster #176–#181/#184), #61 (per-image vision budget), #173 REJECT (sub-floor KV), #107/#97/#72 (T13, 503-bad), #174/#165 (T45, MTP-conditional), #169/#168/#172 (T41 agentic inputs), #185 (idle unload), `dylan/experimental` (agentic slices only), mirko KVaRN REJECT (sub-floor) | — | — |
 
