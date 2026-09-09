@@ -164,3 +164,57 @@ re-scoped as the policy bridge. Not started this session.
   WIP HEAD, untouched).
 - No other TU includes `kv_ram_cache.h` (grep-verified); CMake registration unchanged
   (already added in 8321291c).
+
+## FINAL: full port complete, full build GREEN (commit a5ba1ee5)
+
+The WIP half of the feature (never committed to any branch) is now ported onto
+pure upstream master:
+- `kv_ram_cache.{h,cpp}` re-targeted onto the baseline API: `create_active` /
+  `mapped_pages` (count) / `physical_page(handle, idx)` / indexed page
+  enumeration; capture/restore via `LogicalKVPageStore` + `DeviceKVPagePool`
+  host-copy; state half via the state-image bridge (kRamVersion 4).
+  `KvRamSnapshot` gained the two copy-seconds fields the stats plumbing reads
+  (`save_seconds`, `load_seconds`, harvested via the WIP cpp).
+- `request_plan_impl.h`: `plan_ram_reuse()` — terminal admission-time prefix
+  match against the RAM tier (`reuse_source=HostRam`, `ram_entry_id`), MTP-aware.
+- `program_impl.h`: `capture_retained_lane()` + `restore_ram_entry()` wired into
+  the lane lifecycle; `kv_ram_capacity_bytes` member + constructor init.
+- API/serve plumbing: `kv_ram_snapshot()` + `--kv-ram-mib` (0 = disabled) through
+  `serve_options` -> `SequencePlanningInputs` (layouts.h) -> `SequencePlanImpl`
+  (layouts_impl.h) -> `ProgramImplCore`; stats published via `engine_core.h`
+  (`RuntimeStats` kv_ram_captures/restores/evictions/drops).
+
+Verification (this session, buildstage-merge container, CUDA 13.1, arch 120a):
+- Per-TU g++ -fsyntax-only: kv_ram_cache.cpp, 27b variant.cpp (pulls
+  program_impl.h + engine), serve_options.cpp, generation_service.cpp — all RC=0.
+- Full `cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DNINFER_BUILD_APPS=ON` +
+  `cmake --build build --target ninfer ninfer-serve` — **RC=0, green**
+  (build log /tmp/v2-t8-wt/build.log).
+
+Tier status: V2-T8 = ADOPTED (2 substrate picks + WIP port), code complete and
+build-verified on quasar-master; runtime A/B (host-RAM hit path) still pending
+a lane window per the doc's tier table.
+
+---
+
+## Test suite port (2026-09-09, commit 857f8ca7)
+
+`tests/targets/qwen3_6/test_kv_ram_cache.cpp` (738 lines) registered as
+`ninfer_qwen3_6_kv_ram_cache_test` (LIBRARIES ninfer_engine ninfer_core,
+SKIP_RETURN_CODE 77). Re-targeted unit suite for the ported substrate:
+
+- KV image round trip through HostKVArena (fill pages -> capture -> restore to
+  fresh pool -> byte-verify), incl. non-contiguous physical page runs
+- complete StateImage round trip (linear conv/recurrent, continuation hidden,
+  DFlash local cyclic K/V)
+- honest prefix_hash_chain index: longest match, frontier beats checkpoint,
+  checkpoint fallback for short prompts, exclusive-claim hiding,
+  consume-erase, multi-claim stays matchable + survives consume
+- tiered FIFO eviction: demonstrated lineage -> protected record outlives cold
+  records under capacity pressure
+- dtor safety with in-flight copies + host-arena reuse afterwards
+
+Verified: cmake reconfigure with BUILD_TESTING=ON (needs python3, apt-installed
+in the buildstage image), ninja build of the test target RC=0 (compile + link),
+binary runs the SKIP path (rc 77) without a GPU. GPU execution (ctest) is part
+of the supervised runtime gate together with the host-RAM A/B + battery.
