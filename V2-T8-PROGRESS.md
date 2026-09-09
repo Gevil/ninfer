@@ -124,3 +124,43 @@ mapping in ADOPTION-V2.md section 6.6, branch v2/adoption; proven by /tmp/v2-t8-
 This is the bulk of the 96 errors and is a large rewrite (capture/restore/layout/header +
 field renames + byte casts) — the scope the project previously dropped as weeks-scale and
 re-scoped as the policy bridge. Not started this session.
+
+## Increment: paged-KV bridge APPLIED + verified clean (2026-09-09, this commit)
+
+### Design (settled this session)
+- The record's paged-KV image lives in the lane's **shared `HostKVArena`** (the same pool
+  the extent store demotes into), NOT in the flat capture block: `KVRamCache` takes
+  `HostKVArena&` in its constructor (non-owning; the arena outlives the cache) and each
+  `Record` holds one move-only `HostKVAllocation` per non-empty page span
+  (`text_host_kv`/`backend_host_kv`). `RetiredCopy` takes those over in `consume()` so the
+  image survives until the in-flight copy's `copies_done` event is reaped (the flat block
+  had the same lifetime rule; the arena allocation now has it too).
+- Capture: `arena_->layout_for(text_cache->page_pool().geometry())` ->
+  `allocate(*layout, pages)` -> `writable_view(alloc)` ->
+  `text_cache->page_pool().copy_to_host(text_pages, view, stream)` (stream-async, same
+  demotion-copy path the extent store uses). Restore is the mirror:
+  `copy_from_host(arena_->view(record.text_host_kv), target.text_pages, stream)`.
+- `RamCaptureSource.text_pages/backend_pages` and `RamRestoreTarget.text_pages/backend_pages`
+  are now `std::span<const DeviceKVPageHandle>` (exact physical extents); the caches
+  (`qwen3_6::PagedKVCache`) are the geometry + copy source/destination.
+- `verify_pool` -> `DeviceKVPagePool` with `geometry().device_plane_order`; per-plane
+  fingerprints unchanged (`Tensor` geometry words).
+- The substrate **residual side-store half is gone**: no residual fields in source/target,
+  no residual sections 12..17 (always 0), no `residual_*` header scalars (kRamVersion 3->4,
+  kFixedHeader 372+... -> `348 + 6*16`, i.e. -24 B). Sections 2/3 stay in the format but are
+  always length 0 (image bytes live in the arena, not the block).
+- The **per-type GDN (`LinearAttentionStatePool`) and DFlash (`CyclicKVCache`) legacy state
+  path is removed**: the baseline has no per-type host-image API for either; their state
+  exists only in the unified `StateImage` container, so a record without a state image
+  carries no linear-attention/cyclic state. The standalone hidden tensors
+  (`tail_hidden`/`rewrite_checkpoint_hidden`, plain `cudaMemcpyAsync`) are retained as the
+  only non-state-image state half. `verify_cyclic` deleted with them.
+
+### Verified compile state
+- Per-TU `g++ -std=c++20 -fsyntax-only` (container t33bg2-buildstage, image id 123801dd7584;
+  include roots src/ include/ src/targets/qwen3_6/export/ + /usr/local/cuda/include):
+  **EXIT 0** on `kv_ram_cache.cpp` (1173 lines) — the last substrate references are gone.
+  Remaining: one pre-existing nodiscard warning (`r.u8()` skip in `read_header`, present at
+  WIP HEAD, untouched).
+- No other TU includes `kv_ram_cache.h` (grep-verified); CMake registration unchanged
+  (already added in 8321291c).

@@ -1,8 +1,7 @@
 #pragma once
 
 #include "core/arena.h"
-#include "core/cyclic_kv_cache.h"
-#include "core/linear_attention_state.h"
+#include "core/host_kv_arena.h"
 #include "core/paged_kv_cache.h"
 #include <ninfer/targets/qwen3_6/decoder_state.h>
 #include "targets/qwen3_6/impl/runtime/kv_ram_snapshot.h"
@@ -61,32 +60,20 @@ struct RamCaptureSource {
     PrefixHash128 hash_c{};
     bool hash_c_valid = false;
 
-    const PagedKVAllocation* text      = nullptr;
-    const PagedKVPool* text_pool       = nullptr;
-    // Exact physical image extents. Capturing a reusable prefix must not serialize pages that
-    // were materialized speculatively for the remainder of the prompt.
-    std::uint32_t text_pages           = 0;
-    const PagedKVAllocation* backend   = nullptr;
-    const PagedKVPool* backend_pool    = nullptr;
-    std::uint32_t backend_pages        = 0;
+    // Exact physical image extents: the device pages whose bytes are captured into the host KV
+    // arena image (see KVRamCache::host_kv_arena_). Capturing a reusable prefix must not
+    // serialize pages that were materialized speculatively for the remainder of the prompt.
+    std::span<const DeviceKVPageHandle> text_pages    = {};
+    std::span<const DeviceKVPageHandle> backend_pages = {};
 
-    // The caches themselves, for the exact-key side store the pools do not own, plus the slot row
-    // that store is indexed by. A retained lane is unbound, so the row cannot be read back from
-    // the allocation; it is the owning lane, which is what bind_row uses.
+    // The caches themselves: source of the device page pool (geometry + stream-async host
+    // copy) for the paged image captured above.
     const qwen3_6::PagedKVCache* text_cache    = nullptr;
     const qwen3_6::PagedKVCache* backend_cache = nullptr;
-    std::int32_t residual_row                  = -1;
-
-    const LinearAttentionStatePool* gdn = nullptr;
-    std::int32_t gdn_current_slot       = -1;
-    std::int32_t gdn_checkpoint_slot    = -1;
 
     const Tensor* tail_hidden                = nullptr;
     const Tensor* rewrite_checkpoint_hidden  = nullptr;
 
-    const CyclicKVCache* dflash_local      = nullptr;
-    const CyclicKVCache* dflash_checkpoint = nullptr;
-    std::int32_t dflash_lane               = 0;
     // The baseline's state-image pool: each absolute slot holds the complete continuation state
     // (GDN linear conv+recurrent, continuation hidden, DFlash local cyclic K/V). When set, the
     // state half is captured/restored as complete StateImage payloads (capture block sections
@@ -114,30 +101,18 @@ struct RamCaptureSource {
 };
 
 struct RamRestoreTarget {
-    std::uint32_t text_dst_pages    = 0;
-    std::uint32_t backend_dst_pages = 0;
-    PagedKVAllocation* text         = nullptr;
-    PagedKVPool* text_pool          = nullptr;
-    PagedKVAllocation* backend      = nullptr;
-    PagedKVPool* backend_pool       = nullptr;
+    // The destination device pages the record's host image is restored into (see
+    // RamCaptureSource::text_pages).
+    std::span<const DeviceKVPageHandle> text_pages    = {};
+    std::span<const DeviceKVPageHandle> backend_pages = {};
 
-    // See RamCaptureSource: the destination row of the exact-key side store, which must be
-    // overwritten with the record's own contents so the restored sequence cannot read the keys
-    // left behind by whatever used this row before it.
+    // The caches themselves: destination of the stream-async host->device page copy.
     qwen3_6::PagedKVCache* text_cache    = nullptr;
     qwen3_6::PagedKVCache* backend_cache = nullptr;
-    std::int32_t residual_row            = -1;
-
-    LinearAttentionStatePool* gdn     = nullptr;
-    std::int32_t gdn_current_slot     = -1;
-    std::int32_t gdn_checkpoint_slot  = -1;
 
     Tensor* tail_hidden               = nullptr;
     Tensor* rewrite_checkpoint_hidden = nullptr;
 
-    CyclicKVCache* dflash_local      = nullptr;
-    CyclicKVCache* dflash_checkpoint = nullptr;
-    std::int32_t dflash_lane         = 0;
 
     // State-image restore target: the destination pool + slots the record's state-image
     // sections (4/5) are restored into via StateImageDevicePool::copy_from_host.
@@ -172,7 +147,7 @@ struct RamMatch {
 
 class KVRamCache {
 public:
-    explicit KVRamCache(std::size_t capacity_bytes);
+    KVRamCache(std::size_t capacity_bytes, HostKVArena& host_kv_arena);
     ~KVRamCache();
 
     KVRamCache(const KVRamCache&)            = delete;
@@ -243,6 +218,12 @@ private:
         PrefixReusePath checkpoint_path = PrefixReusePath::RestoreTurnCheckpoint;
         void* block                    = nullptr;
         std::size_t bytes              = 0;
+        // The record's paged-KV image lives in the shared host KV arena, not in the flat block
+        // (sections 2/3 are unused): one arena allocation per non-empty page span, released
+        // with the record -- or moved into the record's RetiredCopy until the in-flight copy
+        // lands.
+        HostKVAllocation text_host_kv;
+        HostKVAllocation backend_host_kv;
         // Outstanding claims. An ordinary record admits exactly one claimant at a time (claim()
         // rejects a second), preserving the original exclusive capture/match/consume lifecycle.
         // A multi_claim record admits several concurrently, so a burst of siblings all restore
@@ -300,11 +281,16 @@ private:
     void bump_version() noexcept { ++index_version_; }
 
     struct RetiredCopy {
-        void* block           = nullptr;
+        void* block             = nullptr;
         cudaEvent_t copies_done = nullptr;
+        HostKVAllocation text_host_kv;
+        HostKVAllocation backend_host_kv;
     };
 
     HostPinnedArena arena_;
+    // The paged-KV image half is stored in the lane's shared host KV arena (the same pool the
+    // extent store demotes into); the arena outlives this cache.
+    HostKVArena* host_kv_arena_ = nullptr;
     std::deque<std::uint64_t> fifo_;
     std::unordered_map<std::uint64_t, Record> records_;
     // Bounded record of which content lineages (leading-token hash) have previously produced a
