@@ -3,14 +3,41 @@
 This is a **personal fork** of [Neroued/ninfer](https://github.com/Neroued/ninfer)
 (linked fork: [Gevil/ninfer](https://github.com/Gevil/ninfer)), maintained for one
 purpose: a fast single-GPU inference lane running
-**Qwen3.8-27B NVFP4full on an RTX 5090** (cometkim's `nvfp4full` weights profile,
-~225K-token INT8 KV, MTP3 spec decoding, vision).
+**Qwen3.8-27B QUASAR NVFP4 on an RTX 5090** (mirko's QAT quasar artifact,
+17.7 GiB) with DFlash2 spec decoding, a 256K-token NVFP4 KV cache, and vision.
 
 Rather than wait on upstream, this fork **merges multiple open PRs from different
 community forks and cherry-picks improvements and features** that are not yet in
 upstream `master`, so the lane can use them. This file is the running record of
 what is in, where it came from, and how it is verified. See the note at the top of
 [README.md](README.md).
+
+## Baseline (established 2026-09-08)
+
+The lane's daily driver is no longer a fork branch: it runs **pure upstream
+master `b88c0f6f` + one quasar-profile commit `f7727926`** (image
+`localhost/ninfer-nvfp4:qm-f7727926`), serving the grafted
+`qwen3.8-27b-quasar-dflash2-master` artifact (1334 objects, quasar base +
+66-object master-contract dflash2 bundle) with `--spec dflash2
+--draft-tokens 7`, nvfp4 KV 262144 (256K, the model's native context),
+host-kv-mib 16384, model id `qwen3.8-27b` at :8002. The tier entries below
+remain the adoption record; the `quasar-master on pure upstream` and
+`quasar-dflash2 on pure upstream` entries at the bottom are the authoritative
+record of the current baseline.
+
+**Rollback chain** — the only quadlet backups kept after the 2026-09-08
+cleanup, in `~/.local/share/ninfer/quadlet-backups/`:
+
+| BAK | rolls back to |
+|---|---|
+| `ninfer-nvfp4.qm256.bak-1788901748` | dflash2 @ kv 225280, host-kv 8192 (pre-256K-bump state) |
+| `ninfer-nvfp4.qmd2.bak-1788901139` | MTP3 on pure master (mirko quasar, kv 225280, host-kv 16384) |
+| `ninfer-nvfp4.qm.bak-1788897662` | T33 incumbent — the pre-2026-09-08 daily driver (image `:quasar` = `t33serve-9737d75c`, T33-line serve image, built 2026-09-06; `:quasar` and `:latest` are aliases of the same image ID) |
+
+Every other `ninfer-nvfp4.*.bak-*` quadlet backup (31 files + 3 OMP backup
+dirs from the gpillon/puremaster/t33 windows) and all 14
+`~/.config/containers/systemd/ninfer-nvfp4.container.bak*` snapshots were
+deleted 2026-09-08 (tier-test residue from Aug 26 – Sep 8).
 
 ## Pipeline (how PRs are adopted)
 
@@ -759,3 +786,268 @@ Image `60c00b73c4e3` (tags: `t23tma-bb535075`, :quasar, :latest); previous
 - Free-GPU ctest: rc=0, skips within baseline (6 expected).
 - Battery: 16 PASS / 0 FAIL: VERDICT UP: PASS VERDICT IMAGE: PASS VERDICT MODELS: PASS VERDICT LEDGER: PASS VERDICT WARMUP: PASS VERDICT VISION: PASS VERDICT VISION-HIST: PASS VERDICT VISION-POISONED: PASS VERDICT REPLAY: PASS VERDICT THINK-SMOKE: PASS VERDICT XHIGH: PASS VERDICT DECODE-FRESH: PASS VERDICT DECODE-8K: PASS VERDICT QUALITY: PASS VERDICT SOAK: PASS VERDICT 4XX-WATCH: PASS
 - State: lane `ninfer-nvfp4` runs the new image; :quasar/:latest pinned (verified match).
+
+## puremaster2-df2 window (2026-09-08) — upstream dflash2, author's exact config
+
+Re-test of upstream dflash2 after the t33df2 window's FATAL ("DFlash2 requires the
+full proposal head (candidates span the whole vocabulary)") turned out to be
+fork-specific: it lives in our t33 branch (`layouts_impl.h`), NOT in pure master
+`b88c0f6f` (whose only head check is the disabled-spec-decoding one at 682-684).
+Ran the author-recommended triple from Neroued/ninfer#188 —
+`--spec dflash2 --draft-tokens 7 --lm-head-draft` — on pure master `b88c0f6f` with
+the official z-lab NVFP4 artifact (23.7GB; 1190 objects, 66 dflash2/*,
+text/draft_head + text/draft_head_token_ids + text/output_head).
+Window: puremaster2-df2 (log: `logs/puremaster2-df2-window-2026-09-09.log`).
+
+Results:
+- Boots clean at kv 49152; kv 225280 CUDA OOM (87.4GB runtime reservation vs
+  58.5GB available) — consistent with community reports (32GB cards OOM at kv 225280).
+- tok/s @kv49152: 181.0 / 118.6 / 42.4 (1500/8k/32k context); decode peak 230.5
+  tok/s; dflash2 acceptance 43.4% -> 31.2% as context grows. Below issue #188's
+  321 tok/s (int8 kv, AIME suite, different state).
+- PARITY vs non-spec control: FAIL 0/3 — greedy reasoning diverges from char 31-137
+  on all three prompts (early flip, cascades); final answers mostly identical.
+- Control-vs-control (two non-spec runs, same boot): bit-identical at temp=0 (only
+  `wall` timing metadata differs) -> the engine IS deterministic; the divergence is
+  dflash2-spec-path-specific, not thinking-model nondeterminism.
+
+Verdict: dflash2 is not a drop-in on this engine generation — fork full-head mode
+FATALs, upstream draft-head mode parity-fails, both OOM at 225k kv. MTP3 remains
+the only parity-clean spec backend (R21: 16/16 bit-identical). Upstream issue
+candidate drafted from this repro (engine commit, artifact, flags, 0/3 parity +
+control pass, acceptance degradation).
+
+## gpillon/coding as-is experiment (2026-09-08) — as-is fork, dflash2 on the lane
+
+Attempted: gpillon/ninfer @ a00648cb (coding branch) checked out AS-IS on ninfer-nvfp4,
+serving the official z-lab qwen3.8-27b-nvfp4-dflash2 artifact (23.7GB; nvfp4 profile +
+66-object dflash2 bundle), to measure his DFlash2 against the incumbent MTP3 profile.
+Window: gpillon-df2 (3 runs; logs gpillon-df2-window-2026-09-09.run{1,2}.log + final).
+
+- **Linux build: PASS with 2 platform-guard fixes.** The fork is Windows-first;
+  `src/serve/webui_update.cpp` (WinHTTP webui auto-download) did not compile on Linux
+  ([253/293], then [288/293]). Patch `/tmp/gpillon-wt-linux.patch` (+33/-1, single file):
+  `#if defined(_WIN32)` around windows.h/winhttp.h, the WinHTTP anonymous namespace, and
+  `ensure_webui_available`; portable fallbacks (serve pre-staged webui or throw;
+  `to_utf8` = `path::string()` on POSIX). Engine/dflash2 code untouched. Image
+  `gpillon-a00648cb` built 293/293 in ~4 min (ccache-warm).
+- **Boot: FAIL — artifact-generation gap (neither side buggy).** All kv sizes:
+  `artifact object was not consumed by the selected target: dflash2/feature_projection`.
+  The fork's 27b target binds the dflash2 bundle only under
+  `WeightsProfile::Qwen38Nvfp4Full`; the official artifact is nvfp4-profile + bundle.
+  Upstream later fixed exactly this failure with a self-describing gate
+  (`binder.contains("dflash2/feature_projection")`) — the T33 tree carries that fix,
+  with a comment quoting this error verbatim. The fork predates the official
+  nvfp4+dflash2 artifact generation.
+- **Compute layer = byte-identical to our T33 port**: all five CUDA dflash2 files match
+  exactly; only runtime glue differs (slot-based KV copy, rope-θ argument form,
+  active-lanes/slots frame model, causal-attention envelope).
+- Route aborted by user decision (as-is constraint). Window self-rolled-back cleanly in
+  all 3 runs: one service restart each, OMP untouched, end state verified byte-identical.
+
+## dflash2 on this lane (2026-09-08) — consolidated verdict
+
+No clean apples-to-apples dflash2-vs-mtp3 comparison exists in the logs: local dflash2
+attempts either failed to boot (t33df2f/t33df2g Phase A — t33df2 image + grafted quasar
+artifact, "DFlash2 requires the full proposal head" FATAL, then boot timeout) or failed
+parity once booted. Data points:
+- **dflash2, ported compute (T33 engine, image t33bg2-4008da6, kv 131072) — t33g3,
+  Sept 7:** 194.4 / 141.2 / 52.3 / 8.1 tps at 1.5k/8k/32k/126k context; acceptance
+  34.2 / 34.7 / 33.6 / 40.1%. No same-boot mtp3 control.
+- **dflash2, ported compute, full-W8-head profile (same image, kv 225280) — t33adopt,
+  Sept 8:** PARITY FAIL vs non-spec (cross-boot comparison — see correction below;
+  the wall times stand: short 62.3s vs 4.0s).
+- **dflash2, upstream master b88c0f6f (kv 49152; 225280 OOM) — puremaster2, Sept 8:**
+  181.0 / 118.6 / 42.4 tps; acceptance 43.4% → 31.2%; PARITY 0/3 (early divergence at
+  char 31-137 — cross-boot A-vs-C, confounded; the same-boot control-vs-control
+  bit-identity is the valid half and shows within-boot determinism).
+- **MTP3 (incumbent) — t33df2f Phase B, Sept 7:** 177.6 tps @1.5k; decode 169-215 tok/s;
+  acceptance 54-74%. The "R21 battery 16/16 bit-identical vs non-spec" claim was
+  cross-boot and is NOT a stable property (t37-post battery, Sept 5, T33 line:
+  "battery rc=1 (0 = 16/16)" — see correction below).
+- **gpillon's own SPEC-STRATEGY (qwen3-3.4.7, 2026-06-28):** 3.4-3.7 tok/round, loses to
+  MTP3 at every context (acceptance 24.7% → 12.7% by 12k).
+
+Verdict: dflash2's raw short-context tps is on par with MTP3, but it does not meet the
+serving bar on this lane: lower acceptance (34-43% vs 54-74%), pathological wall times
+(t33adopt), and the tps edge gone at ≥32k — consistent with gpillon's own data.
+**MTP3 stays the spec backend.**
+
+CORRECTION (2026-09-08, later that evening): the "parity FAIL" / "PARITY 0/3" /
+"parity-clean" characterizations above are VOID as spec-correctness evidence. All of
+those A(spec)-vs-C(non-spec) comparisons were cross-boot (the spec backend is a
+boot-time flag), and the engine is NOT bit-reproducible across boots on
+near-tie-sensitive free-form outputs at temp=0 — proven on the qm image: same config,
+boot #1 vs boot #3, `short` diverges (reasoning 749ch vs 982ch, first diff ~char 92)
+while the sharp-distribution 8k/32k prompts are bit-identical, and same-boot repeats
+are bit-identical 3/3. Cross-boot bit-identity was never a stable property of this
+engine line (t37-post rc=1 above). The dflash2 verdict stands on the unaffected
+grounds: acceptance, wall times, and gpillon's own data.
+
+## quasar-master on pure upstream (2026-09-08) — branch + live cutover
+
+Branch `quasar-master` = pure upstream master `b88c0f6f` + ONE commit `f7727926`
+(single file, `src/targets/qwen3_6_27b/impl/load/bindings.cpp`, +103/−3, 7 hunks):
+`enum WeightsProfile { Qwen38Nvfp4, Qwen38Nvfp4Full }`, profile switch on the
+nvfp4-family (nvfp4 / q4g64-f16s / q5g64-f16s / q6g64-f16s / w8g32-f16s / bf16 /
+fp32 / i32), and 3 MTP3 kv-workspace-curve cases. No other commits/cherry-picks.
+Bundle (durable): `~/.local/share/ninfer/branches/quasar-master-f7727926.bundle`
+(worktree `/tmp/puremaster-wt`).
+Pushed to the Gevil fork (https://github.com/Gevil/ninfer, branch
+`quasar-master` @ f7727926, 2026-09-08) — the live-lane code now exists
+on the fork, not just locally.
+
+Window `qm` (logs qm-window-2026-09-09.log.run1 + final, watchdog + shipwatch status
+files alongside). Run 1 (22:01): build PASS, S-boot fast-fail — transient GPU
+contention (~21GiB other workload on the card; runtime reservation 6.426GiB vs
+6.424GiB free at peak, 1.7MiB short); supervisor-verified rollback, rc=1.
+Run 2 (22:18, image prebuilt, GPU quiet): **rc=0 cutover-complete** — 2 min 07 s.
+
+Live config since 22:20: image `localhost/ninfer-nvfp4:qm-f7727926` (pure master +
+quasar port), mirko quasar artifact (17.5GiB, 1268 objects, ZERO dflash2 objects —
+binary-scanned; routes text+mtp3 only), `--spec mtp --draft-tokens 3` + `--kv-dtype
+nvfp4 --kv-capacity 225280`. MTP runtime reservation = 6.43GiB, byte-identical to
+the incumbent T33 image's.
+
+Numbers (S probes, spec MTP3, greedy max_tokens=256): 161.4 / 124.6 / 52.1 tps at
+1.5k/8k/32k context; decode ~180 tok/s; **MTP acceptance 54.6 / 57.3 / 59.7%**
+(rises with context). Vs incumbent T33 (177.6 tps @1.5k, 54-74%): pure master ~9%
+slower at 1.5k, comparable at 32k.
+
+PARITY TRIAGE (final) — earlier "spec-MTP3 parity diverged / spec-path fault"
+attribution RETRACTED. The S-vs-C comparison was cross-boot, and cross-boot output is
+not bit-reproducible (see CORRECTION in the dflash2 verdict above): same image + same
+S config, boot #1 vs boot #3, `short` diverges (reasoning 749ch vs 982ch, content
+102ch vs 23ch, first diff ~char 92); 8k/32k bit-identical across boots; same-boot
+repeats bit-identical 3/3. So: within-boot deterministic, cross-boot unstable on
+free-form near-tie outputs — a float/kernel-selection boot instability class, not an
+MTP defect. Consequences: (1) no evidence of an MTP3 defect on pure master remains —
+acceptance 54.6-59.7% (inside T33's band), within-boot deterministic, functionally
+correct answers; the "roll back for parity-clean T33" rationale is void; (2) a
+spec-vs-non-spec token-equivalence test is not measurable with this engine's
+boot-time spec flag (no same-boot A/B exists) — the operative bar is within-boot
+determinism + functional correctness, which holds; (3) the /tmp/t33-parity-{A,C}.json
+files are t33adopt dflash2/non-spec captures (17:44 window log), not an MTP3 baseline.
+
+## quasar-dflash2 on pure upstream (2026-09-08) — master-contract graft + live dflash2 cutover
+
+User asked for a QUASAR-based dflash2 model that works on pure upstream master
+(keep the smaller/higher-precision quasar artifact; the official z-lab dflash2
+artifact is a different, larger model).
+
+**Graft (no engine change):** `/tmp/graft-quasar-dflash2-master.py` (log
+`~/.local/share/ninfer/graft-quasar-dflash2-master.log`) copies the quasar base
+(mirko quasar, 1268 objects, payloads byte-verbatim) and materializes 66 dflash2
+objects from the HF draft dir (z-lab/Qwen3.8-27B-DFlash2 @ `50307d4c`) to the
+**master contract** (W8G32-F16S feature-projection, row-split-k128-v1, …) via
+master's own inventory/encode path — 40.9 s on CPU. Output:
+`~/.local/share/ninfer/models/qwen3.8-27b-quasar-dflash2-master/qwen3_8_27b_quasar_dflash2_master.ninfer`,
+1334 objects, 19.78 GiB, identity `qwen3.8-27b / nvfp4`,
+sha256 `da5efb33…ba338`, manifest `.graft.json` alongside (recipe
+`qwen3_8_27b_quasar_nvfp4_dflash2_master`). All 66 dflash2 descriptors
+byte-identical (shape/format/layout/bytes) to the official z-lab artifact's
+dflash2 bundle — the same bundle pure master booted in the puremaster2 window.
+The earlier T33-contract graft (`qwen3.8-27b-quasar-dflash2/`) is kept but is
+incompatible with the pure-master binding (NVFP4 dflash2 vs the required W8G32).
+
+**Window qmd2** (script `/tmp/qmd2-window.sh`; watchdog + shipwatch status files
+alongside; logs `~/.local/share/ninfer/logs/qmd2-window-2026-09-09.log` + `.run1`
+/`.run2`/`.run3`):
+- First runs (22:11, 22:36, 22:42, 22:53 local) all rc=2 with clean restore
+  (<2 min each, engine back on incumbent BAK): one was a window-side quadlet
+  bug (`duplicate mount destination` — two Volume lines, one destination), the
+  rest had the sed still hard-coded to the old T33-contract artifact →
+  `tensor descriptor does not match target contract: dflash2/feature_projection`
+  (expected: that artifact is T33-contract NVFP4 dflash2; the master binding
+  wants W8G32).
+- Final run (22:58:59, sed fixed to the master-contract artifact): **rc=0 —
+  engine ready 6 s after start** (image qm-f7727926, kv 225280 nvfp4,
+  host-kv-mib 8192, `--spec dflash2 --draft-tokens 7`); window total 76 s.
+
+**Probes (final run, greedy max_tokens=256):** **190.2 / 136.5 / 51.1 tps**
+@1.5k/8k/32k; dflash2 acceptance **32.6 / 36.2 / 28.2%** (reqs 1–3). Anchors:
+qm MTP3 161.4/124.6/52.1 tps (acceptance 54.6–59.7%), T33 dflash2 port
+194.4/141.2/52.3/8.1 (acceptance 34–40%), puremaster2 official-artifact dflash2
+181.0/118.6/42.4 @kv49152 (acceptance 43.4→31.2%).
+
+**Live config since 23:00 (supersedes the 22:20 line above):** image
+qm-f7727926, master-contract quasar-dflash2 artifact (1334 objects), `--spec
+dflash2 --draft-tokens 7` + nvfp4 kv 225280, host-kv-mib 8192 — intentionally
+LEFT ON dflash2 for the user's manual testing (model id `qwen3.8-27b`, OMP
+unchanged; supervisor-verified via `/v1/models` + live quadlet). Rollback to
+MTP3: `cp ~/.local/share/ninfer/quadlet-backups/ninfer-nvfp4.qmd2.bak-1788901139
+~/.config/containers/systemd/ninfer-nvfp4.container && systemctl --user
+daemon-reload && systemctl --user restart ninfer-nvfp4` (that BAK = pre-window
+incumbent: mirko quasar + `--spec mtp --draft-tokens 3 --lm-head-draft` + nvfp4
+kv 225280 + host-kv-mib 16384).
+
+**256K bump (23:09, window qm256, log qm256-window-2026-09-09.log):** per user
+request, the live dflash2 config was bumped to the model-native 256K context:
+`--max-context 262144 --kv-capacity 262144` (was 225280) + `--host-kv-mib 16384`
+(was 8192). Single-config window (no ladder), 105 s, rc=0: capacity ledger
+`KV 262,144 tokens | runtime 8.77 GiB | free 2.57 GiB`, host KV pinned
+16.0 GiB, `/v1/models` max_model_len 262144. Probes: **189.5 / 140.4 / 51.2
+tps** @1.5k/8k/32k + **8.8 tps @120k ctx** (dflash2 acceptance
+32.6/36.2/28.2/41.7% — rises with context, same trend as MTP3). Rollback
+chain: `ninfer-nvfp4.qm256.bak-1788901748` = dflash2 @225280/8192 (the 23:00
+state); the MTP3 BAK above (qmd2 bak-1788901139) still rolls straight back to
+the MTP3 incumbent.
+
+## Lane workspace cleanup (2026-09-08) — superseded artifacts out, quasar chain intact
+
+Full audit of `~/.local/share/ninfer` (~480G → 94G) and `~/containers`
+(ninfer parts). Deleted — all superseded, public-re-fetchable, or
+re-creatable; none referenced by the live quadlet or the 3-file rollback
+chain (verified by grep before deletion):
+
+- **Models (205G):** `qwen38-base-bf16` (52G, public Qwen3.8-27B BF16),
+  `qwen3.8-27b-quasar-dflash2-stock` (39G) + `qwen3.8-27b-quasar-dflash2`
+  (38G) (T33-contract dflash2 grafts — re-creatable via the kept
+  `graft-quasar-dflash2.sh` recipe + `models/qwen3.8-27b-dflash2` draft
+  source), `qwen3.8-27b-nvfp4-dflash2-official` (23G),
+  `qwen3.8-27b-nvfp4-official` (21G), `qwen3.8-27b-quasar-v2` (19G,
+  superseded by mirko), `qwen3.8-27b-nvfp4full` (18G),
+  `qwen3.8-27b-nvfp4` (18G), `qwen3.8-27b` (17G, original Aug-15 download).
+- **sources (52G):** `Qwen3.8-27B` public base (re-downloadable from HF;
+  the QUASAR-NVFP4 repo copy was kept).
+- **Host build trees (~103G):** mtp-sampled-draft-build, t10/t11/t11fix/
+  t11w/t13/t13fix/t15/t16/t17/t19 build dirs, t8-build-ctx + their build
+  logs (~200M).
+- **One-shot window scripts + ctest residue + small trash** (~100 files,
+  <2M): tier1–tier8 one-shots, t8/t11–t41 window scripts, ct-* trees,
+  `quadlet-t37-rollback` snapshot, `~/containers/ninfer-build` (13G stale
+  tree) and `~/containers/ninfer-backups`.
+
+Kept: the quasar chain (`mirko-quasar-nvfp4`, `qwen3.8-27b-quasar-dflash2-master`
+[live], `qwen3.8-27b-dflash2` [draft source], `quasar-qat-safetensors`,
+`sources/Qwen3.8-27B-QUASAR-NVFP4`), `pipeline/`, `branches/`
+(`quasar-master-f7727926.bundle`), `quadlet-backups/` (3-file chain),
+`templates/`, `logs/`, `t33-venv/`, `test-resources/`, probe tools, all
+`*.md` records, graft + conversion recipes, `lane-sentinel.sh`.
+`~/containers`: kept `ninfer-nvfp4` (lane repo — **the `quasar-master`
+branch f7727926 is now fetched into it permanently**, no longer /tmp-only)
+and `ninfer-github` (pipeline `CLONE`, cometkim tracking); deleted
+`ninfer-build` (13G) + `ninfer-backups`; `ninfer` (58M, original Aug-14
+Neroued clone, historical pr-24/pr-43/official-nvfp4* branches) kept as a
+cheap mirror.
+
+**QAT revision discrepancy (flagged for user):**
+`sources/Qwen3.8-27B-QUASAR-NVFP4` and `models/quasar-qat-safetensors` are
+NOT duplicates — shards 1–4 + config identical, but **shard 5
+(`model-00005-of-00005.safetensors`) differs** (`fe41795c…` vs
+`08e4c9bc…`). Two different QAT revisions, ~39G combined; both kept pending
+user decision.
+
+**qg1 window (23:25, log qg1-window-2026-09-09.log):** removed the dead
+gen-1 QUASAR refs from the live quadlet (2 duplicate `qwen3.8-27b-quasar`
+mkdirs + 1 `nvfp4full` mkdir + the gen-1 Volume line) and deleted the 18G
+gen-1 artifact (`models/qwen3.8-27b-quasar` — superseded by
+`mirko-quasar-nvfp4`; re-creatable via the kept `quasar-convert.sh`
+recipe). Live quadlet now carries exactly 2 Volume lines
+(quasar-dflash2-master artifact + chat template). The 3-file rollback
+chain (qmd2/qm256/qm BAKs) was synced with the same line removals so
+every BAK stays restorable; fresh BAK `ninfer-nvfp4.qg1.bak-*` added to
+the chain. rc=0 in 34 s, lane re-ready 38 s, chat template
+byte-identical, `/v1/models` = qwen3.8-27b @ 262144.
+
+Disk: 228G → 635G free (88% → 66% used).
