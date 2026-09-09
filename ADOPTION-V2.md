@@ -295,10 +295,13 @@ cache-policy -> `ResourceManager`, RAM-snapshot/stats -> `KVRamCache` + `EngineC
 ### 6.6 V2-T8 port progress + dependency-surface findings (2026-09-09 evening)
 
 **Committed progress on `v2/t8-agentic` (branched off `v2/t5-decode`):**
-- `kv_ram_cache.{h,cpp}` + `kv_ram_snapshot.h` ported verbatim (the 33-file hand-port's core; the
-  substrate the 4 cluster picks build on). Header-self-contained on baseline types
-  (`std::bit_cast` is a baseline include; `TokenId`/`PromptData`/`std::span`/`std::unordered_map`
-  all present); uses only `std::`/`ninfer::` symbols.
+- `kv_ram_cache.{h,cpp}` + `kv_ram_snapshot.h` ported verbatim (the hand-port's core; the substrate
+  the 4 cluster picks build on). **NOT self-contained** (verified by per-TU syntax check, 09-09
+  evening, buildstage container): `RamCaptureSource` pulls in gpillon's paged-KV pool
+  (`PagedKVAllocation`/`PagedKVPool`/`PagedKVCache` in `src/core/paged_kv_cache.h`), the runtime's
+  core types (GDN `LinearAttentionStatePool`, dflash `CyclicKVCache`, `Tensor`), and
+  `runtime::RequestClass` — none of which the baseline provides (its paged-KV cache was restructured
+  upstream, a different design). The substrate is a deep integration, not a 3-file port.
 - `HostPinnedArena` ported into `core/arena.{h,cu}` (the gpillon-specific first-fit pinned-host
   block allocator the substrate draws on). All five helpers it uses (`cuda_error_message`,
   `free_pinned`, `is_power_of_two`, `checked_add_uintptr`, `align_up_addr`) already exist in the
@@ -333,14 +336,20 @@ the 4 cluster picks (`de386ad6`/`f144f052`/`2065ed38`/`e13006c4`) touch it + `ad
 rename), so each pick's executor hunk re-targets to its correct half (scheduling → `Scheduler`/
 `EngineCore`, cache-policy → `ResourceManager`, RAM-snapshot/stats → `KVRamCache` + `EngineCore`).
 
-**Remaining steps (the multi-week tail):** (1) the `prefix_identity` merge (the reconciliation
-above); (2) the `PrefixReusePath` values; (3) the 4 cluster picks' executor re-targeting; (4) the
-CMake (`kv_ram_cache.cpp` into `qwen3_6/CMakeLists.txt`) + per-TU syntax checks; (5) the full build
-(2.6k TU — OOM-prone on the host → buildstage container); (6) ctest (`test_engine_ram_kv` +
-`test_engine_kv_cache` + the prefix-identity tests); (7) the battery; (8) the shared-vs-forked pool
-A/B (§6.5 decision 2); (9) the supervised ship (shipwatch). **This is a multi-week effort** — the
-substrate + `HostPinnedArena` are the first committed increments; the `prefix_identity` design
-reconciliation is the core remaining difficulty.
+**Progress + honest scope (per-TU syntax check done 09-09 evening, buildstage container):**
+- ✅ DONE + VERIFIED (rc=0): the `prefix_identity` merge — the baseline's execution-split
+  `ResidentPrefixIdentity` + gpillon's packed FNV/hash impls + the FNV helpers + `Writer`/`Reader`
+  (with the `<cstring>` include) compile clean against the baseline's design; the 3
+  `PrefixReusePath` values added; `kv_ram_cache.cpp` added to `qwen3_6/CMakeLists.txt`.
+  Branch `v2/t8-agentic` (`9f028cc4`).
+- The substrate (`kv_ram_cache`) is **deeply entangled** (the finding above): it needs the paged-KV
+  pool subsystem + the runtime's core types (GDN/dflash/Tensor/`RequestClass`) — a **deep re-target**
+  onto the baseline's restructured paged-KV cache, not a 3-file port.
+- **Honest scope: months, not weeks.** Remaining: the substrate re-target (paged-KV pool), the 4
+  cluster picks' executor re-targeting (`concurrent_executor.h` → `Scheduler`/`ResourceManager`
+  split), the buildstage full build, ctest, the battery, the shared-vs-forked pool A/B (§6.5
+  decision 2), and the supervised ship (shipwatch). The committed increments (substrate +
+  `HostPinnedArena` + `prefix_identity` merge + `PrefixReusePath` + CMake) are the first slice.
 
 ## 7. V2 tier plan (the next tiers, in adoption order)
 
@@ -358,7 +367,7 @@ the big hand-port. Every tier ships through the supervised pipeline (§10.2).
 | **V2-T5 — SHIPPED (2026-09-09, gate override, A/B-verified)** | md single-commit decode wave: `38f52b34` (argmax winner-init kernel), `61250e89` (#194 nvfp4 SwiGLU fast), `ed150906` (#201 w8 rowsplit cache policy), `1dfeed7e` (draft-head-narrow branch, 9 commits). Excluded with reasons: `0d9841d2` (bpe-flat-merge-table) — **ABSORBED** (upstreamed as `b158afe2`; content-identical diffstat `tokenizer.{cpp,h}` +82/−15); `0deee4d8` (l2-pin linear-attention state) — GDN dead path for 27B (T44 triage); `01591621` (fp8-a8-tma-staging) — is PR #167's own head, already covered by V2-T4's `52fabe3e` | `md/*` branches | **SHIPPED 2026-09-09** (branch `v2/t5-decode` @ `324a8de3`, image `f8b76e5a4dc2` = `:quasar`, retag-only deploy): the build+ctest+battery pipeline auto-rolled back on a **DECODE-8K-only red** (132.5 vs stored baseline 153.8; 15/16 green incl. replay 4/4 + vision + soak 5/5), and a same-window A/B decode-differential with concurrent `nvidia-smi` power/clock sampling proved it a **stale-baseline power artifact, not a regression** — in the same throttled window, live (V2-T3) 8k = 112.1 tps vs candidate 8k = 135.5 tps (**+21 %**), fresh 156.4 vs 128.9, with the candidate at an equal-or-better power state (491 W / 2902 MHz vs 526 W / 2865-2872 MHz). A supervised retag-only window deployed it; verified live (`/v1/models` 200 qwen3.8-27b, quadlet byte-identical, chat_template sha256 `180e7015…`). Gate §10.5 met in-window |
 | **V2-T6** | cometkim: `c17ccc30` (`feat/qwen3.8-nvfp4qat`, 11 commits — QUASAR-QAT NVFP4 profile; our `f7727926` already carries the `Qwen38Nvfp4*` family → A/B against ours, adopt only if upstream merges their form or the A/B wins) + `6c3fdbf4` (`feat/kernel-perf`, 14 commits — PDL decode chain; the +77 %/+56 % claims must be re-derived on our base first: 3 force-pushes since the 09-08 audit) | `cometkim/*` | profile A/B on the live artifact; PDL claim re-measured on 5090 before any window |
 | **V2-T7** | gzenz host-KV safety-net re-derivation (old T31/T34) from `62b857c1` (117 ahead, 2026-09-09): show the B2 (entitlement) / B3 (frontier) blockers are fixed in the current line, then re-derive the pick set | `gzenz/fix/checkpoint-host-demotion` | only if host-KV re-enable is approved; ctest + host-KV soak |
-| **V2-T8 (large)** | gpillon RAM-KV agentic cluster hand-port: picks 1–11 + 13 (§6.2). Port `kv_ram_cache.{h,cpp}` onto the split executor (the upstream refactor that removed `concurrent_executor.h`); **design note recorded 2026-09-09 (§6.5): integrate, not replace** — plug the two-tier eviction into `ResourceManager` pressure planning + share the `--host-kv-mib` pool with the `HostKVExtentStore` demotion mirror. Includes the T34 guard (pick 6) + `ac60331d` guard test. Feeds from T48 slices `42c9c7d4`/`a39c5c25` where they overlap | `gpillon/gpillon/coding` + `dylan/experimental` | design note recorded (§6.5); TTFT/decode/cache-hit-rate A/B + battery 16/16 + greedy parity |
+| **V2-T8 (large)** | gpillon RAM-KV agentic cluster hand-port: picks 1–11 + 13 (§6.2). **prefix_identity merge + PrefixReusePath + CMake committed on `v2/t8-agentic` + verified clean (rc=0); the substrate re-target (paged-KV pool `src/core/paged_kv_cache.h` + GDN/dflash/Tensor/`RequestClass`) is the next gate — honest scope = months (§6.6).** Design note (§6.5): integrate, not replace — plug the two-tier eviction into `ResourceManager` pressure planning + share the `--host-kv-mib` pool with the `HostKVExtentStore` demotion mirror. Includes the T34 guard (pick 6) + `ac60331d` guard test. Feeds from T48 slices `42c9c7d4`/`a39c5c25` where they overlap | `gpillon/gpillon/coding` + `dylan/experimental` | prefix_identity merge verified (§6.6); then TTFT/decode/cache-hit-rate A/B + battery 16/16 + greedy parity + shipwatch |
 | **V2-T9 (conditional)** | adaptive MTP widths trio `c2708ec8` → `9d86436c` → `9bef0f73` + MTP items `505d1af7`, `1f155fed` (= our `fa12e8ef`) — **only if the lane returns to `--spec mtp`**; today it runs upstream dflash2 | `gpillon/gpillon/coding`, `md/*` | acceptance + decode A/B under MTP |
 | **Watches** | #208 (stability, tracks V2-T1), #213/#201 (groupwise-W8 for 27B text projections), #197 `ignore_eos`, #183 `--chat-template FILE` (T38), #152/#163/#162 (serve ergonomics; T32 cluster #176–#181/#184), #61 (per-image vision budget), #173 REJECT (sub-floor KV), #107/#97/#72 (T13, 503-bad), #174/#165 (T45, MTP-conditional), #169/#168/#172 (T41 agentic inputs), #185 (idle unload), `dylan/experimental` (agentic slices only), mirko KVaRN REJECT (sub-floor) | — | — |
 
