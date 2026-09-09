@@ -71,7 +71,7 @@ KvState plan_kv_state(std::uint32_t page_groups) {
         .full_attention_layers     = 2,
         .capacity                  = 129,
         .kv_heads                  = 2,
-        .attention_head_dim        = 64,
+        .attention_head_dim        = 256,
         .kv_storage                = ninfer::KvCacheStorage::Nvfp4Group16,
         .text_physical_page_groups = page_groups,
     };
@@ -126,6 +126,7 @@ materialize(q36::PagedKVCache& kv, std::uint32_t pages) {
         std::exit(1);
     }
     std::vector<ninfer::DeviceKVPageLease> leases;
+    leases.reserve(pages);
     kv.page_pool().materialize(*reservation, pages, leases);
     return leases;
 }
@@ -297,9 +298,9 @@ q36::PreparedPromptData retained_prompt(const q36::PreparedPromptData& prompt) {
 detail::RamCaptureSource
 make_capture_source(q36::PagedKVCache& kv, std::span<const ninfer::DeviceKVPageLease> leases,
                     const q36::PreparedPromptData& retained, std::uint32_t execution_frontier,
-                    cudaStream_t stream, bool multi_claim = false,
+                    cudaStream_t stream, detail::ResidentPrefixIdentity& identity,
+                    bool multi_claim = false,
                     std::uint32_t checkpoint_frontier = 0) {
-    detail::ResidentPrefixIdentity identity;
     identity.assign(retained);
     detail::RamCaptureSource source;
     source.execution_frontier = execution_frontier;
@@ -307,9 +308,8 @@ make_capture_source(q36::PagedKVCache& kv, std::span<const ninfer::DeviceKVPageL
     source.text_kv_valid      = static_cast<std::uint32_t>(leases.size());
     source.ledger             = retained.token_ids;
     source.identity           = &identity;
-    source.hash_f              = detail::prefix_hash_at(retained.token_ids, identity,
-                                                        execution_frontier);
-    source.text_pages          = handles(leases);
+    source.hash_f             = detail::prefix_hash_at(retained.token_ids, identity,
+                                                       execution_frontier);
     source.text_cache          = &kv;
     source.stream              = stream;
     source.capture_kind        = detail::RamCaptureKind::Terminal;
@@ -325,19 +325,40 @@ make_capture_source(q36::PagedKVCache& kv, std::span<const ninfer::DeviceKVPageL
     return source;
 }
 
+struct CaptureSourceRef {
+    std::vector<ninfer::DeviceKVPageHandle> text_handles;
+    detail::RamCaptureSource source{};
+
+    // Baseline Ram*Source/Target page spans are non-owning views (the engine keeps its lease
+    // vectors); this wrapper owns the handle vector for the span's lifetime.
+    CaptureSourceRef(q36::PagedKVCache& kv,
+                     std::span<const ninfer::DeviceKVPageLease> leases,
+                     const q36::PreparedPromptData& retained,
+                     std::uint32_t execution_frontier,
+                     cudaStream_t stream,
+                     detail::ResidentPrefixIdentity& identity,
+                     bool multi_claim = false,
+                     std::uint32_t checkpoint_frontier = 0)
+        : text_handles(handles(leases)) {
+        source = make_capture_source(kv, leases, retained, execution_frontier, stream,
+                                     identity, multi_claim, checkpoint_frontier);
+        source.text_pages = text_handles;
+    }
+};
+
 struct CaptureTarget {
-    detail::RamCaptureSource source;
+    CaptureSourceRef source;
     q36::PreparedPromptData retained;
 };
 
 int capture_and_match(detail::KVRamCache& cache, const CaptureTarget& target,
                       const char* label) {
-    if (!cache.capture(target.source)) {
+    if (!cache.capture(target.source.source)) {
         std::cerr << label << " capture failed\n";
         return 0;
     }
     auto match = cache.plan_match(target.retained, detail::prefix_hash_chain(target.retained));
-    if (!match || match->reuse_base != target.source.execution_frontier ||
+    if (!match || match->reuse_base != target.source.source.execution_frontier ||
         match->reuse != ninfer::PrefixReusePath::AppendAtFrontier) {
         std::cerr << label << " capture did not match at its frontier\n";
         return 0;
@@ -363,8 +384,10 @@ int test_kv_roundtrip(ninfer::DeviceContext& ctx) {
 
     const auto prompt   = text_prompt({10, 100, 101, 102});
     const auto retained = retained_prompt(prompt);
+    detail::ResidentPrefixIdentity identity;
     const CaptureTarget target{
-        .source  = make_capture_source(src.state.text_kv, source_leases, retained, 4, ctx.stream),
+        .source   = CaptureSourceRef(src.state.text_kv, source_leases, retained, 4, ctx.stream,
+                                     identity),
         .retained = retained,
     };
     const int entry = capture_and_match(cache, target, "kv roundtrip");
@@ -374,8 +397,9 @@ int test_kv_roundtrip(ninfer::DeviceContext& ctx) {
     auto destination_leases = materialize(dst.state.text_kv, 3);
     const std::vector<std::int32_t> destination_ids{0, 1, 2};
     cache.claim(entry);
+    auto destination_handles = handles(destination_leases);
     detail::RamRestoreTarget restore{
-        .text_pages = handles(destination_leases),
+        .text_pages = destination_handles,
         .text_cache = &dst.state.text_kv,
         .stream     = ctx.stream,
     };
@@ -400,39 +424,45 @@ int test_irregular_runs(ninfer::DeviceContext& ctx) {
     ninfer::HostKVArena host_arena(4 * 1024 * 1024, layouts);
     detail::KVRamCache cache(1024 * 1024, host_arena);
 
-    // Fragment the free list: own 5 (0..4), release the middle page, then materialize 3.
-    // The fresh pool gives 0..4 in order; releasing physical 2 leaves runs [0,2) [3,2)
-    // [5,8); the next materialize(3) takes 0,1 from the first run and 3 from the second.
+    // Fragment the free list: own 5 (0..4), release physical 2, then materialize 4.
+    // The baseline materialize(count) takes a single run of >= count when one exists
+    // (releasing page 2 leaves runs [2,1) [5,3), so 3 pages would come back as [5,6,7]);
+    // requesting 4 forces the stitch path: page 2 from the first run, 5,6,7 from the
+    // second -> a two-run capture set.
     auto first = materialize(src.state.text_kv, 5);
-    (void)first[2].release();
-    auto second = materialize(src.state.text_kv, 3);
+    const bool released = first[2].release();
+    expect(released, "irregular runs middle release");
+    auto second = materialize(src.state.text_kv, 4);
     expect(src.state.text_kv.page_pool().contiguous_run_count(handles(second)) == 2,
            "irregular runs capture set is two runs");
-    const std::vector<std::int32_t> source_ids{0, 1, 3};
-    fill_pages(src.state.text_kv, source_ids, 3, 0x45, "irregular runs fill");
+    const std::vector<std::int32_t> source_ids{2, 5, 6, 7};
+    fill_pages(src.state.text_kv, source_ids, 4, 0x45, "irregular runs fill");
     ctx.synchronize();
 
-    const auto prompt   = text_prompt({10, 200, 201});
+    const auto prompt   = text_prompt({10, 200, 201, 202});
     const auto retained = retained_prompt(prompt);
+    detail::ResidentPrefixIdentity identity;
     const CaptureTarget target{
-        .source  = make_capture_source(src.state.text_kv, second, retained, 3, ctx.stream),
+        .source  = CaptureSourceRef(src.state.text_kv, second, retained, 4, ctx.stream,
+                                   identity),
         .retained = retained,
     };
     const int entry = capture_and_match(cache, target, "irregular runs");
     expect(entry != 0, "irregular runs capture indexed");
     if (entry == 0) { return bad; }
 
-    auto destination_leases = materialize(dst.state.text_kv, 3);
-    const std::vector<std::int32_t> destination_ids{0, 1, 2};
+    auto destination_leases = materialize(dst.state.text_kv, 4);
+    const std::vector<std::int32_t> destination_ids{0, 1, 2, 3};
     cache.claim(entry);
+    auto destination_handles = handles(destination_leases);
     detail::RamRestoreTarget restore{
-        .text_pages = handles(destination_leases),
+        .text_pages = destination_handles,
         .text_cache = &dst.state.text_kv,
         .stream     = ctx.stream,
     };
     cache.unpack_device(entry, restore);
     ctx.synchronize();
-    bad += check_pages(dst.state.text_kv, destination_ids, 3, 0x45, "irregular runs restore");
+    bad += check_pages(dst.state.text_kv, destination_ids, 4, 0x45, "irregular runs restore");
     cache.consume(entry);
     return bad;
 }
@@ -456,10 +486,11 @@ int test_state_image_roundtrip(ninfer::DeviceContext& ctx) {
 
     const auto prompt   = text_prompt({10, 300});
     const auto retained = retained_prompt(prompt);
-    auto source         = make_capture_source(src_kv.state.text_kv, source_leases, retained, 2,
-                                              ctx.stream);
-    source.state_image = &src_state.pool;
-    source.state_slot  = 0;
+    detail::ResidentPrefixIdentity identity;
+    CaptureSourceRef source(src_kv.state.text_kv, source_leases, retained, 2, ctx.stream,
+                            identity);
+    source.source.state_image = &src_state.pool;
+    source.source.state_slot  = 0;
     const CaptureTarget target{.source = source, .retained = retained};
     const int entry = capture_and_match(cache, target, "state image roundtrip");
     expect(entry != 0, "state image roundtrip capture indexed");
@@ -468,12 +499,13 @@ int test_state_image_roundtrip(ninfer::DeviceContext& ctx) {
     auto destination_leases = materialize(dst_kv.state.text_kv, 2);
     const std::vector<std::int32_t> destination_ids{0, 1};
     cache.claim(entry);
+    auto destination_handles = handles(destination_leases);
     detail::RamRestoreTarget restore{
-        .text_pages = handles(destination_leases),
-        .text_cache = &dst_kv.state.text_kv,
-        .state_image = &dst_state.pool,
-        .state_slot  = 1,
-        .stream     = ctx.stream,
+        .text_pages   = destination_handles,
+        .text_cache   = &dst_kv.state.text_kv,
+        .state_image  = &dst_state.pool,
+        .state_slot   = 1,
+        .stream       = ctx.stream,
     };
     cache.unpack_device(entry, restore);
     ctx.synchronize();
@@ -505,19 +537,20 @@ int test_index_match(ninfer::DeviceContext& ctx) {
     const auto prompt_c    = text_prompt({10, 100, 101, 301, 302, 303});
     const auto retained_c  = retained_prompt(prompt_c);
 
+    detail::ResidentPrefixIdentity identity;
     const int entry_b = capture_and_match(
-        cache, {.source = make_capture_source(src.state.text_kv, leases, retained_b, 5,
-                                              ctx.stream),
+        cache, {.source = CaptureSourceRef(src.state.text_kv, leases, retained_b, 5,
+                                              ctx.stream, identity),
                 .retained = retained_b},
         "index match B");
     const int entry_a = capture_and_match(
-        cache, {.source = make_capture_source(src.state.text_kv, leases, retained_a, 6,
-                                              ctx.stream),
+        cache, {.source = CaptureSourceRef(src.state.text_kv, leases, retained_a, 6,
+                                              ctx.stream, identity),
                 .retained = retained_a},
         "index match A");
     const int entry_c = capture_and_match(
-        cache, {.source = make_capture_source(src.state.text_kv, leases, retained_c, 6,
-                                              ctx.stream, true),
+        cache, {.source = CaptureSourceRef(src.state.text_kv, leases, retained_c, 6,
+                                              ctx.stream, identity, true),
                 .retained = retained_c},
         "index match C");
     expect(entry_a != 0 && entry_b != 0 && entry_c != 0, "index match all three indexed");
@@ -536,7 +569,12 @@ int test_index_match(ninfer::DeviceContext& ctx) {
     cache.claim(entry_b);
     expect(cache.plan_match(retained_b, detail::prefix_hash_chain(retained_b)) == std::nullopt,
            "claimed exclusive entry is hidden");
-    detail::RamRestoreTarget restore{.stream = ctx.stream};
+    auto restore_handles = handles(leases);
+    detail::RamRestoreTarget restore{
+        .text_pages = restore_handles,
+        .text_cache = &src.state.text_kv,
+        .stream     = ctx.stream,
+    };
     cache.unpack_device(entry_b, restore);
     cache.consume(entry_b);
     expect(cache.plan_match(retained_b, detail::prefix_hash_chain(retained_b)) == std::nullopt,
@@ -552,7 +590,6 @@ int test_index_match(ninfer::DeviceContext& ctx) {
     cache.consume(entry_c);
     match_c = cache.plan_match(retained_c, detail::prefix_hash_chain(retained_c));
     expect(match_c && match_c->entry_id == entry_c, "multi-claim entry survives consume");
-    cache.release(entry_c);
     cache.release(entry_c);
     return bad;
 }
@@ -572,9 +609,10 @@ int test_checkpoint_fallback(ninfer::DeviceContext& ctx) {
 
     const auto prompt = text_prompt({10, 100, 101, 102, 103, 104});
     const auto retained = retained_prompt(prompt);
+    detail::ResidentPrefixIdentity identity;
     const int entry = capture_and_match(
-        cache, {.source = make_capture_source(src.state.text_kv, leases, retained, 6, ctx.stream,
-                                              false, /*checkpoint_frontier=*/3),
+        cache, {.source = CaptureSourceRef(src.state.text_kv, leases, retained, 6, ctx.stream,
+                                              identity, false, /*checkpoint_frontier=*/3),
                 .retained = retained},
         "checkpoint capture");
     expect(entry != 0, "checkpoint capture indexed");
@@ -610,28 +648,35 @@ int test_fifo_eviction(ninfer::DeviceContext& ctx) {
     const auto prompt_hot = text_prompt({10, 1, 2, 3, 4});
     const auto retained_hot = retained_prompt(prompt_hot);
     const std::uint32_t frontier = 5;
-    // Two entries fit without pressure; the third forces an eviction.
-    const std::size_t capacity = 96 * 1024;
+    // Each 2-page record is 1024B for this spec, so the budget fits exactly two records and
+    // the third capture forces an eviction of the coldest unpinned record.
+    const std::size_t capacity = 2560;
     {
         detail::KVRamCache cache(capacity, host_arena);
+        detail::ResidentPrefixIdentity identity;
         // First pass: prove a demonstrated lineage gets a protected record at capture.
         int hot_entry = capture_and_match(
-            cache, {.source = make_capture_source(src.state.text_kv, leases, retained_hot,
-                                                  frontier, ctx.stream),
+            cache, {.source = CaptureSourceRef(src.state.text_kv, leases, retained_hot,
+                                                  frontier, ctx.stream, identity),
                     .retained = retained_hot},
             "eviction first capture");
         expect(hot_entry != 0, "eviction first capture indexed");
         if (hot_entry == 0) { return bad; }
         cache.claim(hot_entry);
-        detail::RamRestoreTarget restore{.stream = ctx.stream};
+        auto restore_handles = handles(leases);
+        detail::RamRestoreTarget restore{
+            .text_pages = restore_handles,
+            .text_cache = &src.state.text_kv,
+            .stream     = ctx.stream,
+        };
         cache.unpack_device(hot_entry, restore);
         cache.consume(hot_entry);
         expect(cache.snapshot().entry_count == 0, "exclusive entry consumed");
 
         // Same lineage again: this record starts out protected.
         int protected_entry = capture_and_match(
-            cache, {.source = make_capture_source(src.state.text_kv, leases, retained_hot,
-                                                  frontier, ctx.stream),
+            cache, {.source = CaptureSourceRef(src.state.text_kv, leases, retained_hot,
+                                                  frontier, ctx.stream, identity),
                     .retained = retained_hot},
             "eviction protected capture");
         expect(protected_entry != 0, "protected capture indexed");
@@ -639,8 +684,8 @@ int test_fifo_eviction(ninfer::DeviceContext& ctx) {
         const auto prompt_cold1 = text_prompt({10, 20, 30, 40, 50});
         const auto retained_cold1 = retained_prompt(prompt_cold1);
         const int cold1 = capture_and_match(
-            cache, {.source = make_capture_source(src.state.text_kv, leases, retained_cold1,
-                                                  frontier, ctx.stream),
+            cache, {.source = CaptureSourceRef(src.state.text_kv, leases, retained_cold1,
+                                                  frontier, ctx.stream, identity),
                     .retained = retained_cold1},
             "eviction cold1");
         expect(cold1 != 0, "cold1 indexed");
@@ -648,12 +693,12 @@ int test_fifo_eviction(ninfer::DeviceContext& ctx) {
         const auto prompt_cold2 = text_prompt({10, 60, 70, 80, 90});
         const auto retained_cold2 = retained_prompt(prompt_cold2);
         const int cold2 = capture_and_match(
-            cache, {.source = make_capture_source(src.state.text_kv, leases, retained_cold2,
-                                                  frontier, ctx.stream),
+            cache, {.source = CaptureSourceRef(src.state.text_kv, leases, retained_cold2,
+                                                  frontier, ctx.stream, identity),
                     .retained = retained_cold2},
             "eviction cold2");
         expect(cold2 != 0, "cold2 indexed");
-        expect(cache.snapshot().entry_count == 3, "eviction all three resident");
+        expect(cache.snapshot().entry_count == 2, "coldest evicted, two resident");
         expect(cache.snapshot().evictions >= 1, "eviction happened under pressure");
 
         auto match_cold1 =
@@ -686,8 +731,9 @@ int test_dtor_with_inflight(ninfer::DeviceContext& ctx) {
     const auto retained = retained_prompt(prompt);
     {
         detail::KVRamCache cache(1024 * 1024, host_arena);
+        detail::ResidentPrefixIdentity identity;
         detail::RamCaptureSource source =
-            make_capture_source(src.state.text_kv, leases, retained, 3, ctx.stream);
+            make_capture_source(src.state.text_kv, leases, retained, 3, ctx.stream, identity);
         expect(cache.capture(source), "dtor capture accepted");
         // Deliberately no synchronize: the destructor must reap the in-flight copy safely.
     }
@@ -696,8 +742,9 @@ int test_dtor_with_inflight(ninfer::DeviceContext& ctx) {
     // The shared arena is still usable by a later cache.
     {
         detail::KVRamCache cache(1024 * 1024, host_arena);
+        detail::ResidentPrefixIdentity identity;
         detail::RamCaptureSource source =
-            make_capture_source(src.state.text_kv, leases, retained, 3, ctx.stream);
+            make_capture_source(src.state.text_kv, leases, retained, 3, ctx.stream, identity);
         expect(cache.capture(source), "arena reused after dtor");
     }
     ctx.synchronize();
