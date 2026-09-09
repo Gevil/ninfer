@@ -278,6 +278,20 @@ preservation (`RewriteCheckpoint`/`TurnClosure`, `RequestClass::Agents`, T34 gua
 **Gate:** TTFT / decode / cache-hit-rate A/B + battery + greedy parity (V2-T8 is decode-affecting via the
 cache-hit path); the shared-vs-separate pool decision settled by a host-RAM-accounting A/B.
 
+**Scoping re-verify (2026-09-09, post-V2-T5):** re-confirmed on the current baseline - no upstream drift
+(`quasar-master...upstream/master` = 1/0, tip still `b88c0f6f`), executor surface unchanged
+(`concurrent_executor.h` = 0, `scheduler.h`/`resource_manager.h` = 1 each, all 20 gpillon SHAs resolve), and both
+F1 baseline halves are present (`Scheduler`/`ResourceManager`/`admission_policy` + `HostKVArena`/`HostKVExtentStore`).
+**Magnitude:** the 4 cluster picks total **~+8,000 lines** (`de386ad6` alone +7483/-227 across ~45 files incl. the
+executor + serve + qwen3_6 runtime + tests; `f144f052` +284/-59; `27665883` +68; `7bdee888` +158), and the
+`kv_ram_cache.{h,cpp}` core is 1463 lines (`kv_ram_cache.h` 314 + `.cpp` 1149) + `kv_ram_snapshot.h` 28 + 4 tests.
+This is a **multi-week hand-port, not a quick pick**. Sequencing: (1) port `kv_ram_cache.{h,cpp}` + integrate with
+`HostKVArena`/`HostKVExtentStore` on the shared `--host-kv-mib` pool (decision 2); (2) re-target the 4 cluster picks
+onto the split executor (each `concurrent_executor.h` hunk -> its correct half: scheduling -> `Scheduler`/`EngineCore`,
+cache-policy -> `ResourceManager`, RAM-snapshot/stats -> `KVRamCache` + `EngineCore`); (3) the self-contained picks
+(tool-call leak, warmup decouple/fail-fast, block-host-sync, MTP-widths) are independent and can land separately.
+**Branch base:** the current lane state (V2-T5), so the T8 picks stack on the shipped T1/T2/T3/T5.
+
 ## 7. V2 tier plan (the next tiers, in adoption order)
 
 Order: stability → cheap agentic wins → re-adopt our own still-unique work → external perf →
