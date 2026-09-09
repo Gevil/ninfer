@@ -418,6 +418,18 @@ Verified: per-TU `g++ -fsyntax-only` clean on `kv_ram_cache.cpp`, the 27b `varia
 `program_impl.h` + engine), `serve_options.cpp`, `generation_service.cpp`; and a **full
 `cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DNINFER_BUILD_APPS=ON` + `cmake --build --target
 ninfer ninfer-serve` = RC=0** (buildstage container, CUDA 13.1, arch 120a).
+
+**Test suite port (2026-09-09, commit `857f8ca7` on `v2/t8-agentic`):** the re-targeted unit
+suite `tests/targets/qwen3_6/test_kv_ram_cache.cpp` (registered as
+`ninfer_qwen3_6_kv_ram_cache_test`, `SKIP_RETURN_CODE 77`) covers the substrate's observable
+contract: paged-KV image round trip through the shared `HostKVArena` (including captures with
+non-contiguous physical page runs), the complete `StateImage` round trip (linear conv/recurrent,
+continuation hidden, DFlash local cyclic K/V), honest `prefix_hash_chain` index behavior
+(longest match, frontier beats checkpoint, checkpoint fallback, exclusive-claim hiding,
+consume-erase, multi-claim stays matchable), two-tier FIFO eviction with
+lineage-demonstrated protection, and destructor safety with in-flight copies. Compile + link
+GREEN (buildstage container, `BUILD_TESTING=ON`); the no-GPU SKIP path verified (rc 77). GPU
+execution is part of the supervised runtime gate below.
 **V2-T8 status: ADOPTED (code-complete, build-verified on `quasar-master`).** Remaining before
 ship: runtime A/B (host-RAM hit path: TTFT/decode/cache-hit) + battery 16/16 + greedy parity —
 the lane gate of §6.5, executed via the supervised pipeline (§10.2).
@@ -435,6 +447,10 @@ and `a5ba1ee5` (WIP host-RAM prefix reuse: `kv_ram_cache.{h,cpp}` re-target + `p
 `ninfer` + `ninfer-serve` Release build in the buildstage container (CUDA 13.1, arch 120a)
 **RC=0** (log `/tmp/v2-t8-wt/build.log`). Not yet live: the runtime gate (§6.5 — host-RAM A/B +
 battery 16/16 + greedy parity) is the next supervised window.
+Ported unit test suite `857f8ca7` (`ninfer_qwen3_6_kv_ram_cache_test`: KV/state-image
+round trips, irregular page runs, hash-chain index behavior, tiered eviction, lifecycle,
+dtor safety; compile + link + no-GPU SKIP path verified) — GPU ctest execution is part of
+the same gate.
 
 | Tier | Content | Source | Gate |
 |---|---|---|---|
