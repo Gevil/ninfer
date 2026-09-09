@@ -331,7 +331,7 @@ the substrate's `prefix_matches(prompt, std::vector<TokenId>, …)` call convert
 the substrate to the baseline's values).
 
 **`concurrent_executor.h` dependency:** the baseline has **no** `concurrent_executor.h` (0 matches);
-the 4 cluster picks (`de386ad6`/`f144f052`/`2065ed38`/`e13006c4`) touch it + `admission_policy.{h,cpp}`
+the 4 cluster picks (`de386ad6`/`f144f052`/`2065ed38`/`7a4634b5`) touch it + `admission_policy.{h,cpp}`
 + `api_impl.h` + `runtime.h`. The executor was restructured upstream (the `resource_manager.h`
 rename), so each pick's executor hunk re-targets to its correct half (scheduling → `Scheduler`/
 `EngineCore`, cache-policy → `ResourceManager`, RAM-snapshot/stats → `KVRamCache` + `EngineCore`).
@@ -349,7 +349,7 @@ rename), so each pick's executor hunk re-targets to its correct half (scheduling
   `LinearAttentionStatePool` (GDN, 6 files), `CyclicKVCache` (dflash, 7 files), `Tensor`, and its own
   `src/core/paged_kv_cache.h` — but a **different paged-KV design** (`DeviceKVPagePool`/
   `DeviceKVPageHandle`/`DeviceKVPageLease`/`KVExecutionTablePool`, vs gpillon's `PagedKVAllocation`/
-  `PagedKVPool`; 0 baseline files for the latter). So the re-target is: (1) map the substrate's
+`HostKVExtentStore`. `concurrent_executor.h` is **gone**: 0 matches in the baseline tree; scheduling half → `Scheduler`,
   `PagedKVAllocation*`/`PagedKVPool*` (`RamCaptureSource.text/text_pool/backend/backend_pool`) to the
   baseline's `DeviceKVPageHandle`/`DeviceKVPagePool` page-pool API (the main work); (2) add the small
   `RequestClass` enum (0 baseline files) or re-target the `owner_class` filter; (3) map the GDN/dflash/
