@@ -562,5 +562,11 @@ curl -s 'https://api.github.com/repos/Neroued/ninfer/pulls?state=open&per_page=4
   | jq -r '.[] | "\(.number) \(.title) \(.head.sha)"'
 ```
 
+**Non-commit hex tokens (SHA-check convention):** the SHA-resolution check (§Appendix A)
+passes for every *commit* SHA in the doc. Five tokens are intentionally non-commit:
+four Docker image ids (`12b87f4d`, `408c7df8`, `68cec959`, `f8b76e5a4dc2` — the deployed
+lane images for V2-T3/T2/T4/T5) and the 8-char sha256 prefix `180e7015` of
+`chat_template.jinja`. PR #211's head `0687a66e` resolves via the fetched `refs/pr/211`.
+
 *End of ADOPTION-V2. Previous authorities: `t42wave-quasar:ADOPTION.md` (operational, until this
 file) and `master:ADOPTION.md` (historical round ledger).*
