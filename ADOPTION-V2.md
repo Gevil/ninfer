@@ -292,6 +292,56 @@ cache-policy -> `ResourceManager`, RAM-snapshot/stats -> `KVRamCache` + `EngineC
 (tool-call leak, warmup decouple/fail-fast, block-host-sync, MTP-widths) are independent and can land separately.
 **Branch base:** the current lane state (V2-T5), so the T8 picks stack on the shipped T1/T2/T3/T5.
 
+### 6.6 V2-T8 port progress + dependency-surface findings (2026-09-09 evening)
+
+**Committed progress on `v2/t8-agentic` (branched off `v2/t5-decode`):**
+- `kv_ram_cache.{h,cpp}` + `kv_ram_snapshot.h` ported verbatim (the 33-file hand-port's core; the
+  substrate the 4 cluster picks build on). Header-self-contained on baseline types
+  (`std::bit_cast` is a baseline include; `TokenId`/`PromptData`/`std::span`/`std::unordered_map`
+  all present); uses only `std::`/`ninfer::` symbols.
+- `HostPinnedArena` ported into `core/arena.{h,cu}` (the gpillon-specific first-fit pinned-host
+  block allocator the substrate draws on). All five helpers it uses (`cuda_error_message`,
+  `free_pinned`, `is_power_of_two`, `checked_add_uintptr`, `align_up_addr`) already exist in the
+  baseline's `arena.cu`, so it's a verbatim class + impl port. Interim host-RAM pool; the
+  shared-vs-forked decision (§6.5 decision 2) is a later A/B.
+
+**The core difficulty — the `prefix_identity` design divergence.** The baseline's
+`ResidentPrefixIdentity` (execution-split: `rewrite_execution_frontiers_` + `equals`/`prefix_equals`
++ the separate `PrefixShortlistDigests` + `append_generated(…, execution_split_after)`) and
+gpillon's (packed/hash: `pack`/`unpack`/`packed_bytes` + `PrefixHash128` + `prefix_hash_chain`/
+`prefix_hash_at` + the FNV mix helpers) are **divergent designs, not a superset** (conflicting
+`matches` impls + helper names). The substrate needs gpillon's packed/hash; the baseline's decoder
+(7 files: `engine.cpp`, `frontend.cpp`, `api_impl.h`, `program.h`, `program_impl.h`,
+`request_plan_impl.h`, `frontend.h`) needs the baseline's execution-split. **Reconciliation
+(decided): keep the baseline's execution-split `ResidentPrefixIdentity` + `PrefixShortlistDigests`,
+and ADD gpillon's packed/hash additions** — the shared members (`token_types_`/`positions_`/
+`vision_items_`) are identical, so `pack`/`unpack`/`packed_bytes` + `PrefixHash128` + the FNV
+helpers + `prefix_hash_chain`/`prefix_hash_at` + the `token_types()`/`positions()`/`vision_items()`
+accessors slot in without disturbing the execution-split methods; the substrate's 2-arg
+`append_generated` calls work against the baseline's 3-arg signature (3rd arg defaults `nullopt`);
+the substrate's `prefix_matches(prompt, std::vector<TokenId>, …)` call converts to the baseline's
+`std::span` signature.
+
+**`PrefixReusePath` value divergence:** the baseline's `contract/types.h` uses
+`PrefixReusePath::Root` (lines 452, 581); the substrate uses `FullReset`/`AppendAtFrontier`/
+`RestoreTurnCheckpoint`/`RestoreResponseCheckpoint` → add the missing enum values (or re-target
+the substrate to the baseline's values).
+
+**`concurrent_executor.h` dependency:** the baseline has **no** `concurrent_executor.h` (0 matches);
+the 4 cluster picks (`de386ad6`/`f144f052`/`2065ed38`/`e13006c4`) touch it + `admission_policy.{h,cpp}`
++ `api_impl.h` + `runtime.h`. The executor was restructured upstream (the `resource_manager.h`
+rename), so each pick's executor hunk re-targets to its correct half (scheduling → `Scheduler`/
+`EngineCore`, cache-policy → `ResourceManager`, RAM-snapshot/stats → `KVRamCache` + `EngineCore`).
+
+**Remaining steps (the multi-week tail):** (1) the `prefix_identity` merge (the reconciliation
+above); (2) the `PrefixReusePath` values; (3) the 4 cluster picks' executor re-targeting; (4) the
+CMake (`kv_ram_cache.cpp` into `qwen3_6/CMakeLists.txt`) + per-TU syntax checks; (5) the full build
+(2.6k TU — OOM-prone on the host → buildstage container); (6) ctest (`test_engine_ram_kv` +
+`test_engine_kv_cache` + the prefix-identity tests); (7) the battery; (8) the shared-vs-forked pool
+A/B (§6.5 decision 2); (9) the supervised ship (shipwatch). **This is a multi-week effort** — the
+substrate + `HostPinnedArena` are the first committed increments; the `prefix_identity` design
+reconciliation is the core remaining difficulty.
+
 ## 7. V2 tier plan (the next tiers, in adoption order)
 
 Order: stability → cheap agentic wins → re-adopt our own still-unique work → external perf →
