@@ -680,7 +680,13 @@ ToolCallOutputDecoder::Terminal ToolCallOutputDecoder::finish() {
 
     ParsedToolCallOutput parsed =
         parse_qwen_tool_call_output(tool_region_, max_tool_name_length_, *contract_);
-    if (saw_tool_marker_ && parsed.is_tool_call_response) {
+    // A complete <tool_call> marker was seen: the buffered region is the tool-call
+    // protocol region and is never replayed as visible content, even when the final
+    // parser rejects the call as malformed/unclosed (it drops that raw XML silently).
+    // Replaying it here is what leaked the XML and tripped the streamed-bytes invariant
+    // in http_server.cpp's unstreamed_content() (gpillon 5f014910, hand-ported onto the
+    // restructured ToolCallOutputDecoder).
+    if (saw_tool_marker_) {
         trailing_whitespace_.clear();
         tool_region_.clear();
         marker_prefix_bytes_ = 0;

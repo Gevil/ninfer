@@ -674,7 +674,7 @@ int test_incremental_valid_and_boolean() {
     return failures;
 }
 
-int test_incremental_fallback_preserves_bytes() {
+int test_incremental_fallback_no_tool_call_xml_leak() {
     const std::string original = "prefix  \n<tool_call>\n<function=broken>";
     fi::ToolCallOutputDecoder malformed(std::make_shared<fi::ToolCallOutputContract>(), 64);
     std::string restored;
@@ -696,10 +696,14 @@ int test_incremental_fallback_preserves_bytes() {
     partial_restored += partial.finish().content;
 
     int failures = 0;
-    failures += check(restored == original && malformed_terminal.diagnostics.marker_seen &&
+    // Post-fix (gpillon 5f014910 hand-port): once a full <tool_call> marker is seen, the
+    // buffered region (incl. the preceding whitespace) is the tool-call protocol region
+    // and is never replayed as visible content - only the text seen before the marker
+    // ("prefix") stays visible. The old "preserves_bytes" behavior leaked the raw XML.
+    failures += check(restored == "prefix" && malformed_terminal.diagnostics.marker_seen &&
                           malformed_terminal.diagnostics.fallback_reason ==
                               ninfer::ToolCallParseFallbackReason::MalformedStructure,
-                      "malformed incremental call lost raw bytes or fallback diagnostics");
+                      "malformed tool-call XML was replayed as visible content after the marker");
     failures += check(ordinary_text == "ordinary text  ",
                       "ordinary incremental output lost trailing whitespace");
     failures +=
@@ -754,7 +758,7 @@ int main() {
     failures += test_conflicting_duplicate_tool_contracts_use_legacy_normalization();
     failures += test_all_or_nothing_structural_commit();
     failures += test_incremental_valid_and_boolean();
-    failures += test_incremental_fallback_preserves_bytes();
+    failures += test_incremental_fallback_no_tool_call_xml_leak();
     failures += test_incremental_embedded_parameter_markup();
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
