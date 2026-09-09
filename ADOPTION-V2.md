@@ -392,6 +392,17 @@ rename), so each pick's executor hunk re-targets to its correct half (scheduling
   paged-KV checkpoint policy (vs the per-extent demotion). This makes the re-target **smaller than
   "weeks of new serialization"**: a policy + gap bridge onto existing baseline mechanisms, not a
   from-scratch byte layout.
+- **Both bridge halves PROVEN by compiling spikes (09-09, exit 0, md5-verified against quasar-master
+  headers):** the state-image bridge (`spike_stateimage_bridge.cpp`: `StateImageDevicePool::
+  copy_to_host`/`copy_from_host` + `HostStatePool::allocate`/`writable_view`/`view` for the
+  GDN/hidden/dflash-local slice) and the host-KV extent store bridge (`spike_hostkv_bridge.cpp`:
+  `HostKVExtentStore::prepare`/`device_sources`/`writable_view`/`publish` for the text/backend
+  paged-KV slice) both compile cleanly against the real baseline API. The two-mechanism mapping is
+  now proven, not just inferred: state half -> the baseline's state image (slot-granular), paged-KV
+  half -> the baseline's host-KV extent store (page-granular). Remaining: wiring both into
+  `kv_ram_cache.cpp` (replacing the substrate's `make_capture_header`/`pack`/`unpack`) + closing the
+  two gaps (the `dflash_checkpoint` + the whole-lane checkpoint policy) + the cluster picks'
+  executor re-targeting + the supervised build/ctest/battery.
 
 ## 7. V2 tier plan (the next tiers, in adoption order)
 
