@@ -13,6 +13,18 @@
 
 namespace ninfer::targets::qwen3_6::detail {
 
+struct PrefixHash128 {
+    std::uint64_t lo = 0;
+    std::uint64_t hi = 0;
+
+    [[nodiscard]] friend bool operator==(const PrefixHash128& a, const PrefixHash128& b) noexcept {
+        return a.lo == b.lo && a.hi == b.hi;
+    }
+    [[nodiscard]] friend bool operator!=(const PrefixHash128& a, const PrefixHash128& b) noexcept {
+        return !(a == b);
+    }
+};
+
 class ResidentPrefixIdentity {
 public:
     void reserve(std::size_t tokens);
@@ -28,6 +40,22 @@ public:
     [[nodiscard]] bool matches(const PreparedPromptData& prompt, std::size_t count) const;
     [[nodiscard]] bool equals(const ResidentPrefixIdentity& other) const;
     [[nodiscard]] bool prefix_equals(const ResidentPrefixIdentity& other, std::size_t count) const;
+    // Packed serialization + hash-chain accessors (V2-T8 RAM-KV cache); added to the
+    // execution-split design without disturbing the decoder's methods (shared members only).
+    [[nodiscard]] std::span<const std::uint8_t> token_types() const noexcept {
+        return std::span<const std::uint8_t>(token_types_);
+    }
+    [[nodiscard]] std::span<const std::int32_t> positions(std::size_t axis) const {
+        return positions_.at(axis);
+    }
+    [[nodiscard]] std::span<const VisionItem> vision_items() const noexcept {
+        return std::span<const VisionItem>(vision_items_);
+    }
+    [[nodiscard]] std::size_t packed_bytes() const;
+    void pack(void* dst) const;
+    void unpack(const void* src, std::size_t bytes);
+    void test_tamper_content_digest(std::size_t item, std::uint8_t byte);
+
 
 private:
     std::vector<std::uint8_t> token_types_;
@@ -63,5 +91,10 @@ private:
                                   std::span<const TokenId> resident_tokens,
                                   const ResidentPrefixIdentity& resident_identity,
                                   std::size_t count);
+[[nodiscard]] std::vector<PrefixHash128> prefix_hash_chain(const PreparedPromptData& prompt);
+
+[[nodiscard]] PrefixHash128 prefix_hash_at(std::span<const TokenId> tokens,
+                                           const ResidentPrefixIdentity& identity,
+                                           std::size_t count);
 
 } // namespace ninfer::targets::qwen3_6::detail
