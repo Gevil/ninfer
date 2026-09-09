@@ -1,5 +1,6 @@
 #include "artifact/binder.h"
 #include "artifact/reader.h"
+#include "artifact_fixture.h"
 #include "targets/qwen3_6_27b/impl/load/bindings.h"
 #include "targets/qwen3_6_27b/impl/variant.h"
 
@@ -12,6 +13,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
 #include <variant>
@@ -73,7 +75,7 @@ bool valid_divisors(const WeightPlan& weight) {
 
 int verify_groupwise(const std::filesystem::path& path) {
     ninfer::artifact::Reader reader(path);
-    if (Package::resolve_weights(reader.identity()) != WeightsProfile::Qwen36GroupwiseInt) {
+    if (Package::resolve_weights(reader) != WeightsProfile::Qwen36GroupwiseInt) {
         std::cerr << "groupwise identity resolved to the wrong profile\n";
         return 1;
     }
@@ -114,7 +116,7 @@ int verify_groupwise(const std::filesystem::path& path) {
 
 int verify_nvfp4(const std::filesystem::path& path) {
     ninfer::artifact::Reader reader(path);
-    if (Package::resolve_weights(reader.identity()) != WeightsProfile::Qwen36Nvfp4) {
+    if (Package::resolve_weights(reader) != WeightsProfile::Qwen36Nvfp4) {
         std::cerr << "NVFP4 identity resolved to the wrong profile\n";
         return 1;
     }
@@ -258,8 +260,21 @@ int verify_dflash2_bundle(const std::filesystem::path& path, WeightsProfile prof
 }
 
 int verify_rejection() {
+    const nlohmann::json directory = {
+        {"identity", {{"model_id", "qwen3.6-27b"}, {"weights_id", "unknown"}}},
+        {"objects",
+         nlohmann::json::array({
+             {{"name", "dummy"},
+              {"kind", "resource"},
+              {"encoding", "raw-bytes-v1"},
+              {"offset", 0},
+              {"bytes", 1}}})},
+    };
+    const auto fixture =
+        ninfer::test::artifact_fixture::write_fixture(directory, "reject_unknown_identity");
     try {
-        (void)Package::resolve_weights({"qwen3.6-27b", "unknown"});
+        ninfer::artifact::Reader reader(fixture.path);
+        (void)Package::resolve_weights(reader);
     } catch (const std::runtime_error& error) {
         const std::string message = error.what();
         if (message.find("qwen3.6-27b/unknown") != std::string::npos) { return 0; }
