@@ -331,7 +331,7 @@ the substrate's `prefix_matches(prompt, std::vector<TokenId>, …)` call convert
 the substrate to the baseline's values).
 
 **`concurrent_executor.h` dependency:** the baseline has **no** `concurrent_executor.h` (0 matches);
-the 4 cluster picks (`de386ad6`/`f144f052`/`2065ed38`/`7a4634b5`) touch it + `admission_policy.{h,cpp}`
+the 11 cluster picks that patch it (verified per-pick `git show --name-only`) touch it + `admission_policy.{h,cpp}`
 + `api_impl.h` + `runtime.h`. The executor was restructured upstream (the `resource_manager.h`
 rename), so each pick's executor hunk re-targets to its correct half (scheduling → `Scheduler`/
 `EngineCore`, cache-policy → `ResourceManager`, RAM-snapshot/stats → `KVRamCache` + `EngineCore`).
@@ -477,7 +477,7 @@ battery 16/16 + greedy parity) is the next supervised window.
 
 **Open, lane-relevant:**
 #211 (P0 → **V2-T1 — SHIPPED 2026-09-09** as `ba21e676`; PR still open upstream, head force-moved
-dce5f773 → `0687a66e`, same 3-file stream-threading fix) · #213 (groupwise-W8 for 27B text
+dce5f773 → `0687a66c`, same 3-file stream-threading fix) · #213 (groupwise-W8 for 27B text
 projections + W8 leading-dim fix; makes #201 relevant if 27b-W8 lands) · #202 (L2 linear-attention
 pin — GDN dead path for us) · #201 (w8 rowsplit activation-cache policy) · #200/#199 (MoE — dead
 path) · #197 (`ignore_eos`) · #195 (weights-format preset fallback, prefill-cost 3.1× → 1.15×) ·
@@ -566,7 +566,7 @@ curl -s 'https://api.github.com/repos/Neroued/ninfer/pulls?state=open&per_page=4
 passes for every *commit* SHA in the doc. Five tokens are intentionally non-commit:
 four Docker image ids (`12b87f4d`, `408c7df8`, `68cec959`, `f8b76e5a4dc2` — the deployed
 lane images for V2-T3/T2/T4/T5) and the 8-char sha256 prefix `180e7015` of
-`chat_template.jinja`. PR #211's head `0687a66e` resolves via the fetched `refs/pr/211`.
+`chat_template.jinja`. PR #211's head `0687a66c` resolves via the fetched `refs/pr/211`.
 
 *End of ADOPTION-V2. Previous authorities: `t42wave-quasar:ADOPTION.md` (operational, until this
 file) and `master:ADOPTION.md` (historical round ledger).*
