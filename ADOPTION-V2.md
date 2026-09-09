@@ -404,12 +404,37 @@ rename), so each pick's executor hunk re-targets to its correct half (scheduling
   two gaps (the `dflash_checkpoint` + the whole-lane checkpoint policy) + the cluster picks'
   executor re-targeting + the supervised build/ctest/battery.
 
+**FINAL — WIP port complete, full build GREEN (2026-09-09, commit `a5ba1ee5` on `v2/t8-agentic`):**
+the previously-uncommitted WIP half (the `de386ad6` + `f144f052` engine layer, never committed to
+any branch) is now ported: `kv_ram_cache.{h,cpp}` fully re-targeted onto the baseline
+(`create_active`/`mapped_pages`/`physical_page` page-pool API; KV-page capture/restore via the
+baseline's `LogicalKVPageStore` + `DeviceKVPagePool` host-copy; state half via the state-image
+bridge, kRamVersion 4); `request_plan_impl.h` `plan_ram_reuse()` (terminal admission-time prefix
+match → `reuse_source=HostRam` + `ram_entry_id`, MTP-aware); `program_impl.h`
+`capture_retained_lane()`/`restore_ram_entry()` wired into the lane lifecycle; stats plumbing
+`kv_ram_snapshot()` → `RuntimeStats` + the `--kv-ram-mib` serve option (0 = disabled, default)
+through `SequencePlanningInputs` → `SequencePlanImpl` → `ProgramImplCore`.
+Verified: per-TU `g++ -fsyntax-only` clean on `kv_ram_cache.cpp`, the 27b `variant.cpp` (pulls
+`program_impl.h` + engine), `serve_options.cpp`, `generation_service.cpp`; and a **full
+`cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DNINFER_BUILD_APPS=ON` + `cmake --build --target
+ninfer ninfer-serve` = RC=0** (buildstage container, CUDA 13.1, arch 120a).
+**V2-T8 status: ADOPTED (code-complete, build-verified on `quasar-master`).** Remaining before
+ship: runtime A/B (host-RAM hit path: TTFT/decode/cache-hit) + battery 16/16 + greedy parity —
+the lane gate of §6.5, executed via the supervised pipeline (§10.2).
+
 ## 7. V2 tier plan (the next tiers, in adoption order)
 
 Order: stability → cheap agentic wins → re-adopt our own still-unique work → external perf →
 the big hand-port. Every tier ships through the supervised pipeline (§10.2).
 **Status as of 2026-09-09:** **V2-T1 has shipped** (branch `v2/t1-stream-kv` @ `ba21e676`, image tag `v2t1-ba21e676`); **V2-T2 SHIPPED 2026-09-09** (2nd attempt; branch `v2/t2-agentic` @ `0faef6d4`, tag `v2t2-0faef6d4`, image `408c7df8` = `:quasar`): first ship rolled back on the battery's cold decode-fresh gate (15/16), the user accepted the ~5 % decode trade-off for the host-core savings, and a supervised retag+restart window deployed it — verified live, host ~0.9 % CPU during decode (busy-wait gone); pick 17 only, §6.2). **V2-T4 REJECTED (measured 2026-09-09):** the 2 solid on-path picks (`49400365` GDN + `d3278b79` rope; branch `v2/t4-readopt` @ `aa27864c`, image `68cec959`) built clean + ctest-clean, but the battery's DECODE-FRESH + DECODE-8K gates FAILED (140.6 / 142.8 tps vs the 162.0 / 165.3 V2-T2 baseline — a ~9 % decode regression beyond V2-T2's accepted ~5 % trade-off) → ship **ROLLED BACK** (lane back on V2-T2 `408c7df8`, verified). Our old T18/t42wave perf picks regress on the evolved baseline; the remaining V2-T4 picks are off-path / hand-port / content-superseded (see the row). **V2-T3 SHIPPED 2026-09-09** (user overrode the red DECODE-8K gate — it was red only from a power-constrained GPU state, not a V2-T3 regression; the fix is decode-neutral): tool-call XML leak fix, branch `v2/t3-path-remap` @ `458376c4`, image `12b87f4d` = `:quasar` (now live). Deployed via a supervised retag-only window; the first window run rolled back on a script self-check bug (an unexpanded `~` in a double-quoted template path tripped the ERR-trap rollback, and a missing `set -e` then clobbered the marker with a false DEPLOYED) — the script was fixed + retried clean (~23s, no rollback). Verified live: serving image `12b87f4d`, `/v1/models` → `qwen3.8-27b`, template sha256 `180e7015…` byte-identical, quadlet untouched, decode smoke OK. V2-T5…V2-T9 remain pending.
 **V2-T5 SHIPPED 2026-09-09 (gate override, A/B-verified):** the 3 on-path decode picks (`38f52b34` argmax winner-init kernel + `61250e89` nvfp4 SwiGLU expf + `ed150906` w8 rowsplit cache policy; branch `v2/t5-decode` @ `324a8de3`, image `f8b76e5a4dc2` = `:quasar`, retag-only deploy) — the build+ctest+battery pipeline auto-rolled back on a **DECODE-8K-only red** (132.5 vs stored baseline 153.8; 15/16 battery green incl. replay 4/4 + vision + soak 5/5), and a same-window A/B decode-differential with concurrent `nvidia-smi` power/clock sampling proved it a **stale-baseline power artifact, not a regression**: in the same throttled window, live (V2-T3) 8k = 112.1 tps vs candidate 8k = 135.5 tps (**+21 %**), fresh 156.4 vs 128.9, with the candidate at an equal-or-better power state (491 W / 2902 MHz vs 526 W / 2865-2872 MHz). A supervised retag-only window deployed it; verified live (`/v1/models` 200 qwen3.8-27b, quadlet byte-identical, chat_template sha256 `180e7015…`).
+**V2-T8 ADOPTED (code-complete, build-verified 2026-09-09):** the full WIP port landed on
+`v2/t8-agentic` — `71f8e0b1` (paged-KV bridge onto the baseline `HostKVArena` + `DeviceKVPagePool`)
+and `a5ba1ee5` (WIP host-RAM prefix reuse: `kv_ram_cache.{h,cpp}` re-target + `plan_ram_reuse` +
+`capture_retained_lane`/`restore_ram_entry` + `--kv-ram-mib` serve option + stats). Full
+`ninfer` + `ninfer-serve` Release build in the buildstage container (CUDA 13.1, arch 120a)
+**RC=0** (log `/tmp/v2-t8-wt/build.log`). Not yet live: the runtime gate (§6.5 — host-RAM A/B +
+battery 16/16 + greedy parity) is the next supervised window.
 
 | Tier | Content | Source | Gate |
 |---|---|---|---|
@@ -420,7 +445,7 @@ the big hand-port. Every tier ships through the supervised pipeline (§10.2).
 | **V2-T5 — SHIPPED (2026-09-09, gate override, A/B-verified)** | md single-commit decode wave: `38f52b34` (argmax winner-init kernel), `61250e89` (#194 nvfp4 SwiGLU fast), `ed150906` (#201 w8 rowsplit cache policy), `1dfeed7e` (draft-head-narrow branch, 9 commits). Excluded with reasons: `0d9841d2` (bpe-flat-merge-table) — **ABSORBED** (upstreamed as `b158afe2`; content-identical diffstat `tokenizer.{cpp,h}` +82/−15); `0deee4d8` (l2-pin linear-attention state) — GDN dead path for 27B (T44 triage); `01591621` (fp8-a8-tma-staging) — is PR #167's own head, already covered by V2-T4's `52fabe3e` | `md/*` branches | **SHIPPED 2026-09-09** (branch `v2/t5-decode` @ `324a8de3`, image `f8b76e5a4dc2` = `:quasar`, retag-only deploy): the build+ctest+battery pipeline auto-rolled back on a **DECODE-8K-only red** (132.5 vs stored baseline 153.8; 15/16 green incl. replay 4/4 + vision + soak 5/5), and a same-window A/B decode-differential with concurrent `nvidia-smi` power/clock sampling proved it a **stale-baseline power artifact, not a regression** — in the same throttled window, live (V2-T3) 8k = 112.1 tps vs candidate 8k = 135.5 tps (**+21 %**), fresh 156.4 vs 128.9, with the candidate at an equal-or-better power state (491 W / 2902 MHz vs 526 W / 2865-2872 MHz). A supervised retag-only window deployed it; verified live (`/v1/models` 200 qwen3.8-27b, quadlet byte-identical, chat_template sha256 `180e7015…`). Gate §10.5 met in-window |
 | **V2-T6** | cometkim: `c17ccc30` (`feat/qwen3.8-nvfp4qat`, 11 commits — QUASAR-QAT NVFP4 profile; our `f7727926` already carries the `Qwen38Nvfp4*` family → A/B against ours, adopt only if upstream merges their form or the A/B wins) + `6c3fdbf4` (`feat/kernel-perf`, 14 commits — PDL decode chain; the +77 %/+56 % claims must be re-derived on our base first: 3 force-pushes since the 09-08 audit) | `cometkim/*` | profile A/B on the live artifact; PDL claim re-measured on 5090 before any window |
 | **V2-T7** | gzenz host-KV safety-net re-derivation (old T31/T34) from `62b857c1` (117 ahead, 2026-09-09): show the B2 (entitlement) / B3 (frontier) blockers are fixed in the current line, then re-derive the pick set | `gzenz/fix/checkpoint-host-demotion` | only if host-KV re-enable is approved; ctest + host-KV soak |
-| **V2-T8 (large)** | gpillon RAM-KV agentic cluster hand-port: picks 1–11 + 13 (§6.2). **prefix_identity merge + PrefixReusePath + CMake committed on `v2/t8-agentic` + verified clean (rc=0); the substrate re-target (paged-KV pool `src/core/paged_kv_cache.h` + GDN/dflash/Tensor/`RequestClass`) is the next gate — honest scope = months (§6.6).** Design note (§6.5): integrate, not replace — plug the two-tier eviction into `ResourceManager` pressure planning + share the `--host-kv-mib` pool with the `HostKVExtentStore` demotion mirror. Includes the T34 guard (pick 6) + `ac60331d` guard test. Feeds from T48 slices `42c9c7d4`/`a39c5c25` where they overlap | `gpillon/gpillon/coding` + `dylan/experimental` | prefix_identity merge verified (§6.6); then TTFT/decode/cache-hit-rate A/B + battery 16/16 + greedy parity + shipwatch |
+| **V2-T8 (large) — ADOPTED 2026-09-09 (code complete; runtime gate pending)** | gpillon RAM-KV agentic cluster hand-port: picks 1–11 + 13 (§6.2) **plus the never-committed WIP engine layer** (`de386ad6`/`f144f052`, §6.6). **LANDED on `v2/t8-agentic`:** `71f8e0b1` (paged-KV bridge onto the baseline `HostKVArena` + `DeviceKVPagePool`) + `a5ba1ee5` (WIP host-RAM prefix reuse: `kv_ram_cache.{h,cpp}` fully re-targeted onto the baseline page-pool API + state-image bridge kRamVersion 4; `plan_ram_reuse()` terminal admission-time match, MTP-aware; `capture_retained_lane()`/`restore_ram_entry()` in the lane lifecycle; `--kv-ram-mib` serve option + `RuntimeStats`). **Full `ninfer` + `ninfer-serve` Release build GREEN** (CUDA 13.1/120a, RC=0). Design (§6.5): integrate, not replace — eviction via `ResourceManager` pressure planning; shared `--host-kv-mib` pool with the `HostKVExtentStore` demotion mirror. Includes the T34 guard (pick 6) + `ac60331d` guard test | `gpillon/gpillon/coding` | **DONE: full build green.** NEXT (supervised lane window): host-RAM hit-path A/B (TTFT/decode/cache-hit at C=4, ≥100k agentic prompt) + battery 16/16 + greedy parity |
 | **V2-T9 (conditional)** | adaptive MTP widths trio `c2708ec8` → `9d86436c` → `9bef0f73` + MTP items `505d1af7`, `1f155fed` (= our `fa12e8ef`) — **only if the lane returns to `--spec mtp`**; today it runs upstream dflash2 | `gpillon/gpillon/coding`, `md/*` | acceptance + decode A/B under MTP |
 | **Watches** | #208 (stability, tracks V2-T1), #213/#201 (groupwise-W8 for 27B text projections), #197 `ignore_eos`, #183 `--chat-template FILE` (T38), #152/#163/#162 (serve ergonomics; T32 cluster #176–#181/#184), #61 (per-image vision budget), #173 REJECT (sub-floor KV), #107/#97/#72 (T13, 503-bad), #174/#165 (T45, MTP-conditional), #169/#168/#172 (T41 agentic inputs), #185 (idle unload), `dylan/experimental` (agentic slices only), mirko KVaRN REJECT (sub-floor) | — | — |
 
@@ -451,7 +476,8 @@ the big hand-port. Every tier ships through the supervised pipeline (§10.2).
 ## 9. Upstream PR/issue watch (live 2026-09-09, `api.github.com`)
 
 **Open, lane-relevant:**
-#211 (P0 → **V2-T1**; base = `b88c0f6f`, clean 3 files) · #213 (groupwise-W8 for 27B text
+#211 (P0 → **V2-T1 — SHIPPED 2026-09-09** as `ba21e676`; PR still open upstream, head force-moved
+dce5f773 → `0687a66e`, same 3-file stream-threading fix) · #213 (groupwise-W8 for 27B text
 projections + W8 leading-dim fix; makes #201 relevant if 27b-W8 lands) · #202 (L2 linear-attention
 pin — GDN dead path for us) · #201 (w8 rowsplit activation-cache policy) · #200/#199 (MoE — dead
 path) · #197 (`ignore_eos`) · #195 (weights-format preset fallback, prefill-cost 3.1× → 1.15×) ·
@@ -465,7 +491,7 @@ carries as a local pick).
 
 **Merged since the old audits (in `b88c0f6f`):** #206, #205, #204, #203, #198, #193, #191, #161, #159.
 
-**Open issues:** #210 (P0 → V2-T1) · #208 (intermittent `cudaErrorIllegalAddress`, 5090,
+**Open issues:** #210 (P0 → V2-T1, fix SHIPPED 2026-09-09 — `ba21e676`; watch upstream merge) · #208 (intermittent `cudaErrorIllegalAddress`, 5090,
 NVFP4+MTP — T49 stability watch, tracks V2-T1) · #192, #207, #212 · #174 (full-vocab Q4G64 MTP
 head → T45) · #165 (YaRN — hosts #174's implementation fork) · #169/#168/#172 (agentic serve →
 T41 inputs) · #176–#181/#184 (T32 cluster) · #185 (idle unload — our sentinel partially covers) ·
