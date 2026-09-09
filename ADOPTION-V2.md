@@ -374,6 +374,24 @@ rename), so each pick's executor hunk re-targets to its correct half (scheduling
   picks' executor re-targeting + buildstage build + ctest + battery + A/B + shipwatch) is
   **a month+**. Committed so far: substrate + `HostPinnedArena` + `prefix_identity` merge (verified
   rc=0) + `PrefixReusePath` + `RequestClass` + CMake.
+- **Baseline host-RAM mechanism READ (09-09, per advisory):** read `host_kv_extent_store.h` +
+  `state_image.h` + `host_kv_arena.h` directly. The baseline **already serializes the same
+  structures to host RAM** via two mechanisms: (1) the **state image** (`StateImageDevicePool` +
+  `HostStatePool`) — per-slot `copy_to_host`/`copy_from_host` over a pinned buffer, serializing GDN
+  (`LinearAttentionStatePool` conv + recurrent) + continuation-hidden `Tensor` + dflash-local
+  `CyclicKVCache` (`dflash_local_k`/`_v`) — an **exact** counterpart of the substrate's GDN/hidden/
+  dflash-local host image; (2) the **host-KV extent store** (`HostKVExtentStore` + `HostKVArena`) —
+  the host-KV page-replica demotion path (`prepare`/`publish`/`device_sources`/`writable_view`/
+  `release`), serializing paged-KV (text/backend) pages — the equivalent of the substrate's paged-
+  KV host image. So the re-target is **not** "write new CUDA host-copy routines from gpillon's byte
+  layout" (the corruption risk): the baseline already owns both serializations with its own layouts
+  (`StateImageHostLayout` + `HostKVPageLayout`). The real re-target work is the **policy layer** —
+  the substrate captures a *whole active lane* as one cache image for prefix restore, vs the
+  baseline's per-slot state image + per-extent demotion — plus two genuine gaps: the substrate's
+  `dflash_checkpoint` (the baseline state image carries only `dflash_local`) and the whole-lane
+  paged-KV checkpoint policy (vs the per-extent demotion). This makes the re-target **smaller than
+  "weeks of new serialization"**: a policy + gap bridge onto existing baseline mechanisms, not a
+  from-scratch byte layout.
 
 ## 7. V2 tier plan (the next tiers, in adoption order)
 
