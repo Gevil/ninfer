@@ -45,6 +45,19 @@ enum class KvCapacityMode : std::uint8_t {
     Automatic,
 };
 
+// Which caller class a request belongs to, carried on the wire as an `@tag` suffix on the model
+// id (gpillon agentic adoption, V2-T8 substrate re-target). It is advisory scheduling information
+// only — no capacity is reserved for a class, so a client that sends no tag (or an unrecognised
+// one) resolves to Agents and is scheduled exactly as it was before the tag existed. Agents is
+// deliberately the zero value for that reason.
+enum class RequestClass : std::uint8_t {
+    Agents = 0,
+    Main,
+    Classifier,
+};
+
+inline constexpr std::size_t kRequestClassCount = 3;
+
 inline constexpr std::size_t kDefaultKvCapacityHeadroomBytes = 1024ULL * 1024ULL * 1024ULL;
 
 struct KvCapacityPolicy {
@@ -695,6 +708,12 @@ enum class PrefixReusePath : std::uint8_t {
     PrivateResponseReplay,
     PrivateLongAnchor,
     SharedStablePrefix,
+    // V2-T8 RAM-KV cache reuse paths (gpillon's packed design); added to the baseline's
+    // execution-split enum so the verbatim kv_ram_cache substrate compiles against it.
+    FullReset,
+    AppendAtFrontier,
+    RestoreTurnCheckpoint,
+    RestoreResponseCheckpoint,
 };
 
 // Why bounded pressure planning stopped for the materialization decision committed to one request.

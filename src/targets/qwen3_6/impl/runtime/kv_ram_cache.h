@@ -89,7 +89,7 @@ struct RamCaptureSource {
 
     cudaStream_t stream = nullptr;
 
-    runtime::RequestClass owner_class = runtime::RequestClass::Agents;
+    RequestClass owner_class = RequestClass::Agents;
 
     // True for a speculative snapshot of a lane that is still actively serving its own request
     // (captured right as its prefill completes, before decode -- see
@@ -246,7 +246,7 @@ private:
         // claim/restore the same entry; it then ages out through ordinary eviction like any
         // other record, no special-cased cleanup required.
         bool multi_claim               = false;
-        runtime::RequestClass owner_class = runtime::RequestClass::Agents;
+        RequestClass owner_class = RequestClass::Agents;
         RamCaptureKind capture_kind    = RamCaptureKind::Terminal;
     };
 

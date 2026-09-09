@@ -669,9 +669,9 @@ void KVRamCache::evict_unpinned() {
             const auto it = records_.find(id);
             if (it == records_.end() || it->second.claims != 0) { continue; }
             const Record& record = it->second;
-            const int record_rank = record.owner_class == runtime::RequestClass::Main
+            const int record_rank = record.owner_class == RequestClass::Main
                                         ? 2
-                                        : (record.owner_class == runtime::RequestClass::Classifier ||
+                                        : (record.owner_class == RequestClass::Classifier ||
                                                    !record.protected_tier
                                                ? 0
                                                : 1);
