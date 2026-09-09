@@ -13,7 +13,7 @@ namespace ninfer::targets::qwen3_6::detail {
 namespace {
 
 constexpr std::uint32_t kRamMagic   = 0x4D41524E;
-constexpr std::uint32_t kRamVersion = 2;
+constexpr std::uint32_t kRamVersion = 3;
 constexpr std::size_t kSectionCount = 18;
 constexpr std::size_t kHostAlign    = 8;
 constexpr std::size_t kDeviceAlign  = 256;
@@ -150,6 +150,7 @@ struct HeaderView {
     PrefixHash128 hash_c{};
     bool has_gdn                          = false;
     bool has_dflash                       = false;
+    bool has_state_image                  = false;
     std::uint32_t cyclic_layers           = 0;
     std::uint32_t cyclic_capacity         = 0;
     std::uint32_t cyclic_padded           = 0;
@@ -208,21 +209,36 @@ HeaderView make_capture_header(const RamCaptureSource& source) {
         source.backend_pool ? static_cast<std::uint32_t>(source.backend_pool->plane_count()) : 0;
     header.hash_f                  = source.hash_f;
     header.hash_c                  = source.hash_c;
-    header.has_gdn                 = source.gdn != nullptr;
-    header.has_dflash              = source.dflash_local != nullptr;
-    if (source.dflash_local != nullptr) {
-        header.cyclic_layers        = source.dflash_local->layer_count();
-        header.cyclic_capacity      = source.dflash_local->capacity();
-        header.cyclic_padded        = source.dflash_local->padded_capacity();
-        header.cyclic_kv_heads      = source.dflash_local->num_kv_heads();
-        header.cyclic_head_dim      = source.dflash_local->head_dim();
-        header.cyclic_lane_capacity = source.dflash_local->lane_capacity();
-        header.cyclic_lane_bytes    = source.dflash_local->lane_host_bytes();
-    }
-    if (source.tail_hidden != nullptr) { header.tail_hidden_bytes = source.tail_hidden->bytes(); }
-    if (source.gdn != nullptr) {
-        header.gdn_conv_bytes      = source.gdn->conv_host_image_bytes();
-        header.gdn_recurrent_bytes = source.gdn->recurrent_host_image_bytes();
+    header.has_state_image         = source.state_image != nullptr;
+    if (source.state_image != nullptr) {
+        // State-image record: the state half is complete StateImage payloads, so the
+        // per-region scalars stay zero; the geometry is the layout itself.
+        const StateImageHostLayout& lay = source.state_image->host_layout();
+        header.has_gdn               = true; // every state image carries linear (GDN) state
+        header.has_dflash            = lay.dflash_local_k.has_value();
+        if (const auto& dflash = lay.spec.dflash_local) {
+            header.cyclic_layers     = dflash->layers;
+            header.cyclic_capacity   = dflash->capacity;
+            header.cyclic_kv_heads   = dflash->kv_heads;
+            header.cyclic_head_dim   = dflash->head_dim;
+        }
+    } else {
+        header.has_gdn                 = source.gdn != nullptr;
+        header.has_dflash              = source.dflash_local != nullptr;
+        if (source.dflash_local != nullptr) {
+            header.cyclic_layers        = source.dflash_local->layer_count();
+            header.cyclic_capacity      = source.dflash_local->capacity();
+            header.cyclic_padded        = source.dflash_local->padded_capacity();
+            header.cyclic_kv_heads      = source.dflash_local->num_kv_heads();
+            header.cyclic_head_dim      = source.dflash_local->head_dim();
+            header.cyclic_lane_capacity = source.dflash_local->lane_capacity();
+            header.cyclic_lane_bytes    = source.dflash_local->lane_host_bytes();
+        }
+        if (source.tail_hidden != nullptr) { header.tail_hidden_bytes = source.tail_hidden->bytes(); }
+        if (source.gdn != nullptr) {
+            header.gdn_conv_bytes      = source.gdn->conv_host_image_bytes();
+            header.gdn_recurrent_bytes = source.gdn->recurrent_host_image_bytes();
+        }
     }
     const bool text_residual = source.text_cache != nullptr && source.text_cache->residual_enabled();
     const bool backend_residual =
@@ -256,18 +272,26 @@ std::array<std::size_t, kSectionCount> finalize_capture_layout(const RamCaptureS
     lengths[3] = source.backend_pool
                      ? paged_kv_host_image_bytes(*source.backend_pool, header.backend_mapped_pages)
                      : 0;
-    lengths[4] = source.gdn ? source.gdn->conv_host_image_bytes() : 0;
-    lengths[5] = source.gdn && source.rewrite_valid ? source.gdn->conv_host_image_bytes() : 0;
-    lengths[6] = source.gdn ? source.gdn->recurrent_host_image_bytes() : 0;
-    lengths[7] = source.gdn && source.rewrite_valid ? source.gdn->recurrent_host_image_bytes() : 0;
-    lengths[8] = source.tail_hidden ? source.tail_hidden->bytes() : 0;
-    lengths[9] = source.rewrite_valid && source.rewrite_checkpoint_hidden
-                     ? source.rewrite_checkpoint_hidden->bytes()
-                     : 0;
-    lengths[10] = source.dflash_local ? source.dflash_local->lane_host_bytes() : 0;
-    lengths[11] = source.dflash_checkpoint && source.rewrite_valid
-                      ? source.dflash_checkpoint->lane_host_bytes()
-                      : 0;
+    if (source.state_image != nullptr) {
+        // The state half is complete StateImage payloads: sections 4/5 each hold one
+        // image_bytes-sized image laid out per StateImageHostLayout; sections 6..11 unused.
+        const std::size_t image_bytes = source.state_image->host_layout().image_bytes;
+        lengths[4] = image_bytes;
+        lengths[5] = source.rewrite_valid ? image_bytes : 0;
+    } else {
+        lengths[4] = source.gdn ? source.gdn->conv_host_image_bytes() : 0;
+        lengths[5] = source.gdn && source.rewrite_valid ? source.gdn->conv_host_image_bytes() : 0;
+        lengths[6] = source.gdn ? source.gdn->recurrent_host_image_bytes() : 0;
+        lengths[7] = source.gdn && source.rewrite_valid ? source.gdn->recurrent_host_image_bytes() : 0;
+        lengths[8] = source.tail_hidden ? source.tail_hidden->bytes() : 0;
+        lengths[9] = source.rewrite_valid && source.rewrite_checkpoint_hidden
+                         ? source.rewrite_checkpoint_hidden->bytes()
+                         : 0;
+        lengths[10] = source.dflash_local ? source.dflash_local->lane_host_bytes() : 0;
+        lengths[11] = source.dflash_checkpoint && source.rewrite_valid
+                          ? source.dflash_checkpoint->lane_host_bytes()
+                          : 0;
+    }
     lengths[12] = text_residual ? header.text_residual_slot_bytes : 0;
     lengths[13] = lengths[12];
     lengths[14] = text_residual ? header.ring_valid_slot_bytes : 0;
@@ -315,7 +339,7 @@ void write_fixed_header(Cursor& w, const HeaderView& h) {
     w.u64(h.hash_c.hi);
     w.u8(h.has_gdn ? 1 : 0);
     w.u8(h.has_dflash ? 1 : 0);
-    w.u8(0);
+    w.u8(h.has_state_image ? 1 : 0);
     w.u8(0);
     w.u32(h.cyclic_layers);
     w.u32(h.cyclic_capacity);
@@ -368,7 +392,8 @@ HeaderView read_header(const void* block, std::size_t bytes) {
     h.hash_c.hi               = r.u64();
     h.has_gdn                 = r.u8() != 0;
     h.has_dflash              = r.u8() != 0;
-    r.skip(2);
+    h.has_state_image = r.u8() != 0;
+    r.u8();
     h.cyclic_layers           = r.u32();
     h.cyclic_capacity         = r.u32();
     h.cyclic_padded           = r.u32();
@@ -915,6 +940,24 @@ bool KVRamCache::capture(const RamCaptureSource& source, RamCapturePolicy policy
                                              source.stream);
             copies_launched = true;
         }
+        if (source.state_image != nullptr) {
+            // One async device->host copy per slot lands the complete StateImage directly in
+            // the capture block (sections 4/5) -- the same stream-async pattern as the paged KV
+            // packs; no per-type pack, no pinned-pool round trip. The legacy per-type blocks
+            // below are no-ops here (their source pointers are null, sections 6..11 zero).
+            start_device_copies();
+            HostStateImageView current_view{reinterpret_cast<std::byte*>(raw + header.offset[4]),
+                                            &source.state_image->host_layout()};
+            source.state_image->copy_to_host(source.state_slot, current_view, source.stream);
+            copies_launched = true;
+            if (lengths[5] != 0) {
+                HostStateImageView checkpoint_view{reinterpret_cast<std::byte*>(raw + header.offset[5]),
+                                                    &source.state_image->host_layout()};
+                source.state_image->copy_to_host(source.state_checkpoint_slot, checkpoint_view,
+                                                 source.stream);
+                copies_launched = true;
+            }
+        }
         if (source.gdn != nullptr) {
             start_device_copies();
             source.gdn->pack_slot_to_host(source.gdn_current_slot, raw + header.offset[4],
@@ -1030,28 +1073,46 @@ RamRestoredHost KVRamCache::unpack_device(std::uint64_t entry_id, const RamResto
         }
         verify_pool(fp, *target.backend_pool, header.backend_plane_count, "backend KV");
     }
-    if (header.has_dflash) {
-        if (target.dflash_local == nullptr) {
-            throw std::logic_error("RAM restore is missing DFlash cyclic state");
-        }
-        verify_cyclic(header, *target.dflash_local);
-        if (header.length[11] != 0) {
-            if (target.dflash_checkpoint == nullptr) {
-                throw std::logic_error("RAM restore is missing DFlash checkpoint cyclic state");
+    if (header.has_state_image) {
+        // State-image record: the state half's geometry is the StateImage layout itself
+        // (sections 4/5 are complete StateImage payloads); the per-type checks below only
+        // apply to legacy per-type records.
+        if (header.length[4] != 0 || header.length[5] != 0) {
+            if (target.state_image == nullptr) {
+                throw std::logic_error("RAM restore is missing the state image pool");
             }
-            verify_cyclic(header, *target.dflash_checkpoint);
+            const std::size_t image_bytes = target.state_image->host_layout().image_bytes;
+            if (header.length[4] != image_bytes) {
+                throw std::logic_error("RAM entry state image geometry mismatch");
+            }
+            if (header.length[5] != 0 && header.length[5] != image_bytes) {
+                throw std::logic_error("RAM entry state image checkpoint geometry mismatch");
+            }
         }
-    }
-    if (header.has_gdn) {
-        if (target.gdn == nullptr) { throw std::logic_error("RAM restore is missing GDN state"); }
-        if (header.gdn_conv_bytes != target.gdn->conv_host_image_bytes() ||
-            header.gdn_recurrent_bytes != target.gdn->recurrent_host_image_bytes()) {
-            throw std::logic_error("RAM entry GDN geometry mismatch");
+    } else {
+        if (header.has_dflash) {
+            if (target.dflash_local == nullptr) {
+                throw std::logic_error("RAM restore is missing DFlash cyclic state");
+            }
+            verify_cyclic(header, *target.dflash_local);
+            if (header.length[11] != 0) {
+                if (target.dflash_checkpoint == nullptr) {
+                    throw std::logic_error("RAM restore is missing DFlash checkpoint cyclic state");
+                }
+                verify_cyclic(header, *target.dflash_checkpoint);
+            }
         }
-    }
-    if (target.tail_hidden != nullptr &&
-        header.tail_hidden_bytes != target.tail_hidden->bytes()) {
-        throw std::logic_error("RAM entry hidden geometry mismatch");
+        if (header.has_gdn) {
+            if (target.gdn == nullptr) { throw std::logic_error("RAM restore is missing GDN state"); }
+            if (header.gdn_conv_bytes != target.gdn->conv_host_image_bytes() ||
+                header.gdn_recurrent_bytes != target.gdn->recurrent_host_image_bytes()) {
+                throw std::logic_error("RAM entry GDN geometry mismatch");
+            }
+        }
+        if (target.tail_hidden != nullptr &&
+            header.tail_hidden_bytes != target.tail_hidden->bytes()) {
+            throw std::logic_error("RAM entry hidden geometry mismatch");
+        }
     }
     // A cache that keeps an exact-key side store must be handed the record's own copy of it. If
     // the record carries none, the destination row would keep whatever the previous tenant of
@@ -1084,6 +1145,22 @@ RamRestoredHost KVRamCache::unpack_device(std::uint64_t entry_id, const RamResto
     }
 
     begin_copies(record, target.stream);
+    if (header.has_state_image) {
+        if (header.length[4] != 0) {
+            HostStateImageConstView current_view{reinterpret_cast<const std::byte*>(raw + header.offset[4]),
+                                                 &target.state_image->host_layout()};
+            target.state_image->copy_from_host(current_view, target.state_slot, target.stream);
+        }
+        if (header.length[5] != 0) {
+            if (target.state_checkpoint_slot < 0) {
+                throw std::logic_error("RAM restore is missing the state image checkpoint slot");
+            }
+            HostStateImageConstView checkpoint_view{reinterpret_cast<const std::byte*>(raw + header.offset[5]),
+                                                    &target.state_image->host_layout()};
+            target.state_image->copy_from_host(checkpoint_view, target.state_checkpoint_slot,
+                                               target.stream);
+        }
+    }
     unpack_paged_kv_allocation_from_host(*target.text, *target.text_pool, raw + header.offset[2],
                                          header.text_mapped_pages, target.text_dst_pages,
                                          target.stream);

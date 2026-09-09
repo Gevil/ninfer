@@ -6,6 +6,7 @@
 #include "core/paged_kv_cache.h"
 #include <ninfer/targets/qwen3_6/decoder_state.h>
 #include "targets/qwen3_6/impl/runtime/kv_ram_snapshot.h"
+#include <ninfer/targets/qwen3_6/state_image.h>
 #include "targets/qwen3_6/impl/runtime/prefix_identity.h"
 
 #include "ninfer/types.h"
@@ -86,6 +87,16 @@ struct RamCaptureSource {
     const CyclicKVCache* dflash_local      = nullptr;
     const CyclicKVCache* dflash_checkpoint = nullptr;
     std::int32_t dflash_lane               = 0;
+    // The baseline's state-image pool: each absolute slot holds the complete continuation state
+    // (GDN linear conv+recurrent, continuation hidden, DFlash local cyclic K/V). When set, the
+    // state half is captured/restored as complete StateImage payloads (capture block sections
+    // 4/5, laid out per StateImageHostLayout) via copy_to_host/copy_from_host landing directly
+    // in the capture block -- no per-type host-image pack, no pinned-pool round trip. The
+    // per-type state fields above (gdn/tail_hidden/dflash_* + slots) are then ignored for the
+    // state half. Null state_image = legacy per-type state half (or KV-only capture).
+    const StateImageDevicePool* state_image         = nullptr;
+    std::int32_t state_slot            = 0;    // absolute slot captured into section 4
+    std::int32_t state_checkpoint_slot = -1;   // absolute slot captured into section 5
 
     cudaStream_t stream = nullptr;
 
@@ -127,6 +138,12 @@ struct RamRestoreTarget {
     CyclicKVCache* dflash_local      = nullptr;
     CyclicKVCache* dflash_checkpoint = nullptr;
     std::int32_t dflash_lane         = 0;
+
+    // State-image restore target: the destination pool + slots the record's state-image
+    // sections (4/5) are restored into via StateImageDevicePool::copy_from_host.
+    StateImageDevicePool* state_image         = nullptr;
+    std::int32_t state_slot            = 0;
+    std::int32_t state_checkpoint_slot = -1;
 
     cudaStream_t stream = nullptr;
 };
