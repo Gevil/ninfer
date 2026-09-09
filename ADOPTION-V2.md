@@ -345,6 +345,16 @@ rename), so each pick's executor hunk re-targets to its correct half (scheduling
 - The substrate (`kv_ram_cache`) is **deeply entangled** (the finding above): it needs the paged-KV
   pool subsystem + the runtime's core types (GDN/dflash/Tensor/`RequestClass`) — a **deep re-target**
   onto the baseline's restructured paged-KV cache, not a 3-file port.
+- **Substrate re-target type mapping (the foundation, 09-09):** the baseline already has
+  `LinearAttentionStatePool` (GDN, 6 files), `CyclicKVCache` (dflash, 7 files), `Tensor`, and its own
+  `src/core/paged_kv_cache.h` — but a **different paged-KV design** (`DeviceKVPagePool`/
+  `DeviceKVPageHandle`/`DeviceKVPageLease`/`KVExecutionTablePool`, vs gpillon's `PagedKVAllocation`/
+  `PagedKVPool`; 0 baseline files for the latter). So the re-target is: (1) map the substrate's
+  `PagedKVAllocation*`/`PagedKVPool*` (`RamCaptureSource.text/text_pool/backend/backend_pool`) to the
+  baseline's `DeviceKVPageHandle`/`DeviceKVPagePool` page-pool API (the main work); (2) add the small
+  `RequestClass` enum (0 baseline files) or re-target the `owner_class` filter; (3) map the GDN/dflash/
+  Tensor usage (the baseline has these types, API re-target if needed). Bounded — days to weeks for
+  the substrate re-target, not months.
 - **Honest scope: months, not weeks.** Remaining: the substrate re-target (paged-KV pool), the 4
   cluster picks' executor re-targeting (`concurrent_executor.h` → `Scheduler`/`ResourceManager`
   split), the buildstage full build, ctest, the battery, the shared-vs-forked pool A/B (§6.5
