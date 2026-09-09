@@ -30,7 +30,7 @@ Neither source file is deleted, edited, or moved. They remain citable by `branch
 |---|---|
 | Code baseline | `quasar-master` @ `f7727926` = upstream `b88c0f6f` + `f7727926` (`targets(qwen3_6_27b): support Qwen38Nvfp4* weights profiles for quasar artifacts`, 1 file: `src/targets/qwen3_6_27b/impl/load/bindings.cpp`, +103/−3: `WeightsProfile { Qwen38Nvfp4, Qwen38Nvfp4Full }` family switch + 3 MTP3 kv-workspace curve cases) |
 | Upstream state | `b88c0f6f` = upstream master **and** dev tip (live `ls-remote` 2026-09-09); `quasar-master...upstream/master` = 1 ahead / 0 behind |
-| Image | `localhost/ninfer-nvfp4:qm-f7727926` (quadlet `ninfer-nvfp4`, port 8002→8080, 2 Volume mounts) |
+| Image | Baseline image `localhost/ninfer-nvfp4:qm-f7727926`. **As of 2026-09-09, V2-T1 (PR #211) has shipped on top** — the live image is now the V2-T1 candidate (branch `v2/t1-stream-kv` @ `ba21e676`, image tag `v2t1-ba21e676`); quadlet `ninfer-nvfp4`, port 8002→8080, 2 Volume mounts, flags unchanged |
 | Artifact | `~/.local/share/ninfer/models/qwen3.8-27b-quasar-dflash2-master/qwen3_8_27b_quasar_dflash2_master.ninfer` — 1334 objects, 19.78 GiB (QUASAR base + 66 master-contract dflash2 objects), sha256 `da5efb3332e00ed5a9d719aa5cc09a4066fa03ab0d1706f6119f2fba8f2ba338` |
 | Flags | `--spec dflash2 --draft-tokens 7 --kv-dtype nvfp4 --kv-capacity 262144 --max-context 262144 --host-kv-mib 16384 --max-concurrency 4 --vision --preserve-thinking --default-max-tokens 80000 --pending-timeout-ms 900000 --model-id qwen3.8-27b` |
 | Probes (2026-09-08) | 189.5 / 140.4 / 51.2 tps @ 1.5k/8k/32k prompt; 8.8 tps @ 120k; dflash2 acceptance 32.6 / 36.2 / 28.2 / 41.7 % |
@@ -142,7 +142,7 @@ or research that survives the cutover) · `SPLIT` (partially each).
 | T39 | Astrangemaninhere/ninfer-fusion | NEW — WATCH | REJECTED — sub-floor KV (perplexity-only evidence); its DFlash2 < MTP3 by its own data |
 | T40 | dylan `cdd1b6c1` C1-4 speculative decode | RE-SCOPED 09-08 — standalone probe dropped (file set is GDN-centric) | VOID — dead path for the dense 27B target; the shared `linear.cpp`/`nvfp4_dispatch` slices ride upstream if merged |
 | T41 | wall-time-to-accurate-answer (T2A) research & plan (W0–W6) | NEW 09-06 — research complete on the live lane | SPLIT — the research is CARRIED; the engine-side half = the gpillon agentic cluster → **V2-T2/T3/T8/T9** (§6–7) |
-| T42 | #211 KV stream-ordering hotfix (fixes #210 agent GPU lockup) | P0 09-08 — vulnerable pattern verified in our engine; cherry-pick into the next image build | **RE-ADOPT (P0, = V2-T1)** — PR #211 is now a **clean 3-file PR with base exactly `b88c0f6f`** (verified 2026-09-09; see §7). The earlier pollution (PR #213's W8 files) is gone — the whole PR is adoptable, including its new test coverage |
+| T42 | #211 KV stream-ordering hotfix (fixes #210 agent GPU lockup) | P0 09-08 — vulnerable pattern verified in our engine; cherry-pick into the next image build | **SHIPPED 2026-09-09 (V2-T1; RE-ADOPT realized on the live lane)** — PR #211 (clean 3-file, base exactly `b88c0f6f`; the earlier #213 pollution is gone) landed as `64fa227a` + baseline repair `ba21e676` on branch `v2/t1-stream-kv` (image tag `v2t1-ba21e676`). Verified: battery 15/15 non-decode (REPLAY 4/4, 4XX-WATCH clean) + no decode regression (clean warm-idle, candidate at/above live on both depths). Residual: #210 crash-repro not yet exercised (no reliable repro) |
 | T43 | upstream master convergence wave 3 (`a16b6442`→`7f14d963`) | NEW — cherry-pick wave (none in the gpillon line, merge-base `863aa8a5`) | SPLIT — `ee9d5192`, `b158afe2`, `641ef3e7`, `7f14d963` are ABSORBED (all ancestors of `b88c0f6f`, verified); `0f84adaf` (#195 context-cost weights fallback) is **not** in the baseline (#195 still open) → RE-ADOPT (V2-T4) |
 | T44 | md MTP/decode ops perf (triage-verified 09-08: `qwen3_6/impl/runtime/` is the shared family base) | NEW — cherry-pick candidates on `a16b6442`, acceptance-gated | SPLIT — decode items `38f52b34`, `61250e89`, `ed150906` → V2-T5; MTP items `505d1af7`, `1f155fed` → V2-T9 (MTP-conditional; note our in-lane copy of `1f155fed` is `fa12e8ef`) |
 | T45 | #174 full-vocab Q4G64 MTP proposal head | NEW — PROBE (acceptance-gated; restores structured-output coverage `--lm-head-draft` loses) | CARRIED — MTP-conditional; implementation lives on the reporter's external fork (release `b5f2d1*`, SHA no longer resolvable — re-fetch from the #174 thread before any pick) |
@@ -235,6 +235,7 @@ any broader gpillon adoption must carry the fix.
 
 Order: stability → cheap agentic wins → re-adopt our own still-unique work → external perf →
 the big hand-port. Every tier ships through the supervised pipeline (§10.2).
+**Status as of 2026-09-09:** **V2-T1 has shipped** (branch `v2/t1-stream-kv` @ `ba21e676`, image tag `v2t1-ba21e676`); V2-T2…V2-T9 remain pending.
 
 | Tier | Content | Source | Gate |
 |---|---|---|---|
