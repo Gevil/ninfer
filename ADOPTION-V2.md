@@ -365,11 +365,15 @@ rename), so each pick's executor hunk re-targets to its correct half (scheduling
   `copy_lane_from_host`/`lane_host_bytes`. So the substrate re-target is a **broad API surface**
   (paged-KV + GDN + dflash + PagedKVCache methods), not just the paged-KV pool — the re-architecture
   of the substrate's host-image pack/unpack + page-pool usage onto the baseline's designs.
-- **Honest scope: months, not weeks.** Remaining: the substrate re-target (paged-KV pool), the 4
-  cluster picks' executor re-targeting (`concurrent_executor.h` → `Scheduler`/`ResourceManager`
-  split), the buildstage full build, ctest, the battery, the shared-vs-forked pool A/B (§6.5
-  decision 2), and the supervised ship (shipwatch). The committed increments (substrate +
-  `HostPinnedArena` + `prefix_identity` merge + `PrefixReusePath` + CMake) are the first slice.
+- **Scope correction (09-09, per-TU syntax check):** the substrate's host-image pack/unpack API
+  (`pack_slot_to_host`/`copy_lane_to_host`/`residual_*`/`ring_valid_slot_host_bytes`/…) is **genuinely
+  absent** in the baseline — not a name mapping, but a re-architecture onto the baseline's
+  state-image/host-KV mechanism (`host_kv_extent_store`/`state_image`/`host_kv_arena`, a different
+  design). So the substrate re-target is **weeks, not days** (the host-image re-architecture + the
+  paged-KV page-pool re-target), and the whole V2-T8 port (substrate re-target + the 4 cluster
+  picks' executor re-targeting + buildstage build + ctest + battery + A/B + shipwatch) is
+  **a month+**. Committed so far: substrate + `HostPinnedArena` + `prefix_identity` merge (verified
+  rc=0) + `PrefixReusePath` + `RequestClass` + CMake.
 
 ## 7. V2 tier plan (the next tiers, in adoption order)
 
