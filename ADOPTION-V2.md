@@ -355,6 +355,16 @@ rename), so each pick's executor hunk re-targets to its correct half (scheduling
   `RequestClass` enum (0 baseline files) or re-target the `owner_class` filter; (3) map the GDN/dflash/
   Tensor usage (the baseline has these types, API re-target if needed). Bounded — days to weeks for
   the substrate re-target, not months.
+- **RequestClass increment committed (09-09, `a3ee165f`):** the 3-value enum added to the baseline's
+  `include/ninfer/types.h` + the substrate's `runtime::RequestClass` re-targeted to `RequestClass`
+  (the `choose_boundary_capture` ref is a doc-comment, not a call). The per-TU syntax check now shows
+  the substrate fails **only** on the API surface: the baseline's `PagedKVCache` lacks
+  `residual_enabled`/`residual_slot_host_bytes`/`ring_valid_slot_host_bytes`/`pack|unpack_residual_slot_
+  from_host`; `LinearAttentionStatePool` lacks `conv_host_image_bytes`/`recurrent_host_image_bytes`/
+  `pack_slot_to_host`/`unpack_slot_from_host`; `CyclicKVCache` lacks `copy_lane_to_host`/
+  `copy_lane_from_host`/`lane_host_bytes`. So the substrate re-target is a **broad API surface**
+  (paged-KV + GDN + dflash + PagedKVCache methods), not just the paged-KV pool — the re-architecture
+  of the substrate's host-image pack/unpack + page-pool usage onto the baseline's designs.
 - **Honest scope: months, not weeks.** Remaining: the substrate re-target (paged-KV pool), the 4
   cluster picks' executor re-targeting (`concurrent_executor.h` → `Scheduler`/`ResourceManager`
   split), the buildstage full build, ctest, the battery, the shared-vs-forked pool A/B (§6.5
