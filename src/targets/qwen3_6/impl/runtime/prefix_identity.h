@@ -97,4 +97,23 @@ private:
                                            const ResidentPrefixIdentity& identity,
                                            std::size_t count);
 
+// Longest-common-prefix ladder (V2-T8): the frontier points {F} ∪ {2^j ≤ F} ∪
+// {F - 2^j ≥ 1}, sorted unique. The rolling prefix hash is sampled at exactly these
+// points on one pass (prefix_hash_ladder), so a plan_match candidate can locate the
+// deepest ladder point its chain agrees with a captured record -- O(ladder), not
+// O(tokens) -- without the record holding a per-frontier hash vector. For this
+// hybrid state model an in-flight ladder point is diagnostic only: a reusable point
+// must additionally carry a state snapshot (the frontier or the checkpoint
+// frontier), which the matcher verifies separately.
+[[nodiscard]] std::vector<std::uint32_t> hash_ladder_points(std::uint32_t frontier);
+[[nodiscard]] std::vector<PrefixHash128>
+prefix_hash_ladder(std::span<const TokenId> tokens, const ResidentPrefixIdentity& identity,
+                   std::span<const std::uint32_t> points);
+// First index in [begin, end) where the candidate prompt stops matching the resident
+// ledger (token, type, or any RoPE position); nullopt = identical throughout the
+// window. The window is bounded by the caller.
+[[nodiscard]] std::optional<std::uint32_t>
+first_divergence(const PreparedPromptData& candidate, std::span<const TokenId> resident_tokens,
+                 const ResidentPrefixIdentity& resident, std::size_t begin, std::size_t end);
+
 } // namespace ninfer::targets::qwen3_6::detail

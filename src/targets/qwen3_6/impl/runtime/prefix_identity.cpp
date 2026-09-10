@@ -697,4 +697,85 @@ PrefixHash128 prefix_hash_at(std::span<const TokenId> tokens, const ResidentPref
     }
     return hash;
 }
+
+std::vector<std::uint32_t> hash_ladder_points(std::uint32_t frontier) {
+    std::vector<std::uint32_t> points;
+    if (frontier == 0) { return points; }
+    points.push_back(frontier);
+    for (std::uint64_t power = 1; power <= frontier; power <<= 1) {
+        points.push_back(static_cast<std::uint32_t>(power));
+        if (frontier - static_cast<std::uint32_t>(power) >= 1) {
+            points.push_back(frontier - static_cast<std::uint32_t>(power));
+        }
+    }
+    std::sort(points.begin(), points.end());
+    points.erase(std::unique(points.begin(), points.end()), points.end());
+    return points;
+}
+
+std::vector<PrefixHash128> prefix_hash_ladder(std::span<const TokenId> tokens,
+                                              const ResidentPrefixIdentity& identity,
+                                              std::span<const std::uint32_t> points) {
+    // points must be sorted ascending within [1, tokens.size()]; anything else yields
+    // an empty ladder (the caller then falls back to the plain frontier/checkpoint gates).
+    std::vector<PrefixHash128> hashes;
+    if (points.empty() || points.front() == 0 || points.back() > tokens.size() ||
+        points.back() > identity.size()) {
+        return hashes;
+    }
+    for (std::size_t j = 1; j < points.size(); ++j) {
+        if (points[j] <= points[j - 1]) { return hashes; }
+    }
+    hashes.reserve(points.size());
+
+    // Single rolling pass, mirroring prefix_hash_at exactly (same initial value and
+    // per-token / per-vision-item mixing), sampling the hash at each ladder point.
+    PrefixHash128 hash   = initial_hash();
+    std::size_t item_cursor = 0;
+    const auto items        = identity.vision_items();
+    std::size_t point_cursor = 0;
+    for (std::uint32_t k = 1; k <= points.back(); ++k) {
+        const std::size_t i = k - 1;
+        mix_token(hash, tokens[i], identity.token_types()[i], identity.positions(0)[i],
+                  identity.positions(1)[i], identity.positions(2)[i]);
+        while (item_cursor < items.size()) {
+            const VisionItem& item = items[item_cursor];
+            if (item.token_spans.empty()) {
+                ++item_cursor;
+                continue;
+            }
+            const std::size_t end = item_end(item);
+            if (end != k) { break; }
+            mix_vision_item(hash, item);
+            ++item_cursor;
+        }
+        if (point_cursor < points.size() && points[point_cursor] == k) {
+            hashes.push_back(hash);
+            ++point_cursor;
+        }
+    }
+    return hashes;
+}
+
+std::optional<std::uint32_t> first_divergence(const PreparedPromptData& candidate,
+                                              std::span<const TokenId> resident_tokens,
+                                              const ResidentPrefixIdentity& resident,
+                                              std::size_t begin, std::size_t end) {
+    const std::size_t tokens = candidate.token_ids.size();
+    const std::size_t bound  = std::min({end, tokens, resident_tokens.size(), resident.size()});
+    for (std::size_t i = begin; i < bound; ++i) {
+        if (candidate.token_ids[i] != resident_tokens[i]) {
+            return static_cast<std::uint32_t>(i);
+        }
+        if (candidate.token_types[i] != resident.token_types()[i]) {
+            return static_cast<std::uint32_t>(i);
+        }
+        if (candidate.positions[i] != resident.positions(0)[i] ||
+            candidate.positions[tokens + i] != resident.positions(1)[i] ||
+            candidate.positions[2 * tokens + i] != resident.positions(2)[i]) {
+            return static_cast<std::uint32_t>(i);
+        }
+    }
+    return std::nullopt;
+}
 } // namespace ninfer::targets::qwen3_6::detail

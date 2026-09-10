@@ -718,6 +718,10 @@ void KVRamCache::consume(std::uint64_t entry_id) {
 std::optional<RamMatch> KVRamCache::plan_match(const PreparedPromptData& prompt,
                                                std::span<const PrefixHash128> hash_chain) {
     std::optional<RamMatch> best;
+    // No-reuse diagnostics: the record whose ladder agrees deepest with the candidate, so a
+    // miss can be journalled with the divergence point instead of a bare "nothing matched".
+    std::uint64_t near_id    = 0;
+    std::uint32_t near_point = 0;
     for (std::uint64_t id : fifo_) {
         const Record& record = require(id);
         // A claimed exclusive record is spoken for and vanishes on its claimant's restore. A
@@ -728,6 +732,20 @@ std::optional<RamMatch> KVRamCache::plan_match(const PreparedPromptData& prompt,
         if (record.claims != 0 && !record.multi_claim) { continue; }
         RamMatch candidate;
         candidate.entry_id = id;
+        // Ladder: matching points form a run from index 0 (a hash equal at point k implies
+        // agreement over [0:k] of this record's ledger), so scan ascending until the first
+        // disagreement. The point is diagnostic only -- the reusable gates below are
+        // unchanged (a frontier/checkpoint hash must additionally exact-match with state).
+        std::uint32_t ladder_point = 0;
+        for (std::size_t j = 0; j < record.ladder_points.size(); ++j) {
+            const std::uint32_t p = record.ladder_points[j];
+            if (p >= hash_chain.size() || hash_chain[p] != record.ladder_hashes[j]) { break; }
+            ladder_point = p;
+        }
+        if (near_id == 0 || ladder_point > near_point) {
+            near_id    = id;
+            near_point = ladder_point;
+        }
         const bool frontier_hash =
             record.execution_frontier > 0 && record.execution_frontier < hash_chain.size() &&
             hash_chain[record.execution_frontier] == record.hash_f;
@@ -762,7 +780,27 @@ std::optional<RamMatch> KVRamCache::plan_match(const PreparedPromptData& prompt,
                      fifo_.size());
         std::fflush(stderr);
     } else if (!fifo_.empty()) {
-        std::fprintf(stderr, "[t8] match miss entries=%zu\n", fifo_.size());
+        int first_div       = -1;
+        std::uint64_t exp_token = 0, act_token = 0;
+        if (near_id != 0 && near_point > 0) {
+            // Bounded scan from the deepest agreed ladder point: where exactly did this
+            // candidate stop matching the near record, and what token did it swap in?
+            // exp = the record's (expected) token, act = the candidate's (actual) token.
+            const RamRestoredHost host = load_host(near_id);
+            auto diverged = first_divergence(
+                prompt, std::span<const TokenId>(host.ledger), host.identity, near_point,
+                static_cast<std::size_t>(near_point) + 512);
+            if (diverged) {
+                first_div = static_cast<int>(*diverged);
+                exp_token = host.ledger[*diverged];
+                act_token = prompt.token_ids[*diverged];
+            }
+        }
+        std::fprintf(stderr,
+                     "[t8] match miss entries=%zu near=%u id=%llu first_div=%d exp=%llu act=%llu\n",
+                     fifo_.size(), near_point, static_cast<unsigned long long>(near_id),
+                     first_div, static_cast<unsigned long long>(exp_token),
+                     static_cast<unsigned long long>(act_token));
         std::fflush(stderr);
     }
     return best;
@@ -1028,6 +1066,11 @@ bool KVRamCache::capture(const RamCaptureSource& source, RamCapturePolicy policy
         record.multi_claim         = source.multi_claim;
         record.owner_class         = source.owner_class;
         record.capture_kind        = source.capture_kind;
+        if (source.identity != nullptr) {
+            record.ladder_points = hash_ladder_points(source.execution_frontier);
+            record.ladder_hashes =
+                prefix_hash_ladder(source.ledger, *source.identity, record.ladder_points);
+        }
         record.copies_start        = copies_start;
         copies_start               = nullptr;
         const auto [it, inserted]  = records_.emplace(record.id, std::move(record));

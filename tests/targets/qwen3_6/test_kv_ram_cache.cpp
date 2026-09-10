@@ -28,6 +28,7 @@
 #include "targets/qwen3_6/impl/runtime/prefix_identity.h"
 
 #include <cuda_runtime.h>
+#include <algorithm>
 
 #include <cstddef>
 #include <cstdint>
@@ -633,6 +634,101 @@ int test_checkpoint_fallback(ninfer::DeviceContext& ctx) {
     return bad;
 }
 
+int test_hash_ladder(ninfer::DeviceContext& ctx) {
+    int bad = 0;
+    // Shape: sorted unique, covers [1, frontier], contains the frontier, every 2^j <= F,
+    // and every F - 2^j >= 1.
+    for (std::uint32_t frontier : {1u, 2u, 3u, 5u, 6u, 7u, 8u, 16u, 17u, 1000u}) {
+        const auto points = detail::hash_ladder_points(frontier);
+        expect(!points.empty() && points.front() >= 1 && points.back() == frontier,
+               "ladder spans [1, frontier] and ends at the frontier");
+        bool sorted_unique = true;
+        for (std::size_t j = 1; j < points.size(); ++j) {
+            sorted_unique = sorted_unique && points[j] > points[j - 1];
+        }
+        expect(sorted_unique, "ladder is sorted unique");
+        expect(std::find(points.begin(), points.end(), frontier) != points.end(),
+               "ladder contains the frontier");
+        for (std::uint64_t power = 1; power <= frontier; power <<= 1) {
+            expect(std::find(points.begin(), points.end(), static_cast<std::uint32_t>(power)) !=
+                       points.end(),
+                   "ladder contains 2^j");
+            if (frontier - static_cast<std::uint32_t>(power) >= 1) {
+                expect(std::find(points.begin(), points.end(),
+                                 frontier - static_cast<std::uint32_t>(power)) != points.end(),
+                       "ladder contains frontier - 2^j");
+            }
+        }
+    }
+    expect(detail::hash_ladder_points(0).empty(), "empty ladder for zero frontier");
+
+    // Consistency: the single-pass ladder samples must equal both the per-point
+    // prefix_hash_at and the full chain at the same frontiers.
+    const auto prompt = text_prompt({7, 9, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43});
+    const std::uint32_t frontier = static_cast<std::uint32_t>(prompt.token_ids.size());
+    detail::ResidentPrefixIdentity identity;
+    identity.assign(prompt);
+    const auto chain = detail::prefix_hash_chain(prompt);
+    const auto points = detail::hash_ladder_points(frontier);
+    const auto ladder = detail::prefix_hash_ladder(prompt.token_ids, identity, points);
+    expect(ladder.size() == points.size(), "ladder hash count matches point count");
+    bool equal = ladder.size() == points.size();
+    for (std::size_t j = 0; equal && j < points.size(); ++j) {
+        equal = ladder[j] == detail::prefix_hash_at(prompt.token_ids, identity, points[j]) &&
+               ladder[j] == chain[points[j]];
+    }
+    expect(equal, "ladder samples equal per-point hashes and the chain");
+    (void)ctx;
+    return bad;
+}
+
+int test_ladder_diagnostics(ninfer::DeviceContext& ctx) {
+    int bad = 0;
+    KvState src = plan_kv_state(6);
+    const std::vector<ninfer::HostKVPageLayout> layouts{
+        ninfer::plan_host_kv_page_layout(src.state.text_kv.page_pool().geometry())};
+    ninfer::HostKVArena host_arena(4 * 1024 * 1024, layouts);
+    detail::KVRamCache cache(1024 * 1024, host_arena);
+
+    auto leases = materialize(src.state.text_kv, 3);
+    const std::vector<std::int32_t> ids{0, 1, 2};
+    fill_pages(src.state.text_kv, ids, 3, 0xCD, "ladder fill");
+    ctx.synchronize();
+
+    const auto prompt = text_prompt({20, 21, 22, 23, 24, 25});
+    const auto retained = retained_prompt(prompt);
+    detail::ResidentPrefixIdentity identity;
+    const int entry = capture_and_match(
+        cache, {.source = CaptureSourceRef(src.state.text_kv, leases, retained, 6, ctx.stream,
+                                              identity),
+                .retained = retained},
+        "ladder capture");
+    expect(entry != 0, "ladder capture indexed");
+    if (entry == 0) { return bad; }
+
+    // A candidate that shares the leading tokens and diverges mid-prompt must stay a miss:
+    // the ladder may locate the divergence, but no state-carrying point lies mid-turn, so
+    // it must not turn the near match into a hit.
+    const auto diverged_prompt = text_prompt({20, 21, 22, 23, 24, 999});
+    const auto diverged_retained = retained_prompt(diverged_prompt);
+    expect(cache.plan_match(diverged_retained,
+                            detail::prefix_hash_chain(diverged_retained)) == std::nullopt,
+           "diverged candidate stays a miss (no partial-state reuse)");
+
+    // The identical prompt still hits at the frontier (ladder must not suppress full hits).
+    auto match = cache.plan_match(retained, detail::prefix_hash_chain(retained));
+    expect(match && match->entry_id == entry && match->reuse_base == 6,
+           "identical prompt still hits at the frontier");
+
+    // A prefix-only candidate (frontier beyond its chain) stays a miss as before.
+    const auto prefix_prompt = text_prompt({20, 21, 22});
+    const auto prefix_retained = retained_prompt(prefix_prompt);
+    expect(cache.plan_match(prefix_retained,
+                            detail::prefix_hash_chain(prefix_retained)) == std::nullopt,
+           "prefix-only candidate stays a miss");
+    return bad;
+}
+
 int test_fifo_eviction(ninfer::DeviceContext& ctx) {
     int bad = 0;
     KvState src = plan_kv_state(6);
@@ -772,6 +868,8 @@ int main() {
     failures += test_state_image_roundtrip(ctx);
     failures += test_index_match(ctx);
     failures += test_checkpoint_fallback(ctx);
+    failures += test_hash_ladder(ctx);
+    failures += test_ladder_diagnostics(ctx);
     failures += test_fifo_eviction(ctx);
     failures += test_dtor_with_inflight(ctx);
     if (failures == 0) { std::cout << "OK: kv_ram_cache\n"; }

@@ -249,6 +249,13 @@ private:
         bool multi_claim               = false;
         RequestClass owner_class = RequestClass::Agents;
         RamCaptureKind capture_kind    = RamCaptureKind::Terminal;
+        // Longest-common-prefix ladder sampled at capture: ascending frontier points and the
+        // rolling prefix hash at each (in-memory only, not serialized). A candidate chain
+        // matching to a point proves agreement over [0:point]; on this hybrid state model an
+        // in-flight point is diagnostic only -- reusable points must carry a state snapshot,
+        // which only the frontier and the checkpoint frontiers do.
+        std::vector<std::uint32_t> ladder_points;
+        std::vector<PrefixHash128> ladder_hashes;
     };
 
     struct Layout {
