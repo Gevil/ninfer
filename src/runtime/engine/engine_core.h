@@ -959,6 +959,9 @@ private:
                 resources_.lane_state(LaneId{lane}) != LogicalLaneState::TerminalPending) {
                 throw std::logic_error("terminal-pending request has invalid ownership");
             }
+            // Terminal host-RAM capture (no-op unless the RAM tier is enabled): record this
+            // settled lane's prefix so an identical later conversation can restore from RAM.
+            (void)instance_.program->capture_retained_lane(lane);
             const FinishReason reason = *request->terminal_reason;
             auto finished =
                 resources_.finish(*instance_.program, *request->lane, *request->sequence);

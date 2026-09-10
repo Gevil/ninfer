@@ -4477,6 +4477,7 @@ ProgramImplCore::reserve_materialization(AdmissionCandidate&& plan, PreparedProm
             .reuse              = request_plan.reuse,
             .mtp_bridge         = request_plan.mtp_bridge,
             .reuse_source           = request_plan.reuse_source,
+            .ram_entry_id           = request_plan.ram_entry_id,
             .host_input_consumed_pending = host_input_consumed_pending,
         };
         request.prefill.emplace(std::move(prefill));
@@ -9198,6 +9199,11 @@ FinishResult ProgramImplCore::finish(SequenceHandle sequence) noexcept {
     SequenceState& state                   = active_sequence(lane);
     const std::uint32_t continuation_index = active_continuations[lane];
     if (request.lifecycle != Lifecycle::Finishable) { return out; }
+    // A restored host-RAM entry is claimed at materialization; retire it when this request
+    // settles so the record can be evicted again (single-claimant lifecycle).
+    if (request.prefill && request.prefill->ram_restored) {
+        consume_ram_entry(request.prefill->ram_entry_id);
+    }
     if (!request.publish_continuation) {
         if (!clear_lane_strict(state, request)) { return out; }
         out.disposition = runtime::FinishDisposition::Released;
@@ -9282,6 +9288,9 @@ AbortResult ProgramImplCore::abort(SequenceHandle sequence) noexcept {
         return out;
     }
     SequenceState& state = active_sequence(lane);
+    if (request.prefill && request.prefill->ram_restored) {
+        consume_ram_entry(request.prefill->ram_entry_id);
+    }
     if (!clear_lane_strict(state, request)) { return out; }
     out.timings     = request.timings;
     out.speculative = std::move(request.speculative_stats);
@@ -9546,6 +9555,28 @@ void ProgramImplCore::start_sequence(std::uint32_t lane, SequenceState& sequence
                 transaction.root_backend_address.reset();
             }
             sequence.kv.emplace(bundle);
+        } else if (request_plan.reuse_source == PrefixReuseSource::HostRam) {
+            // Terminal host-RAM prefix reuse: bind the transaction's state reservation (the
+            // restore reuses it), discard the unused root KV addresses (the restore creates
+            // its own engine-owned bundles), then stream-async restore the host record.
+            if (transaction.reserved_state_count != state_slots || state_slots == 0 ||
+                request_plan.ram_entry_id == 0) {
+                throw std::logic_error("host-RAM materialization reservations are incomplete");
+            }
+            release_sequence_kv(sequence);
+            release_sequence_state(sequence);
+            sequence.state = ActiveStateBinding{.read  = transaction.reserved_states[0],
+                                                .write = transaction.reserved_states[0]};
+            transaction.reserved_states[0] = {};
+            if (state_slots == 2) {
+                sequence.reserved_state        = transaction.reserved_states[1];
+                transaction.reserved_states[1] = {};
+            }
+            transaction.reserved_state_count = 0;
+            transaction.root_text_address.reset();
+            if (transaction.root_backend_address) { transaction.root_backend_address.reset(); }
+            restore_ram_entry(lane, request_plan.ram_entry_id, *transaction.plan);
+            request.prefill->ram_restored = true;
         } else if (preserving_source) {
             const bool private_source_ready = transaction.has_source &&
                                               transaction.source_index < continuation_capacity &&
@@ -12463,7 +12494,11 @@ bool ProgramImplCore::capture_retained_lane(std::uint32_t lane) {
         sequence.rewrite_state ? state_store->physical_slot(*sequence.rewrite_state) : -1;
     source.stream       = device.stream;
     source.capture_kind = RamCaptureKind::Terminal;
-    return kv_ram_cache_->capture(source, RamCapturePolicy::AllowEviction);
+    const bool captured = kv_ram_cache_->capture(source, RamCapturePolicy::AllowEviction);
+    // The record's D2H copy is stream-ordered on device.stream, but the engine unmaps this
+    // lane's pages as soon as the call returns: wait for the copy to land.
+    if (captured) { device.synchronize(); }
+    return captured;
 }
 
 void ProgramImplCore::restore_ram_entry(std::uint32_t lane, std::uint64_t entry_id,
@@ -12485,7 +12520,14 @@ void ProgramImplCore::restore_ram_entry(std::uint32_t lane, std::uint64_t entry_
     // from the record's host image (stream-async). The bundles must be engine-owned rows:
     // creation here uses the candidate entitlement and the lane's own execution row.
     std::uint32_t text_entitlement = std::max<std::uint32_t>(
-        1U, kv_pages_for_frontier(reuse_base));
+        1U, std::max(kv_pages_for_frontier(reuse_base),
+                     candidate.impl_->text_kv_page_entitlement));
+    std::uint32_t backend_entitlement = std::max<std::uint32_t>(
+        0U, std::max(host.backend_image_present
+                         ? kv_pages_for_frontier(
+                               backend_frontier_at(speculative_backend, reuse_base))
+                         : 0U,
+                     candidate.impl_->backend_kv_page_entitlement));
     sequence.kv.emplace();
     sequence.kv->text = *text_kv_addresses->create_active(text_entitlement, static_cast<std::int32_t>(lane));
     text_kv_addresses->ensure_mapped_to_tokens(sequence.kv->text, reuse_base, device.stream);
@@ -12498,7 +12540,7 @@ void ProgramImplCore::restore_ram_entry(std::uint32_t lane, std::uint64_t entry_
     std::vector<DeviceKVPageHandle> backend_dest;
     if (host.backend_image_present && backend_kv_cache()) {
         sequence.kv->backend =
-            *backend_kv_addresses->create_active(text_entitlement, static_cast<std::int32_t>(lane));
+            *backend_kv_addresses->create_active(backend_entitlement, static_cast<std::int32_t>(lane));
         backend_kv_addresses->ensure_mapped_to_tokens(*sequence.kv->backend, reuse_base,
                                                        device.stream);
         const std::uint32_t restore_backend_pages =
@@ -12510,8 +12552,17 @@ void ProgramImplCore::restore_ram_entry(std::uint32_t lane, std::uint64_t entry_
         }
     }
 
-    auto destination_state = state_store->reserve_destination();
-    if (!destination_state) { throw std::logic_error("no state image remains for RAM restore"); }
+    std::optional<StateImageHandle> destination_state;
+    if (state_store->valid(sequence.state.read) &&
+        state_store->role(sequence.state.read) == StateImageRole::ActiveMutable) {
+        // The materialization branch already bound the transaction's reserved state.
+        destination_state = sequence.state.read;
+    } else {
+        destination_state = state_store->reserve_destination();
+        if (!destination_state) {
+            throw std::logic_error("no state image remains for RAM restore");
+        }
+    }
 
     RamRestoreTarget target;
     target.text_pages        = std::span(text_dest.data(), text_dest.size());

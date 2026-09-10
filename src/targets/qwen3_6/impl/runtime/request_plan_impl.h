@@ -541,6 +541,19 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
             plan->reuse      = restore_path(source->rewrite_checkpoint.kind);
             plan->reuse_base = selected.frontier;
         }
+    } else {
+        // Cold lane: terminal host-RAM prefix reuse (a finished conversation's captured
+        // prefix). Opportunistic: when the tier is disabled or the match misses, the request
+        // stays cold.
+        if (base.allow_prefix_reuse && prompt.identity.reusable) {
+            if (auto ram = plan_ram_reuse(prompt, base_plan, runtime::LaneId{lane})) {
+                const AdmissionCandidateImpl& ram_impl = *ram->impl_;
+                plan->reuse        = ram_impl.reuse;
+                plan->reuse_base   = ram_impl.reuse_base;
+                plan->reuse_source = PrefixReuseSource::HostRam;
+                plan->ram_entry_id = ram_impl.ram_entry_id;
+            }
+        }
     }
 
     if (speculative_backend == SpeculativeBackend::Mtp) {
@@ -555,7 +568,8 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
             decoder->mtp_cache() != nullptr && plan->reuse_base != 0 &&
             ((source != nullptr && source->mtp_kv_valid >= plan->reuse_base - 1) ||
              (shared_source != nullptr && shared_source->backend_frontier >= plan->reuse_base - 1));
-        if (plan->reuse != ReusePath::Root && !append_ready && !checkpoint_ready) {
+        if (plan->reuse != ReusePath::Root && !append_ready && !checkpoint_ready &&
+            plan->reuse_source != PrefixReuseSource::HostRam) {
             throw std::logic_error("published MTP checkpoint is not materializable");
         }
     }

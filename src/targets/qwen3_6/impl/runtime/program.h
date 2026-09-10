@@ -486,6 +486,8 @@ struct RequestControl {
         ReusePath reuse                     = ReusePath::Root;
         MtpBridgeMode mtp_bridge            = MtpBridgeMode::None;
         PrefixReuseSource reuse_source          = PrefixReuseSource::None;
+        std::uint64_t ram_entry_id = 0;
+        bool ram_restored          = false;
         bool host_input_consumed_pending        = false;
     };
 
