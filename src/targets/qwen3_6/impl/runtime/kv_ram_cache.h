@@ -218,6 +218,9 @@ private:
         PrefixReusePath checkpoint_path = PrefixReusePath::RestoreTurnCheckpoint;
         void* block                    = nullptr;
         std::size_t bytes              = 0;
+        // Paged-KV image bytes held in the shared host KV arena (text + backend spans).
+        // Charged against the tier budget by capture() alongside the flat block bytes.
+        std::size_t host_kv_bytes      = 0;
         // The record's paged-KV image lives in the shared host KV arena, not in the flat block
         // (sections 2/3 are unused): one arena allocation per non-empty page span, released
         // with the record -- or moved into the record's RetiredCopy until the in-flight copy
@@ -291,6 +294,13 @@ private:
     // The paged-KV image half is stored in the lane's shared host KV arena (the same pool the
     // extent store demotes into); the arena outlives this cache.
     HostKVArena* host_kv_arena_ = nullptr;
+    // Live host-RAM footprint of the tier: sum over live records of (flat block bytes +
+    // paged-KV image bytes). capture() enforces capacity_bytes against this total, so
+    // --kv-ram-capacity-mib bounds the tier's entire host commitment, not just the flat
+    // capture blocks. Charged on capture, discharged on retire/destroy.
+    std::size_t host_footprint_bytes_ = 0;
+    // Paged-KV image half of the footprint; reported as KvRamSnapshot::kv_image_bytes.
+    std::size_t host_kv_bytes_used_   = 0;
     std::deque<std::uint64_t> fifo_;
     std::unordered_map<std::uint64_t, Record> records_;
     // Bounded record of which content lineages (leading-token hash) have previously produced a

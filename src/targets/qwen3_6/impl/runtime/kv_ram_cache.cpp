@@ -3,6 +3,7 @@
 #include "core/device.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -10,6 +11,16 @@
 #include <vector>
 
 namespace ninfer::targets::qwen3_6::detail {
+
+namespace {
+// Raised inside capture() when the record's host KV page image cannot be allocated although
+// the tier budget has room: the shared host KV arena is full of live host-KV offload pages.
+// A resource limit, not an invariant error -- the capture is dropped, never surfaced as a
+// settle-path exception (pre-r7 this path threw and took the whole settle hook down).
+struct RamCaptureDrop {
+    const char* reason;
+};
+} // namespace
 namespace {
 
 constexpr std::uint32_t kRamMagic   = 0x4D41524E;
@@ -467,7 +478,19 @@ void KVRamCache::destroy_record(std::uint64_t entry_id, bool count_eviction) {
         it->second.copies_done = nullptr;
     }
     it->second.copies_timed = false;
-    if (it->second.block != nullptr) { arena_.free(it->second.block); }
+    if (it->second.block != nullptr) {
+        arena_.free(it->second.block);
+        // A retired record is erased from records_ at retire time (where the footprint was
+        // already discharged); only a live record reaches here with its block intact.
+        host_footprint_bytes_ -= it->second.bytes + it->second.host_kv_bytes;
+        host_kv_bytes_used_   -= it->second.host_kv_bytes;
+        if (count_eviction) {
+            std::fprintf(stderr, "[t8] evict id=%llu block=%zu kv=%zu\n",
+                         static_cast<unsigned long long>(entry_id), it->second.bytes,
+                         it->second.host_kv_bytes);
+            std::fflush(stderr);
+        }
+    }
     records_.erase(it);
     fifo_.erase(std::remove(fifo_.begin(), fifo_.end(), entry_id), fifo_.end());
     if (count_eviction) { ++evictions_; }
@@ -549,6 +572,10 @@ void KVRamCache::retire_record(Record& record) {
     item.backend_host_kv   = std::move(record.backend_host_kv);
     record.block           = nullptr;
     record.copies_done     = nullptr;
+    // The record leaves records_ the moment ownership moves to retired_; discharge the
+    // footprint now (the underlying memory is freed later by reap_retired).
+    host_footprint_bytes_ -= record.bytes + record.host_kv_bytes;
+    host_kv_bytes_used_   -= record.host_kv_bytes;
     retired_.push_back(std::move(item));
 }
 
@@ -729,6 +756,15 @@ std::optional<RamMatch> KVRamCache::plan_match(const PreparedPromptData& prompt,
         if (candidate.reuse_base == 0) { continue; }
         if (!best || candidate.reuse_base > best->reuse_base) { best = candidate; }
     }
+    if (best.has_value()) {
+        std::fprintf(stderr, "[t8] match hit id=%llu base=%u entries=%zu\n",
+                     static_cast<unsigned long long>(best->entry_id), best->reuse_base,
+                     fifo_.size());
+        std::fflush(stderr);
+    } else if (!fifo_.empty()) {
+        std::fprintf(stderr, "[t8] match miss entries=%zu\n", fifo_.size());
+        std::fflush(stderr);
+    }
     return best;
 }
 
@@ -743,6 +779,7 @@ KvRamSnapshot KVRamCache::snapshot() const noexcept {
     return KvRamSnapshot{
         .capacity_bytes = arena_.capacity(),
         .used_bytes     = used,
+        .kv_image_bytes = host_kv_bytes_used_,
         .entry_count    = records_.size(),
         .captures       = captures_,
         .restores       = restores_,
@@ -796,10 +833,53 @@ bool KVRamCache::capture(const RamCaptureSource& source, RamCapturePolicy policy
         finalize_capture_layout(source, header);
     const std::size_t header_bytes = header.header_bytes;
 
-    if (header.entry_bytes > arena_.capacity()) {
-        ++drops_;
-        bump_version();
-        return false;
+    // The record's paged-KV image half lands in the lane's shared host KV arena. Compute its
+    // size up front so the tier budget (capacity_bytes) bounds the tier's TOTAL host
+    // commitment -- flat block plus page images -- rather than the flat block alone.
+    // Pre-r7 the page images were unaccounted, which over-committed host RAM on small boxes
+    // (the r6 window: records pushed the host into zram thrash and collapsed decode).
+    const HostKVPageLayout* text_layout = nullptr;
+    const HostKVPageLayout* backend_layout = nullptr;
+    std::size_t text_kv_bytes = 0;
+    std::size_t backend_kv_bytes = 0;
+    if (!source.text_pages.empty()) {
+        text_layout = host_kv_arena_->layout_for(source.text_cache->page_pool().geometry());
+        if (text_layout == nullptr) {
+            throw std::logic_error("RAM capture text pool has no arena layout");
+        }
+        text_kv_bytes = text_layout->page_stride * source.text_pages.size();
+    }
+    if (!source.backend_pages.empty()) {
+        backend_layout = host_kv_arena_->layout_for(source.backend_cache->page_pool().geometry());
+        if (backend_layout == nullptr) {
+            throw std::logic_error("RAM capture backend pool has no arena layout");
+        }
+        backend_kv_bytes = backend_layout->page_stride * source.backend_pages.size();
+    }
+
+    const std::size_t prospective_bytes =
+        header.entry_bytes + text_kv_bytes + backend_kv_bytes;
+    if (host_footprint_bytes_ + prospective_bytes > arena_.capacity()) {
+        // The record does not fit the tier budget: reclaim coldest unpinned records (which also
+        // frees their host KV arena images, giving arena room back to live host-KV offload)
+        // until it does, then drop if the budget cannot be met at all.
+        for (;;) {
+            const std::size_t before = records_.size();
+            evict_unpinned();
+            if (records_.size() == before) { break; }
+            if (host_footprint_bytes_ + prospective_bytes <= arena_.capacity()) { break; }
+        }
+        if (host_footprint_bytes_ + prospective_bytes > arena_.capacity()) {
+            ++drops_;
+            bump_version();
+            std::fprintf(stderr,
+                         "[t8] capture drop reason=budget entries=%zu host_used=%zu "
+                         "prospective=%zu cap=%zu\n",
+                         records_.size(), host_footprint_bytes_,
+                         host_footprint_bytes_ + prospective_bytes, arena_.capacity());
+            std::fflush(stderr);
+            return false;
+        }
     }
     // Enforced only once the entry is known to fit the arena at all -- evicting a live
     // DynamicBoundary record for a capture that could never succeed regardless (oversized entry,
@@ -870,15 +950,10 @@ bool KVRamCache::capture(const RamCaptureSource& source, RamCapturePolicy policy
         // non-empty page span) via the device pool's stream-async host copy -- the same
         // demotion-copy path the extent store uses; the flat block carries no image bytes.
         if (!source.text_pages.empty()) {
-            const HostKVPageLayout* layout =
-                host_kv_arena_->layout_for(source.text_cache->page_pool().geometry());
-            if (layout == nullptr) {
-                throw std::logic_error("RAM capture text pool has no arena layout");
-            }
-            auto alloc =
-                host_kv_arena_->allocate(*layout, static_cast<std::uint32_t>(source.text_pages.size()));
+            auto alloc = host_kv_arena_->allocate(
+                *text_layout, static_cast<std::uint32_t>(source.text_pages.size()));
             if (!alloc) {
-                throw std::logic_error("host KV arena cannot hold the text page image");
+                throw RamCaptureDrop{"host-kv-arena-full"};
             }
             text_host_kv = std::move(*alloc);
             auto text_view = host_kv_arena_->writable_view(text_host_kv);
@@ -887,15 +962,10 @@ bool KVRamCache::capture(const RamCaptureSource& source, RamCapturePolicy policy
             copies_launched = true;
         }
         if (!source.backend_pages.empty()) {
-            const HostKVPageLayout* layout =
-                host_kv_arena_->layout_for(source.backend_cache->page_pool().geometry());
-            if (layout == nullptr) {
-                throw std::logic_error("RAM capture backend pool has no arena layout");
-            }
-            auto alloc =
-                host_kv_arena_->allocate(*layout, static_cast<std::uint32_t>(source.backend_pages.size()));
+            auto alloc = host_kv_arena_->allocate(
+                *backend_layout, static_cast<std::uint32_t>(source.backend_pages.size()));
             if (!alloc) {
-                throw std::logic_error("host KV arena cannot hold the backend page image");
+                throw RamCaptureDrop{"host-kv-arena-full"};
             }
             backend_host_kv = std::move(*alloc);
             auto backend_view = host_kv_arena_->writable_view(backend_host_kv);
@@ -950,6 +1020,7 @@ bool KVRamCache::capture(const RamCaptureSource& source, RamCapturePolicy policy
                                          : PrefixReusePath::RestoreResponseCheckpoint;
         record.block               = block;
         record.bytes               = header.entry_bytes;
+        record.host_kv_bytes       = text_kv_bytes + backend_kv_bytes;
         record.text_host_kv    = std::move(text_host_kv);
         record.backend_host_kv = std::move(backend_host_kv);
         record.origin_hash         = hash_origin(source.ledger);
@@ -962,12 +1033,41 @@ bool KVRamCache::capture(const RamCaptureSource& source, RamCapturePolicy policy
         const auto [it, inserted]  = records_.emplace(record.id, std::move(record));
         if (!inserted) { throw std::logic_error("RAM cache entry id already exists"); }
         live_id = it->second.id;
+        host_footprint_bytes_ += it->second.bytes + it->second.host_kv_bytes;
+        host_kv_bytes_used_   += it->second.host_kv_bytes;
         fifo_.push_back(it->second.id);
         record_copies(it->second, source.stream);
         pending_save_ids_.push_back(it->second.id);
         ++captures_;
         bump_version();
+        std::fprintf(stderr,
+                     "[t8] capture ok id=%llu frontier=%u kind=%d block=%zu kv=%zu "
+                     "host_used=%zu entries=%zu\n",
+                     static_cast<unsigned long long>(live_id), it->second.execution_frontier,
+                     static_cast<int>(it->second.capture_kind), it->second.bytes,
+                     it->second.host_kv_bytes, host_footprint_bytes_, records_.size());
+        std::fflush(stderr);
         return true;
+    } catch (const RamCaptureDrop& drop) {
+        if (copies_launched) {
+            if (source.stream != nullptr) {
+                (void)cudaStreamSynchronize(source.stream);
+            } else {
+                (void)cudaDeviceSynchronize();
+            }
+        }
+        if (copies_start != nullptr) { (void)cudaEventDestroy(copies_start); }
+        if (live_id != 0) {
+            destroy_record(live_id, false);
+        } else {
+            arena_.free(block);
+        }
+        ++drops_;
+        bump_version();
+        std::fprintf(stderr, "[t8] capture drop reason=%s entries=%zu host_used=%zu\n",
+                     drop.reason, records_.size(), host_footprint_bytes_);
+        std::fflush(stderr);
+        return false;
     } catch (...) {
         if (copies_launched) {
             if (source.stream != nullptr) {
@@ -988,6 +1088,9 @@ bool KVRamCache::capture(const RamCaptureSource& source, RamCapturePolicy policy
 
 RamRestoredHost KVRamCache::unpack_device(std::uint64_t entry_id, const RamRestoreTarget& target) {
     Record& record            = require(entry_id);
+    std::fprintf(stderr, "[t8] restore id=%llu kv=%zu\n",
+                 static_cast<unsigned long long>(entry_id), record.host_kv_bytes);
+    std::fflush(stderr);
     wait_copies_on_stream(record, target.stream);
     const HeaderView header   = read_header(record.block, record.bytes);
     auto* raw                 = static_cast<std::uint8_t*>(record.block);

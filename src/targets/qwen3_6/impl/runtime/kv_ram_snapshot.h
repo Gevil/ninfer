@@ -10,6 +10,10 @@ struct KvRamSnapshot {
     // Sum of indexed Record::bytes, including a claimed-but-not-consumed pin.
     // Retired copy blocks still occupying the pin are excluded until reap.
     std::size_t used_bytes      = 0;
+    // Sum of the live records' paged-KV image bytes (held in the lane's shared host KV arena,
+    // not in the flat capture blocks). Together with used_bytes this is the tier's total
+    // host-RAM footprint, which capture() enforces against capacity_bytes.
+    std::size_t kv_image_bytes  = 0;
     std::size_t entry_count     = 0;
     std::uint64_t captures      = 0;
     std::uint64_t restores      = 0;
