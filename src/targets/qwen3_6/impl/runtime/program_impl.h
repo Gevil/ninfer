@@ -12455,6 +12455,11 @@ bool ProgramImplCore::capture_retained_lane(std::uint32_t lane) {
     if (sequence.kv->backend) {
         const std::uint32_t backend_page_count =
             backend_kv_addresses->mapped_pages(*sequence.kv->backend);
+        // The engine's admission contract is that an append-ready record always carries its
+        // draft KV image. A terminal lane whose draft window is already unmapped (tiny
+        // warmups, trimmed dflash tails) would produce a half-empty backend span that the
+        // cache rejects; skip capture entirely -- there is little prefix worth reusing anyway.
+        if (backend_page_count == 0) { return false; }
         backend_pages.reserve(backend_page_count);
         for (std::uint32_t page = 0; page < backend_page_count; ++page) {
             backend_pages.push_back(

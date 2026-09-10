@@ -961,7 +961,15 @@ private:
             }
             // Terminal host-RAM capture (no-op unless the RAM tier is enabled): record this
             // settled lane's prefix so an identical later conversation can restore from RAM.
-            (void)instance_.program->capture_retained_lane(lane);
+            // The tier must never take the serving engine down with it: capture is
+            // best-effort, so a failed capture is logged and the lane settles on.
+            try {
+                (void)instance_.program->capture_retained_lane(lane);
+            } catch (const std::exception& error) {
+                std::fprintf(stderr, "[t8] retained-lane capture failed lane=%u: %s\n", lane,
+                             error.what());
+                std::fflush(stderr);
+            }
             const FinishReason reason = *request->terminal_reason;
             auto finished =
                 resources_.finish(*instance_.program, *request->lane, *request->sequence);
