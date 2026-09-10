@@ -358,6 +358,17 @@ void ResidentPrefixIdentity::truncate(std::size_t tokens) {
 }
 
 bool ResidentPrefixIdentity::matches(const PreparedPromptData& prompt, std::size_t count) const {
+    return identity_matches_fields(prompt, count, /*check_execution_splits=*/true);
+}
+
+bool ResidentPrefixIdentity::frontier_matches(const PreparedPromptData& prompt,
+                                              std::size_t count) const {
+    return identity_matches_fields(prompt, count, /*check_execution_splits=*/false);
+}
+
+bool ResidentPrefixIdentity::identity_matches_fields(const PreparedPromptData& prompt,
+                                                     std::size_t count,
+                                                     bool check_execution_splits) const {
     const std::size_t prompt_tokens = prompt.token_ids.size();
     if (count > prompt_tokens || count > size() || prompt.token_types.size() != prompt_tokens ||
         prompt.positions.size() != 3 * prompt_tokens) {
@@ -387,6 +398,7 @@ bool ResidentPrefixIdentity::matches(const PreparedPromptData& prompt, std::size
     for (std::size_t i = 0; i < incoming_items; ++i) {
         if (!same_item(prompt.vision_items[i], vision_items_[i])) { return false; }
     }
+    if (!check_execution_splits) { return true; }
     const auto incoming_end =
         std::upper_bound(prompt.identity.rewrite_execution_frontiers.begin(),
                          prompt.identity.rewrite_execution_frontiers.end(), count);
@@ -555,6 +567,15 @@ bool prefix_matches(const PreparedPromptData& prompt, std::span<const TokenId> r
                       prompt.token_ids.begin() + static_cast<std::ptrdiff_t>(count),
                       resident_tokens.begin()) &&
            resident_identity.matches(prompt, count);
+}
+
+bool frontier_prefix_matches(const PreparedPromptData& prompt, std::span<const TokenId> resident_tokens,
+                             const ResidentPrefixIdentity& resident_identity, std::size_t count) {
+    if (count > prompt.token_ids.size() || count > resident_tokens.size()) { return false; }
+    return std::equal(prompt.token_ids.begin(),
+                      prompt.token_ids.begin() + static_cast<std::ptrdiff_t>(count),
+                      resident_tokens.begin()) &&
+           resident_identity.frontier_matches(prompt, count);
 }
 
 std::size_t ResidentPrefixIdentity::packed_bytes() const {

@@ -847,6 +847,68 @@ int test_dtor_with_inflight(ninfer::DeviceContext& ctx) {
     return bad;
 }
 
+int test_split_tolerant_frontier(ninfer::DeviceContext& ctx) {
+    int bad = 0;
+    KvState src = plan_kv_state(6);
+    KvState dst = plan_kv_state(6);
+    const std::vector<ninfer::HostKVPageLayout> layouts{
+        ninfer::plan_host_kv_page_layout(src.state.text_kv.page_pool().geometry())};
+    ninfer::HostKVArena host_arena(4 * 1024 * 1024, layouts);
+    detail::KVRamCache cache(1024 * 1024, host_arena);
+
+    auto source_leases = materialize(src.state.text_kv, 3);
+    const std::vector<std::int32_t> source_ids{0, 1, 2};
+    fill_pages(src.state.text_kv, source_ids, 3, 0x31, "split frontier fill");
+    ctx.synchronize();
+
+    const auto prompt   = text_prompt({10, 100, 101, 102});
+    auto retained       = retained_prompt(prompt);
+    // The source execution carried a rewrite split inside the prompt (as spec-decode
+    // generation stamps into the generated region): the record's identity keeps it.
+    retained.identity.rewrite_execution_frontiers = {2};
+    detail::ResidentPrefixIdentity identity;
+    const CaptureTarget target{
+        .source   = CaptureSourceRef(src.state.text_kv, source_leases, retained, 4, ctx.stream,
+                                     identity),
+        .retained = retained,
+    };
+    if (!cache.capture(target.source.source)) {
+        std::cerr << "split frontier capture failed\n";
+        return 1;
+    }
+    // The continuation candidate: identical tokens/types/positions, no execution splits
+    // (a clean re-prefill of the conversation). The strict identity check must still see
+    // the split mismatch; the frontier-reuse check must not.
+    const auto candidate = text_prompt({10, 100, 101, 102, 200, 201});
+    auto match           = cache.plan_match(candidate, detail::prefix_hash_chain(candidate));
+    expect(match.has_value() && match->reuse == ninfer::PrefixReusePath::AppendAtFrontier &&
+               match->reuse_base == 4,
+           "split-tolerant frontier reuse hits at the record frontier");
+    if (match) {
+        cache.claim(match->entry_id);
+        auto destination_leases = materialize(dst.state.text_kv, 3);
+        auto destination_handles = handles(destination_leases);
+        detail::RamRestoreTarget restore{
+            .text_pages = destination_handles,
+            .text_cache = &dst.state.text_kv,
+            .stream     = ctx.stream,
+        };
+        const detail::RamRestoredHost restored =
+            cache.unpack_device(match->entry_id, restore);
+        ctx.synchronize();
+        expect(!detail::prefix_matches(candidate, restored.ledger, restored.identity, 4),
+               "strict identity check still rejects the split mismatch");
+        expect(detail::frontier_prefix_matches(candidate, restored.ledger, restored.identity, 4),
+               "frontier identity check accepts the split-tolerant match");
+        cache.consume(match->entry_id);
+    }
+    // A candidate that actually diverges in tokens must still miss.
+    const auto diverged = text_prompt({10, 999, 101, 102, 200});
+    expect(cache.plan_match(diverged, detail::prefix_hash_chain(diverged)) == std::nullopt,
+           "token drift still misses despite split tolerance");
+    return bad;
+}
+
 } // namespace
 
 int main() {
@@ -870,6 +932,7 @@ int main() {
     failures += test_checkpoint_fallback(ctx);
     failures += test_hash_ladder(ctx);
     failures += test_ladder_diagnostics(ctx);
+    failures += test_split_tolerant_frontier(ctx);
     failures += test_fifo_eviction(ctx);
     failures += test_dtor_with_inflight(ctx);
     if (failures == 0) { std::cout << "OK: kv_ram_cache\n"; }

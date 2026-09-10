@@ -38,6 +38,14 @@ public:
     [[nodiscard]] std::size_t size() const noexcept { return token_types_.size(); }
 
     [[nodiscard]] bool matches(const PreparedPromptData& prompt, std::size_t count) const;
+    // V2-T8 r9: frontier-reuse variant of matches() that does not compare the
+    // rewrite-execution-frontier list. The state restored at a record's execution frontier is
+    // the complete state of that record's execution (every internal split already baked in),
+    // so the candidate's execution structure over the matched prefix is irrelevant to
+    // AppendAtFrontier reuse. Token types, all three position axes, and vision items are still
+    // compared. Only plan_match's frontier path uses this; the checkpoint path stays strict
+    // (matches()).
+    [[nodiscard]] bool frontier_matches(const PreparedPromptData& prompt, std::size_t count) const;
     [[nodiscard]] bool equals(const ResidentPrefixIdentity& other) const;
     [[nodiscard]] bool prefix_equals(const ResidentPrefixIdentity& other, std::size_t count) const;
     // Packed serialization + hash-chain accessors (V2-T8 RAM-KV cache); added to the
@@ -47,6 +55,9 @@ public:
     }
     [[nodiscard]] std::span<const std::int32_t> positions(std::size_t axis) const {
         return positions_.at(axis);
+    }
+    [[nodiscard]] std::span<const std::uint32_t> rewrite_execution_frontiers() const noexcept {
+        return std::span<const std::uint32_t>(rewrite_execution_frontiers_);
     }
     [[nodiscard]] std::span<const VisionItem> vision_items() const noexcept {
         return std::span<const VisionItem>(vision_items_);
@@ -62,6 +73,8 @@ private:
     std::array<std::vector<std::int32_t>, 3> positions_;
     std::vector<VisionItem> vision_items_;
     std::vector<std::uint32_t> rewrite_execution_frontiers_;
+    bool identity_matches_fields(const PreparedPromptData& prompt, std::size_t count,
+                                 bool check_execution_splits) const;
 };
 
 // One rolling digest per token frontier. This is only a content shortlist: exact token and
@@ -91,6 +104,12 @@ private:
                                   std::span<const TokenId> resident_tokens,
                                   const ResidentPrefixIdentity& resident_identity,
                                   std::size_t count);
+// V2-T8 r9: prefix_matches with the frontier-tolerant identity check (see
+// ResidentPrefixIdentity::frontier_matches).
+[[nodiscard]] bool frontier_prefix_matches(const PreparedPromptData& prompt,
+                                           std::span<const TokenId> resident_tokens,
+                                           const ResidentPrefixIdentity& resident_identity,
+                                           std::size_t count);
 [[nodiscard]] std::vector<PrefixHash128> prefix_hash_chain(const PreparedPromptData& prompt);
 
 [[nodiscard]] PrefixHash128 prefix_hash_at(std::span<const TokenId> tokens,

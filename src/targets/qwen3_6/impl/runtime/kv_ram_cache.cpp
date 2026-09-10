@@ -759,7 +759,11 @@ std::optional<RamMatch> KVRamCache::plan_match(const PreparedPromptData& prompt,
         const RamRestoredHost host = host_from_header(record.block, header);
         if (frontier_hash) {
             ++exact_comparisons_;
-            if (prefix_matches(prompt, host.ledger, host.identity, record.execution_frontier)) {
+            // r9: the state restored at the record's frontier is the complete state of its
+            // execution (internal rewrite-execution splits already baked in), so the
+            // candidate's execution structure over the matched prefix is not compared here.
+            // Token types, all three position axes, and vision items are still checked.
+            if (frontier_prefix_matches(prompt, host.ledger, host.identity, record.execution_frontier)) {
                 candidate.reuse      = PrefixReusePath::AppendAtFrontier;
                 candidate.reuse_base = record.execution_frontier;
             }
@@ -783,17 +787,36 @@ std::optional<RamMatch> KVRamCache::plan_match(const PreparedPromptData& prompt,
         int first_div       = -1;
         std::uint64_t exp_token = 0, act_token = 0;
         if (near_id != 0 && near_point > 0) {
-            // Bounded scan from the deepest agreed ladder point: where exactly did this
-            // candidate stop matching the near record, and what token did it swap in?
-            // exp = the record's (expected) token, act = the candidate's (actual) token.
             const RamRestoredHost host = load_host(near_id);
-            auto diverged = first_divergence(
-                prompt, std::span<const TokenId>(host.ledger), host.identity, near_point,
-                static_cast<std::size_t>(near_point) + 512);
-            if (diverged) {
-                first_div = static_cast<int>(*diverged);
-                exp_token = host.ledger[*diverged];
-                act_token = prompt.token_ids[*diverged];
+            const std::uint32_t near_frontier = require(near_id).execution_frontier;
+            // r9: if the near record's frontier digest matched fully, the candidate is
+            // token/type/position-identical to the record over [0:frontier) (the digest
+            // covers those fields) and the miss is in an identity field the digest does
+            // not cover. Report the rewrite-execution-frontier counts (record vs candidate,
+            // bounded to the frontier) instead of scanning [near, near+512), which lies
+            // entirely past the record's end in that case.
+            if (near_frontier > 0 && near_point >= near_frontier &&
+                hash_chain.size() > near_frontier &&
+                hash_chain[static_cast<std::size_t>(near_frontier)] == require(near_id).hash_f) {
+                first_div = -2;
+                const auto rec_splits  = host.identity.rewrite_execution_frontiers();
+                const auto cand_splits = prompt.identity.rewrite_execution_frontiers;
+                exp_token = static_cast<std::uint64_t>(std::upper_bound(
+                    rec_splits.begin(), rec_splits.end(), near_frontier) - rec_splits.begin());
+                act_token = static_cast<std::uint64_t>(std::upper_bound(
+                    cand_splits.begin(), cand_splits.end(), near_frontier) - cand_splits.begin());
+            } else {
+                // Bounded scan from the deepest agreed ladder point: where exactly did this
+                // candidate stop matching the near record, and what token did it swap in?
+                // exp = the record's (expected) token, act = the candidate's (actual) token.
+                auto diverged = first_divergence(
+                    prompt, std::span<const TokenId>(host.ledger), host.identity, near_point,
+                    static_cast<std::size_t>(near_point) + 512);
+                if (diverged) {
+                    first_div = static_cast<int>(*diverged);
+                    exp_token = host.ledger[*diverged];
+                    act_token = prompt.token_ids[*diverged];
+                }
             }
         }
         std::fprintf(stderr,
