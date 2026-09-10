@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdio>
 #include <exception>
 #include <iterator>
 #include <limits>
@@ -12439,8 +12440,20 @@ bool ProgramImplCore::capture_retained_lane(std::uint32_t lane) {
         sequence.execution_frontier > sequence.ledger.size()) {
         return false;
     }
-    if (!sequence.state.read.valid() ||
-        state_store->residency(sequence.state.read) == StateReplicaResidency::HostOnly) {
+    if (!sequence.state.read.valid()) { return false; }
+    const StateReplicaResidency read_residency = state_store->residency(sequence.state.read);
+    if (read_residency == StateReplicaResidency::HostOnly ||
+        read_residency == StateReplicaResidency::None) {
+        // A read image without a Device replica cannot be captured. HostOnly is the ordinary
+        // skip (a restored lane); None on a terminal lane that just decoded is unexpected, so
+        // surface it.
+        if (read_residency == StateReplicaResidency::None) {
+            std::fprintf(stderr,
+                         "[t8] capture skip lane=%u: state.read has no Device replica "
+                         "(residency=%d)\n",
+                         lane, static_cast<int>(read_residency));
+            std::fflush(stderr);
+        }
         return false;
     }
 
@@ -12468,6 +12481,23 @@ bool ProgramImplCore::capture_retained_lane(std::uint32_t lane) {
     }
 
     const auto ledger_span = std::span<const TokenId>(sequence.ledger.data(), sequence.ledger.size());
+    // The dflash2 rewrite checkpoint is only capturable while it still owns a Device replica.
+    // A host-resident (demoted) checkpoint is dropped from the record instead of failing the
+    // whole capture -- the paged-KV prefix image is what makes the record reusable.
+    bool checkpoint_captured = sequence.rewrite_checkpoint.valid;
+    if (sequence.rewrite_state) {
+        const auto checkpoint_residency = state_store->residency(*sequence.rewrite_state);
+        if (checkpoint_residency != StateReplicaResidency::DeviceOnly &&
+            checkpoint_residency != StateReplicaResidency::Both) {
+            checkpoint_captured = false;
+            std::fprintf(stderr,
+                         "[t8] capture skip-checkpoint lane=%u: rewrite_state residency=%d "
+                         "(no Device replica)\n",
+                         lane, static_cast<int>(checkpoint_residency));
+            std::fflush(stderr);
+        }
+    }
+
     RamCaptureSource source;
     source.execution_frontier        = sequence.execution_frontier;
     source.ledger_frontier           = sequence.ledger_frontier;
@@ -12477,11 +12507,13 @@ bool ProgramImplCore::capture_retained_lane(std::uint32_t lane) {
     source.dflash_context_frontier   = sequence.dflash_context_frontier;
     source.tail_hidden_valid         = sequence.tail_hidden_valid;
     source.tail_hidden               = sequence.tail_hidden_valid ? &sequence.tail_hidden : nullptr;
-    source.rewrite_valid             = sequence.rewrite_checkpoint.valid;
-    source.rewrite_kind              = sequence.rewrite_checkpoint.kind;
-    source.rewrite_frontier          = sequence.rewrite_checkpoint.frontier;
+    source.rewrite_valid             = checkpoint_captured;
+    source.rewrite_kind              = checkpoint_captured ? sequence.rewrite_checkpoint.kind
+                                                           : RewriteCheckpointKind::TurnClosure;
+    source.rewrite_frontier          =
+        checkpoint_captured ? sequence.rewrite_checkpoint.frontier : 0;
     source.rewrite_checkpoint_hidden =
-        sequence.rewrite_checkpoint.valid ? &sequence.rewrite_checkpoint_hidden : nullptr;
+        checkpoint_captured ? &sequence.rewrite_checkpoint_hidden : nullptr;
     source.ledger  = ledger_span;
     source.identity = &sequence.prefix_identity;
     source.hash_f   = prefix_hash_at(ledger_span, sequence.prefix_identity, sequence.execution_frontier);
@@ -12496,7 +12528,9 @@ bool ProgramImplCore::capture_retained_lane(std::uint32_t lane) {
     source.state_image   = state_images.get();
     source.state_slot    = state_store->physical_slot(sequence.state.read);
     source.state_checkpoint_slot =
-        sequence.rewrite_state ? state_store->physical_slot(*sequence.rewrite_state) : -1;
+        (checkpoint_captured && sequence.rewrite_state)
+            ? state_store->physical_slot(*sequence.rewrite_state)
+            : -1;
     source.stream       = device.stream;
     source.capture_kind = RamCaptureKind::Terminal;
     const bool captured = kv_ram_cache_->capture(source, RamCapturePolicy::AllowEviction);
