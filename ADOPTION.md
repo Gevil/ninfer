@@ -1051,3 +1051,59 @@ the chain. rc=0 in 34 s, lane re-ready 38 s, chat template
 byte-identical, `/v1/models` = qwen3.8-27b @ 262144.
 
 Disk: 228G → 635G free (88% → 66% used).
+
+### V2-T8 — host-RAM frontier reuse (ADOPTED + ENABLED 2026-09-11, `v2/t8r9-splits` @ 4a5bffc7)
+
+User decision 2026-09-11: **adopt and turn on** ("the loss is not that huge ... a
+pretty good win"). The lane now runs the r9 build with T8 on at a **4096 MiB
+kv-ram budget**.
+
+**What it is:** T8 snapshots conversation KV state at the record frontier into a
+host-RAM capture store; `--kv-ram-capacity-mib 4096` budgets that store (separate
+dials: `--kv-capacity 225000` = device KV tokens, `--host-kv-mib 16384` = host KV
+arena). A follow-up turn sharing the prefix matches its own record at the
+frontier (`[t8] match hit ... base=...`) and resumes from the captured KV instead
+of re-prefilling. r9 (this branch) is the **split-tolerance fix**: pre-r9 the
+continuation match never fired under the production split config — captures
+happened, hits never did.
+
+**Evidence (3 windows 2026-09-10/11, logs `v2t8r9-2026-09-10.*`):**
+- G5h hard gate (s2 continuation HIT at record frontier, base=14505): PASS in all
+  3 runs (8GiB clean, 4096 ×2).
+- Budget A/B (C/B run-internal isolation): 8192 MiB = −4…−14% long-context decode
+  (clean run); 4096 MiB ≈ −0…−5% (two runs). 4096 is the smallest budget that
+  holds the reuse set with headroom (window peak host_used ~2.7 GiB;
+  budget_drop=0, evict=0 in windows).
+- Zero cost when unused: FRESH/P480 at 99.6–100.0% of A in every run; parity
+  A==B==C byte-identical (90/90/90).
+- Gate G2 (≥97% of A at D32K): **NOT CLEARED** — 8GiB clean C/A D32K = 86.4%;
+  4096 C/A = 80–83.7% (confounded: morning host clock dips, B/C-phase SM
+  2535–2812 MHz vs 2887 nominal; phase A always clean). User consciously accepted
+  the floor exception.
+
+**Open items (documented, non-blocking):**
+- Continuation-benefit magnitude **UNPROVEN**: +13.5% s2 in the single clean
+  8GiB run (215.4→244.6 tps); the two 4096 runs show −2.8…−3.9% (confounded C
+  phases) while the A control itself varies ±8–17% across clean runs —
+  indistinguishable from noise. See
+  `~/.local/share/ninfer/logs/v2t8r9-benefit-note-2026-09-11.md`.
+- D32K 97% floor: no clean 4096 C/A exists (morning windows confounded); a
+  quiet-window run would settle it.
+- Host clock instability (morning B/C-phase dips, absent evenings): unresolved
+  environmental factor affecting any clean-run measurement.
+
+**Deploy (2026-09-11 10:16 CEST, supervisor ShipwatchR9):** quadlet = live
+pre-T8 + exactly 2 lines: `Image=ninfer-nvfp4:v2t8r9-4a5bffc7`
+(d1d8ac57e758, branch `v2/t8r9-splits` @ 4a5bffc7) + ` --kv-ram-capacity-mib 4096`
+after `--model-id qwen3.8-27b`. BAK:
+`~/.config/containers/systemd/ninfer-nvfp4.container.bak-t8adopt-2026-09-11-1789114586`.
+Boot 12.9 s, zero FATAL, mounts unchanged (same quasar-dflash2-master artifact +
+chat template), `/v1/models` 200 @ 225000.
+**Production confirmation (10:18):** `[t8] capture ok ... frontier=14500` +
+`match hit base=14500` on the 2-turn 16k-prefix probe; the lane's own long
+conversations (134–139k-token frontiers) captured and hit in real traffic;
+budget cap enforced at exactly 4.0 GiB (host_used=4278369280), LRU eviction
+active.
+
+**Rollback:** `cp BAK → quadlet + daemon-reload + restart` → back to the
+`quasar` tag (f8b76e5a4dc2, pre-T8 pure-master+f7727926) + byte-identical quadlet.
