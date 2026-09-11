@@ -428,6 +428,9 @@ struct PromptOptions {
     // Function the caller selected. Its call opener is appended to the generation prompt, so the
     // answer can only continue inside that call. Requires a new assistant turn with thinking off.
     std::string forced_tool_name;
+    // Recover well-formed text-form tool calls even when no tools are declared (the
+    // contract then accepts any syntactically valid tool name).
+    bool tolerant_tool_calls = false;
 };
 
 enum class CacheRetentionHint : std::uint8_t {

@@ -55,6 +55,11 @@ struct ToolCallOutputContract {
     // it: a second, independently supplied copy could name a different tool and the continuation
     // would be attributed to that one.
     std::string forced_tool_name;
+    // Tolerant last-close recovery (the --tolerant-tool-calls server flag): a structurally
+    // complete call is still accepted when a parameter value quotes unbalanced tool-call
+    // markers, the closing tool marker is missing at the end of the stream, or a malformed
+    // segment follows an already recovered call.
+    bool tolerant = false;
 };
 
 struct ParsedToolCallOutput {
@@ -66,8 +71,11 @@ struct ParsedToolCallOutput {
 
 [[nodiscard]] std::shared_ptr<const ToolCallOutputContract>
 build_tool_call_output_contract(std::span<const std::string> tool_jsons, bool enabled,
-                                std::string_view forced_tool_name = {});
+                                std::string_view forced_tool_name = {}, bool tolerant = false);
 
+// In tolerant mode (contract.tolerant) a complete call is recovered even when a parameter
+// value quotes unbalanced call markers, the closing tool marker is missing at end of
+// stream, or a malformed segment follows an already recovered call.
 [[nodiscard]] ParsedToolCallOutput
 parse_qwen_tool_call_output(const std::string& text, std::size_t max_tool_name_length,
                             const ToolCallOutputContract& contract);

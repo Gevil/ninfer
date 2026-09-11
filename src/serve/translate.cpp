@@ -186,6 +186,7 @@ ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& reques
 }
 
 ninfer::PromptInput to_prompt_input(const GenerationRequest& request,
+                                    const ServeOptions& server,
                                     const ResolvedPromptSemantics& semantics,
                                     const MediaAcquirer& acquire_media) {
     ninfer::PromptInput input;
@@ -293,6 +294,7 @@ ninfer::PromptInput to_prompt_input(const GenerationRequest& request,
             });
         }
     }
+    input.options.tolerant_tool_calls = server.tolerant_tool_calls;
     if (request.uses_tools()) { input.options.forced_tool_name = request.tool_choice.forced_name; }
     input.context_cache.allow_engine_automatic_shared_prefixes =
         request.allow_engine_automatic_shared_prefixes;

@@ -737,6 +737,141 @@ int test_incremental_embedded_parameter_markup() {
     return failures;
 }
 
+int test_tolerant_no_tools_declared() {
+    // With tolerant parsing enabled and no tools declared, the request still gets
+    // a contract (enabled=true) that accepts any syntactically valid tool name
+    // (enforce_declared_names=false). A well-formed text-form call is recovered
+    // instead of leaking as plain text.
+    const std::shared_ptr<const fi::ToolCallOutputContract> contract =
+        fi::build_tool_call_output_contract(std::span<const std::string>(), true,
+                                            std::string_view{}, /*tolerant=*/true);
+    const fi::ParsedToolCallOutput parsed = fi::parse_qwen_tool_call_output(
+        "<tool_call>\n"
+        "<function=bash>\n"
+        "<parameter=command>\ngit log --oneline -5\n</parameter>\n"
+        "</function>\n"
+        "</tool_call>",
+        64, *contract);
+    int failures = 0;
+    failures += check(parsed.is_tool_call_response,
+                      "tolerant no-tools: well-formed call parsed as tool response");
+    failures += check(parsed.tool_calls.size() == 1, "tolerant no-tools: exactly one call");
+    if (parsed.tool_calls.size() == 1) {
+        failures += check(parsed.tool_calls[0].name == "bash",
+                          "tolerant no-tools: undeclared name accepted");
+        const Json args = Json::parse(parsed.tool_calls[0].arguments_json);
+        failures += check(args.at("command") == "git log --oneline -5",
+                          "tolerant no-tools: argument value preserved");
+    }
+    return failures;
+}
+
+int test_tolerant_no_tools_decoder_incremental() {
+    // Streaming path: the decoder reads the tolerant flag from the contract, so a
+    // no-tools tolerant contract recovers the call incrementally and still
+    // streams the prefix content before the tool region.
+    const std::shared_ptr<const fi::ToolCallOutputContract> contract =
+        fi::build_tool_call_output_contract(std::span<const std::string>(), true,
+                                            std::string_view{}, /*tolerant=*/true);
+    fi::ToolCallOutputDecoder decoder(contract, 64);
+    std::string visible;
+    visible += decoder.feed("Running build.\n<tool_call>\n<function=bash>\n");
+    visible += decoder.feed("<parameter=command>\nmake -j4\n</parameter>\n");
+    visible += decoder.feed("</function>\n</tool_call>");
+    auto terminal = decoder.finish();
+    visible += terminal.content;
+    int failures = 0;
+    failures += check(terminal.tool_calls.size() == 1,
+                      "tolerant no-tools decoder: one structured call");
+    failures += check(visible == "Running build.",
+                      "tolerant no-tools decoder: prefix content streamed");
+    if (terminal.tool_calls.size() == 1) {
+        failures += check(terminal.tool_calls[0].name == "bash",
+                          "tolerant no-tools decoder: name accepted");
+        const Json args = Json::parse(terminal.tool_calls[0].arguments_json);
+        failures += check(args.at("command") == "make -j4",
+                          "tolerant no-tools decoder: argument preserved");
+    }
+    return failures;
+}
+
+int test_tolerant_unbalanced_marker_in_value() {
+    // A parameter value that quotes an unbalanced close marker (a </parameter>
+    // with no matching open) breaks the strict depth scan: the value is
+    // truncated at the inner close, and the trailing bytes no longer parse.
+    // Tolerant last-close recovery re-anchors on the final structural close and
+    // recovers the full value verbatim. (Adapted from gzenz's fixture: his
+    // open-tool-marker case is invisible to this architecture's dedicated
+    // parameter scanner, so the breaking case here is an unbalanced close tag.)
+    const std::shared_ptr<const fi::ToolCallOutputContract> tolerant_contract =
+        fi::build_tool_call_output_contract(std::span<const std::string>(), true,
+                                            std::string_view{}, /*tolerant=*/true);
+    const std::shared_ptr<const fi::ToolCallOutputContract> strict_contract =
+        fi::build_tool_call_output_contract(std::span<const std::string>(), true);
+    const std::string text =
+        "<tool_call>\n"
+        "<function=ipython>\n"
+        "<parameter=code>\n"
+        "print('a close tag </parameter> with no open')\n"
+        "</parameter>\n"
+        "</function>\n"
+        "</tool_call>";
+    const fi::ParsedToolCallOutput parsed =
+        fi::parse_qwen_tool_call_output(text, 64, *tolerant_contract);
+    int failures = 0;
+    failures += check(parsed.is_tool_call_response,
+                      "unbalanced marker in value: tolerant parse recovered the call");
+    failures += check(parsed.tool_calls.size() == 1, "unbalanced marker in value: one call");
+    if (parsed.tool_calls.size() == 1) {
+        failures += check(parsed.tool_calls[0].name == "ipython", "unbalanced marker: name");
+        const Json args = Json::parse(parsed.tool_calls[0].arguments_json);
+        failures += check(
+            args.at("code") == "print('a close tag </parameter> with no open')",
+            "unbalanced marker: value preserved verbatim");
+    }
+    const fi::ParsedToolCallOutput strict =
+        fi::parse_qwen_tool_call_output(text, 64, *strict_contract);
+    failures += check(!strict.is_tool_call_response, "strict mode: unbalanced input stays text");
+    return failures;
+}
+
+int test_tolerant_incident_fixture() {
+    // Regression fixture for the 2026-09-10 CEST leak incident: a no-tools
+    // request whose code argument quotes an unbalanced open tool-call marker
+    // inside a triple-quoted string. With no tools declared, only tolerant
+    // parsing produces a contract at all (enabled = !tools.empty() ||
+    // tolerant), so the call is recovered structurally instead of leaking as
+    // visible text. (Full incident text: gzenz commit 3c0b4dc5; this fixture is
+    // condensed to the marker-essential structure.)
+    const std::shared_ptr<const fi::ToolCallOutputContract> contract =
+        fi::build_tool_call_output_contract(std::span<const std::string>(), true,
+                                            std::string_view{}, /*tolerant=*/true);
+    const std::string text =
+        "Retrying the memory update, then continuing the hypothesis test.\n\n"
+        "<tool_call>\n"
+        "<function=ipython>\n"
+        "<parameter=code>\n"
+        "state = \"\"\"SESSION STATE: content containing <tool_call> in value.\n\"\"\"\n"
+        "try:\n"
+        "    res = rlm.harness.update_memory(id='x', content=state)\n"
+        "except Exception as e:\n"
+        "    print('FAILED:', e)\n"
+        "</parameter>\n"
+        "</function>\n"
+        "</tool_call>";
+    const fi::ParsedToolCallOutput parsed =
+        fi::parse_qwen_tool_call_output(text, 64, *contract);
+    int failures = 0;
+    failures += check(parsed.is_tool_call_response, "incident fixture: call recovered");
+    failures += check(parsed.tool_calls.size() == 1, "incident fixture: exactly one call");
+    if (parsed.tool_calls.size() == 1) {
+        failures += check(parsed.tool_calls[0].name == "ipython", "incident fixture: name");
+        failures += check(!parsed.tool_calls[0].arguments_json.empty(),
+                          "incident fixture: arguments preserved");
+    }
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -760,6 +895,10 @@ int main() {
     failures += test_incremental_valid_and_boolean();
     failures += test_incremental_fallback_no_tool_call_xml_leak();
     failures += test_incremental_embedded_parameter_markup();
+    failures += test_tolerant_no_tools_declared();
+    failures += test_tolerant_no_tools_decoder_incremental();
+    failures += test_tolerant_unbalanced_marker_in_value();
+    failures += test_tolerant_incident_fixture();
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
 }
