@@ -1150,3 +1150,48 @@ requests.jsonl live (server_start + per-request records); single restart cycle.
 JSONL for `occupancy.host_kv_bytes`, the T8 snapshot (captures/restores/
 evictions/drops), and per-request cache-hit lines. If arena `pressure_*`
 counters go non-zero (all-at-225k case), restore `--host-kv-mib 16384`.
+
+### V2-T10 — upstream-sync planner rework + #229 re-prefill fix (SHIPPED 2026-09-11, `v2/t10-upstream-sync` @ 22e203da)
+
+**Lane now on image `v2t10-22e203da` (digest ce6c719fef9f, :quasar/:latest).**
+Two picks off `upstream/master` (both MERGED upstream since the 2026-09-08 audit
+listed them as open PRs — the PR framing was stale):
+- `00f90f65` = upstream `d4929686` — renew materialization search only when it
+  helps (predicted-gain justified; replaces the fixed 5 ms pressure-search
+  budget; reuses the prior budget on re-admission; request-log
+  re-prefill/admission diagnostics). Fixes #229 (multi-session large-request
+  re-prefill fallback).
+- `22e203da` = upstream `a99d3321` — re-prefill under multi-session admission
+  pressure (follow-up to the above).
+
+**Gate chain (ship pipeline 2026-09-11, supervisor ShipwatchT10):**
+- G1/G2 clone/branch sync OK (v2/t10-upstream-sync tip 22e203da = build source).
+- G3 GPU-test container PASS.
+- G4 ctest 116/116 — failure set identical to the T8 baseline (4 skips in set).
+- G6 battery v2t10: **14/15** — DECODE-8K red (single shot 124.2 vs floor 146.1,
+  baseline `quasar-baseline-2026-09-09-live.json`) → pipeline auto-rollback to T8r9
+  at 13:52 (log `ship-v2t10-22e203da-2026-09-11.log`).
+
+**Triage — same-window A/B (13:53–13:58, supervisor ShipwatchT10AB, quadlet file
+untouched, retag-only window `t10ab-window-2026-09-11.sh`):**
+- LIVE (T8r9, d1d8ac57) medians: fresh **152.4** / 8k **141.4**.
+- CANDIDATE (ce6c719f) medians: fresh **163.1** / 8k **162.1** → PASS (≥97 % gate;
+  actually +7 % / +15 % vs live).
+- The battery red is a stale-baseline + single-cold-shot artifact: pre-T10 live
+  itself sat BELOW the old 8k floor (141.4 < 146.1), and the battery's 8k probe is
+  one short sample. T10 is decode-neutral-to-positive, not a regression.
+- **SHIPPED via the A/B window** (window retagged :quasar/:latest to ce6c719f;
+  verified container ImageID + /v1/models + active service; quadlet
+  byte-identical to pre-window BAK).
+
+**#229 multi-session smoke (post-ship):** 3 concurrent ~30k-token sessions × 2
+turns — all 200; follow-up turns hit KV (TTFT ~30 ms, 47–62 tps decode); journal
+clean (no FATAL, no real 4xx); req lines show healthy dflash2 acceptance
+(17–36 %).
+
+**Decode baseline refreshed:** `quasar-baseline-2026-09-11-t10.json`
+(fresh 163.1 / 8k 162.1, A/B medians); battery `BASELINE=` repointed (was
+09-09-live 159.3/153.8 — stale: intraday drift made live fail its own floor).
+
+**Next:** V2-T11 = md-ops clean wave (7 picks: #222/#225/#162/#217/#175/#215/#195)
+off `v2/t10-upstream-sync`; #194/#201 (conflicting) remain for a manual-port tier.
