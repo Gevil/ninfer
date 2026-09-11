@@ -20,13 +20,17 @@ struct ResolvedPromptSemantics {
     std::optional<ninfer::ReasoningEffort> reasoning_effort;
     std::optional<ninfer::ReasoningEffort> effective_reasoning_effort;
     bool preserve_thinking = false;
+    // Serve-side recovery of well-formed text-form tool calls even when no tools are
+    // declared (--tolerant-tool-calls); carried on the semantics so to_prompt_input
+    // keeps the post-refactor signature without a ServeOptions parameter.
+    bool tolerant_tool_calls = false;
 };
 
 ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& req,
                                                  const ServeOptions& server,
                                                  const ninfer::PromptCapabilities& capabilities);
 
-ninfer::PromptInput to_prompt_input(const GenerationRequest& req, const ServeOptions& server,
+ninfer::PromptInput to_prompt_input(const GenerationRequest& req,
                                     const ResolvedPromptSemantics& semantics,
                                     const MediaAcquirer& acquire_media);
 
