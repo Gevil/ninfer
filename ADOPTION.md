@@ -1104,6 +1104,16 @@ chat template), `/v1/models` 200 @ 225000.
 conversations (134–139k-token frontiers) captured and hit in real traffic;
 budget cap enforced at exactly 4.0 GiB (host_used=4278369280), LRU eviction
 active.
+**Live observation (10:18–10:20, real traffic):** under production load the store
+holds **one record at a time** — the OMP session's own record alone is ~3.0–3.1 GiB
+at a 170k-token frontier against the 4 GiB budget (entries=1, host_used ~3.3–3.5 GiB).
+Per-turn cycle: evict previous → capture new frontier → next turn hits its own new
+record: **11 hits / 1 miss (~92%)** in the first two minutes live. The "evict=0"
+window evidence does not hold under concurrent traffic — it is a single-slot LRU:
+concurrent long-context sessions compete for the one slot, and an evicted session's
+turn falls back to normal prefill (never worse than baseline; parity preserved). At
+the 225k context ceiling a record would be ~4.1 GiB > budget, so the final stretch of
+a full-context conversation loses the hit (natural taper, not a failure).
 
 **Rollback:** `cp BAK → quadlet + daemon-reload + restart` → back to the
 `quasar` tag (f8b76e5a4dc2, pre-T8 pure-master+f7727926) + byte-identical quadlet.
