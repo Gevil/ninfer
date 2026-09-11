@@ -1,8 +1,9 @@
 # ADOPTION-V2.md — adoption record re-baselined on `quasar-master`
 
-**As of 2026-09-09.** Branch `v2/adoption` (off `quasar-master` @ `f7727926`), docs-only.
+**As of 2026-09-11.** Branch `v2/adoption` (off `quasar-master` @ `f7727926`), docs-only.
 All SHAs, line numbers, ahead/behind counts, apply results, and PR/issue states in this file
-were measured on 2026-09-09 after `git fetch --all --prune` (see Appendix A for the harnesses).
+were measured on 2026-09-09 after `git fetch --all --prune` (see Appendix A for the harnesses); the
+2026-09-10 → 09-11 runtime entries (§2, §6.8, the §7 status note) were measured live on the lane on those dates.
 
 ---
 
@@ -30,9 +31,9 @@ Neither source file is deleted, edited, or moved. They remain citable by `branch
 |---|---|
 | Code baseline | `quasar-master` @ `f7727926` = upstream `b88c0f6f` + `f7727926` (`targets(qwen3_6_27b): support Qwen38Nvfp4* weights profiles for quasar artifacts`, 1 file: `src/targets/qwen3_6_27b/impl/load/bindings.cpp`, +103/−3: `WeightsProfile { Qwen38Nvfp4, Qwen38Nvfp4Full }` family switch + 3 MTP3 kv-workspace curve cases) |
 | Upstream state | `b88c0f6f` = upstream master **and** dev tip (live `ls-remote` 2026-09-09); `quasar-master...upstream/master` = 1 ahead / 0 behind |
-| Image | Baseline image `localhost/ninfer-nvfp4:qm-f7727926`. **As of 2026-09-09 (end of day), V2-T1 → T2 → T3 → T5 have shipped in sequence on top** (V2-T4 rejected) — the live image is the **V2-T5** candidate build (branch `v2/t5-decode` @ `324a8de3` + the 3 on-path decode picks, image `f8b76e5a4dc2`), retagged to `:quasar`/`:latest`; the earlier V2-T1 tag `:v2t1-ba21e676` is retained. quadlet `ninfer-nvfp4`, port 8002→8080, 2 Volume mounts |
+| Image | Baseline image `localhost/ninfer-nvfp4:qm-f7727926`. **As of 2026-09-09 (end of day), V2-T1 → T2 → T3 → T5 have shipped in sequence on top** (V2-T4 rejected) — the live image is the **V2-T5** candidate build (branch `v2/t5-decode` @ `324a8de3` + the 3 on-path decode picks, image `f8b76e5a4dc2`), retagged to `:quasar`/`:latest`; the earlier V2-T1 tag `:v2t1-ba21e676` is retained. **As of 2026-09-11 the live image is `v2t8r9-4a5bffc7`** (V2-T8 r9 on top of T1+T2+T3+T5 — §6.8). quadlet `ninfer-nvfp4`, port 8002→8080, 2 Volume mounts |
 | Artifact | `~/.local/share/ninfer/models/qwen3.8-27b-quasar-dflash2-master/qwen3_8_27b_quasar_dflash2_master.ninfer` — 1334 objects, 19.78 GiB (QUASAR base + 66 master-contract dflash2 objects), sha256 `da5efb3332e00ed5a9d719aa5cc09a4066fa03ab0d1706f6119f2fba8f2ba338` |
-| Flags | `--spec dflash2 --draft-tokens 7 --kv-dtype nvfp4 --kv-capacity 225000 --max-context 225000 --host-kv-mib 16384 --max-concurrency 4 --vision --preserve-thinking --default-max-tokens 80000 --pending-timeout-ms 900000 --model-id qwen3.8-27b` — **the V2-T1 ship reset `--max-context`/`--kv-capacity` from the 09-08 256K bump (`262144`) to `225000`; re-bumping to `262144` is a pending follow-up** |
+| Flags | `--spec dflash2 --draft-tokens 7 --kv-dtype nvfp4 --kv-capacity 225000 --max-context 225000 --host-kv-mib 16384 --max-concurrency 4 --vision --preserve-thinking --default-max-tokens 80000 --pending-timeout-ms 900000 --model-id qwen3.8-27b` — **the V2-T1 ship reset `--max-context`/`--kv-capacity` from the 09-08 256K bump (`262144`) to `225000`; re-bumping to `262144` is a pending follow-up.** As of 2026-09-11 the live flags also carry `--kv-ram-capacity-mib 8192` (V2-T8, 2 slots) and `--host-kv-mib 12288` (the 09-11 RAM-neutral kvfit retune from 16384; BAK `ninfer-nvfp4.container.bak-kvfit-1789115596`) |
 | Probes (2026-09-08) | 189.5 / 140.4 / 51.2 tps @ 1.5k/8k/32k prompt; 8.8 tps @ 120k; dflash2 acceptance 32.6 / 36.2 / 28.2 / 41.7 % |
 | Rollback chain | `~/.local/share/ninfer/quadlet-backups/`: `qm256.bak-*` (dflash2 @ 225280/8192), `qmd2.bak-*` (MTP3 on pure master), `qm.bak-*` (T33 incumbent), `qg1.bak-*` — per-window epoch-suffixed names in the directory |
 | OMP-mounted pin | `chat_template.jinja` sha256 `180e7015759b2b6b57574d6c2ca5c2d19eb2b05a4aaffa80866f71eb1a1fad1a` (byte-identical across every quadlet change) |
@@ -63,6 +64,11 @@ Measured 2026-09-09: `git rev-parse <branch>:ADOPTION.md` for every local branch
 | `8e393259dd3405b95e917d56e7d9f77036c386a2` | 385 | `mtp-sampled-draft`, `qwen3.8-nvfp4full`, `tier8-dflash2`, `upstream-2026-08-29` | Early record |
 | `c3c38b61e1d4294e899c60c28f239f50ddb55a1c` | 1100 | `tier13` | T13 record |
 | — | — | `quasar-master`, `t33b-dflash2-upstream`, `t33bg2-quasar-port`, `audit/ninferno-*`, `backup/pre-fork-430298a`, `fork/nvfp4full-merged`, `pr-*` | no ADOPTION.md |
+**Record fork, reconciled 2026-09-11:** `t42wave-quasar:ADOPTION.md` kept receiving operational
+entries after the 09-09 hand-off (`aec57b08` → `6e575be7` (09-09) → … → `74997a56` (09-11): V2-T8
+live observation + the kvfit retune). Until this reconciliation the two records diverged after
+09-09; **this file is the canonical record** — the 09-10/09-11 facts are folded in here (§2, §6.8,
+the §7 status note).
 
 Satellite records (unchanged, citable): `~/.local/share/ninfer/{adoption-tier3-record.md,
 adoption-waveb1-record.md, quasar-conversion-record.md, t8-dflash2-boot-debug-2026-08-31.md,
@@ -475,6 +481,64 @@ profile, r7 = capture the checkpoint from its host replica (section 5) instead o
 skipping — the conservative skip alone silences the journal but cannot pass G5.
 Next: r6 commit on `v2/t8-agentic`, same supervised window pattern.
 
+### 6.8 V2-T8 runtime gates r6–r9 + live adoption (2026-09-10 → 09-11)
+
+**r6 (`08c597c2`, 09-10):** residency-guarded both unguarded `physical_slot()` sites of §6.7's root
+cause — a `None`-residency `state.read` skips the capture (journal `capture skip`); a
+non-device-resident rewrite checkpoint is dropped from the record (`skip-checkpoint`).
+**Gate: G1–G4 + G6 PASS**; G5 missed again — by *design mechanics*, not a throw: `plan_match`
+anchors at the record's **execution frontier**, and a bare re-prompt of the same 16k prefix can
+structurally never match (the record's ledger extends past the prompt with the generated
+completion, so the hash chain disagrees at the frontier).
+
+**r7 (`b7ff49a7`, 09-10):** (1) paged-KV image bytes charged into `KVRamCache`'s total host
+footprint — `capture()` enforces `capacity_bytes` over the **total** (evicts unpinned records
+until the prospective fits; else a graceful journal drop `capture drop reason=budget` instead of
+a settle-path throw); (2) `[t8]` journal instrumentation + `kv_image_bytes`; (3) the window tests
+the **designed continuation flow** — s2 = [u(s1), a(s1-completion), u(new question)] must hit via
+`AppendAtFrontier` (thinking off so the assistant turn round-trips). Runs: **r7** aborted at
+the SHA precheck (window clone behind the fork; branch re-pointed, supervisor-verified
+byte-identical end state); **r7b** (pipeline VRAM/orphan fixes); **r7c ALL GREEN — GATE CLEARED,
+hit path open** (`AppendAtFrontier` continuation hit live; decode deltas positive; battery 16/16;
+parity 90/90/90). G1/G2 margin caveat: phase A ran in a degraded clock state; the neutral reading
+is B-vs-C 97–100 %.
+
+**r8 (`86f2f878`, 09-10):** LCP hash ladder in `plan_match` + per-candidate miss diagnostics
+(the journal names the first diverging candidate instead of a bare miss).
+
+**r9 (`4a5bffc7`, 09-10 → 11):** frontier reuse tolerates execution-split mismatch (the s2
+continuation class) — the final round before live enablement.
+
+**Live adoption (2026-09-11):** retag `localhost/ninfer-nvfp4:v2t8r9-4a5bffc7`. The r9 image
+carries the full V2 stack — T1 `64fa227a` + T2 `0faef6d4` + T3 `458376c4` + the 3 T5 picks
+`8a39f5b0`/`1ae661ff`/`324a8de3` + T8 r5–r9 (each `merge-base --is-ancestor`-verified in
+`4a5bffc7`, 2026-09-11). T8 enabled: `--kv-ram-capacity-mib 8192` (2 slots) + the RAM-neutral
+kvfit retune `--host-kv-mib 16384 → 12288` (BAK `ninfer-nvfp4.container.bak-kvfit-1789115596`).
+Single-slot LRU observed live under real traffic (t42wave record `6ec758cb`); kvfit to 2 slots
+(`74997a56`).
+
+**Real-scale agentic probe (2026-09-11 11:15, journal-verified req#168–179; report
+`~/.local/share/ninfer/probes/agentic-probe-real-2026-09-11T111614.md`):** the user's 3-party
+pattern (main 159k + sub 25k + sub 15k + main continuation 20k; assistant content present in
+history, per-turn journal cross-check) — **every warm turn 99.8–100 % response-replay, including
+turn 2** (M2's T8 restore = `match hit id=130 base=159165`; TTFT 75–160 ms vs 10–159 s cold).
+The single arena drop (11:16:01: M3's 2.9 GiB capture rejected, `host-kv-arena-full`,
+`host_used` 6.9/8.1 GiB) is attributed to **the driving OMP session's own resident 150k state
+acting as a 4th party**, not the user's pattern; without the 4th party the headroom is ~9.3 GiB.
+**Corrected lesson (supersedes the 10:58 window's "turn-2 cold under 4-party load" finding):**
+that R2 cold turn was a concurrent-load artifact (the driving session's 136k cold prefill as a
+4th party), not the pattern's behavior — load is the factor, not the assistant turn.
+
+**One engine-level finding (upstream-issue candidate, #208 family):** under 4-party
+*saturation* (device pool > 225k + arena > 90 %), evicted same-conversation state fails T8
+restore: `match miss … first_div/exp-act` after `capture skip-checkpoint: rewrite_state
+residency=2 (no Device replica)` → cold prefill instead of replay. Not the user's 3-party
+pattern (zero drops there); filing upstream is the user's call.
+
+**Gate: T8 CLOSED at r9.** r7c cleared the designed flow; r8/r9 refinements are live; the
+real-scale probe confirms the agentic pattern. kvfit decision: keep 12288/8192 for
+main + 2 subs; revisit 16384 only if a 4th concurrent heavy conversation becomes routine.
+
 ## 7. V2 tier plan (the next tiers, in adoption order)
 
 Order: stability → cheap agentic wins → re-adopt our own still-unique work → external perf →
@@ -495,6 +559,17 @@ Ported unit test suite `857f8ca7` (`ninfer_qwen3_6_kv_ram_cache_test`: KV/state-
 round trips, irregular page runs, hash-chain index behavior, tiered eviction, lifecycle,
 dtor safety; compile + link + no-GPU SKIP path verified) — GPU ctest execution is part of
 the same gate.
+**Status as of 2026-09-11 (reconciled):** **V2-T8 r9 is LIVE** — image `v2t8r9-4a5bffc7`
+(verified stack: T1 + T2 + T3 + the 3 T5 picks + T8 r5–r9, §6.8). The gpillon agentic cluster is
+**fully dispositioned**: V2-T2 SHIPPED · V2-T3 SHIPPED (`093c1fdd` deferred by disposition —
+telemetry on the dropped `concurrent_executor.h`) · V2-T8 LIVE (gate CLOSED at r9, §6.8) ·
+V2-T9 DEFERRED (MTP-conditional; the lane runs dflash2). One genuine engine finding stands open:
+the T8-restore rejection under 4-party saturation (§6.8) — upstream-issue candidate, user's
+call on filing. The T5 row's `1dfeed7e` content claim is corrected in that row: that 9-commit
+branch was **evaluated only — never in the shipped image** (the T5 image = the branch tip
+`324a8de3` = exactly the 3 re-landed picks on T3); most of it is dead path for this 27B dflash2
+lane (35b draft-head narrowing, sparse-MoE prefill, MTP sampled draft), and its TMA commits are
+the #167/#160 family V2-T4 measured REJECTED.
 
 | Tier | Content | Source | Gate |
 |---|---|---|---|
@@ -502,7 +577,7 @@ the same gate.
 | **V2-T2** | **pick 17 `adf494c2` (block host sync — the 100 %-CPU decode fix) only.** Re-derived 2026-09-09: picks 15 (`6a1b62c5`) & 16 (`27417ca2`) are **SUPERSEDED by the base** (warmup already `DeadlinePolicy::UnboundedStartup` + fail-fast `main.cpp`; residual = cosmetic strings) — §6.2. Adopted = `src/core/device.{cu,h}` (2-stream adaptation; CUDA 13.1.2 3-arg `cudaInitDevice`). **SHIPPED 2026-09-09** (2nd attempt): branch `v2/t2-agentic` @ `0faef6d4`, tag `v2t2-0faef6d4`, image `408c7df8` = `:quasar`. First ship rolled back on the battery's cold decode-fresh gate (15/16); user accepted the ~5 % decode trade-off for the host-core savings; a supervised retag+restart window deployed it. Verified live: host ~0.9 % CPU during decode (the 100 %-core busy-wait is gone); frees up to 4 cores at C=4. | `gpillon/gpillon/coding` | ctest (failure-set diff); battery 16/16; idle-host-CPU check during decode (the 100 %-CPU regression) |
 | **V2-T3 — SHIPPED (2026-09-09, gate override)** | gpillon PATH-REMAP pick `5f014910` (tool-call XML leak: the base's `ToolCallOutputDecoder::finish()` restructured onto the restructured decoder — the tool-call protocol region is no longer replayed as visible content; the fallback test updated to the no-leak behavior). `093c1fdd` (sibling-overlap telemetry) deferred — pure measurement + needs the dropped `concurrent_executor.h` re-targeted. **MEASURED (branch `v2/t3-path-remap` @ `458376c4`, image `12b87f4d`):** built clean + ctest clean (incl. the updated `test_tool_call_parser`) + 15/16 battery (every functional check passed: vision x3, replay 4/4, think-smoke, xhigh, quality, soak 5/5, 4xx-watch). DECODE-FRESH passed (163.9 / 159.2 / 171.4 tps); DECODE-8K red (131.6–144.9 tps) **only from a power-constrained GPU state** — the live V2-T2 baseline image itself measures ~137–160 tps on the same 8k probe (GPU at 544/575 W, 95 % power limit), so V2-T3 is **decode-neutral**. **Verdict: SHIPPED 2026-09-09** — the user overrode the red DECODE-8K gate (a power-state artifact, not a V2-T3 regression). Deployed via a supervised retag-only window (image `12b87f4d` = `:quasar`, now live); the first window run rolled back on a script self-check bug (unexpanded `~` in a double-quoted template path tripped the ERR-trap rollback; a missing `set -e` then clobbered the marker with a false DEPLOYED) — the script was fixed (tilde-safe `$HOME` path + `die(){rollback; exit 1}` in the ERR trap + hard model-id/template gates) and retried clean (~23s, no rollback). Verified live: serving image `12b87f4d`, `/v1/models` → `qwen3.8-27b`, template sha256 `180e7015…` byte-identical, quadlet untouched, decode smoke OK. The 100 %-CPU busy-wait fix (V2-T2 pick 17) is preserved — V2-T3 is a strict descendant of V2-T2. | `gpillon/gpillon/coding` | tool-call parser unit tests; telemetry = no behavior change |
 | **V2-T4 — REJECTED (measured 2026-09-09)** | **MEASURED:** the 2 solid on-path picks — `49400365` (T18 GDN chunked-prefill) + `d3278b79` (t42wave q/k rmsnorm decode-attention fuse) — applied (branch `v2/t4-readopt` @ `aa27864c`, image `68cec959`); ctest PASSED, but the battery's DECODE-FRESH + DECODE-8K gates FAILED (140.6 / 142.8 tps vs the 162.0 / 165.3 V2-T2 baseline; a ~9 % decode regression beyond V2-T2's accepted ~5 % trade-off) → ship **ROLLED BACK** (lane back on V2-T2 `408c7df8`, verified). **Verdict: REJECTED** — the old T18/t42wave perf picks regress on the evolved (restructured-attention) baseline. Remaining picks, not re-adopted: `52fabe3e`+`bb535075` (content-superseded by upstream `ee9d5192`), `15729d9b`+`2e99db7b` (FP16-PV — off-path, the lane is nvfp4), `fa12e8ef` (MTP stem-norm — off-path, the lane runs dflash2), `ed505ebc` (sigmoid-gate — a kernel hand-port into the restructured `softmax_attention/dense` kernel; deferred to a V2-T4b if ever re-attempted), `67bf4b78`/`0f84adaf` (softmax-fold / context-cost — re-derivation candidates, not measured) | our branches | per-pick `git merge-tree` clean; ctest; decode A/B vs the live tps baseline (the 2 measured picks FAILED this gate) |
-| **V2-T5 — SHIPPED (2026-09-09, gate override, A/B-verified)** | md single-commit decode wave: `38f52b34` (argmax winner-init kernel), `61250e89` (#194 nvfp4 SwiGLU fast), `ed150906` (#201 w8 rowsplit cache policy), `1dfeed7e` (draft-head-narrow branch, 9 commits). Excluded with reasons: `0d9841d2` (bpe-flat-merge-table) — **ABSORBED** (upstreamed as `b158afe2`; content-identical diffstat `tokenizer.{cpp,h}` +82/−15); `0deee4d8` (l2-pin linear-attention state) — GDN dead path for 27B (T44 triage); `01591621` (fp8-a8-tma-staging) — is PR #167's own head, already covered by V2-T4's `52fabe3e` | `md/*` branches | **SHIPPED 2026-09-09** (branch `v2/t5-decode` @ `324a8de3`, image `f8b76e5a4dc2` = `:quasar`, retag-only deploy): the build+ctest+battery pipeline auto-rolled back on a **DECODE-8K-only red** (132.5 vs stored baseline 153.8; 15/16 green incl. replay 4/4 + vision + soak 5/5), and a same-window A/B decode-differential with concurrent `nvidia-smi` power/clock sampling proved it a **stale-baseline power artifact, not a regression** — in the same throttled window, live (V2-T3) 8k = 112.1 tps vs candidate 8k = 135.5 tps (**+21 %**), fresh 156.4 vs 128.9, with the candidate at an equal-or-better power state (491 W / 2902 MHz vs 526 W / 2865-2872 MHz). A supervised retag-only window deployed it; verified live (`/v1/models` 200 qwen3.8-27b, quadlet byte-identical, chat_template sha256 `180e7015…`). Gate §10.5 met in-window |
+| **V2-T5 — SHIPPED (2026-09-09, gate override, A/B-verified)** | md single-commit decode wave: `38f52b34` (argmax winner-init kernel), `61250e89` (#194 nvfp4 SwiGLU fast), `ed150906` (#201 w8 rowsplit cache policy), `1dfeed7e` (draft-head-narrow branch — 9 commits, **evaluated only, never in the shipped image**: the T5 image = branch tip `324a8de3` = exactly the 3 re-landed picks on T3; most of the branch is dead path for this 27B dflash2 lane — 35b draft-head narrowing, sparse-MoE prefill, MTP sampled draft — and its TMA commits are the #167/#160 family V2-T4 measured REJECTED). Excluded with reasons: `0d9841d2` (bpe-flat-merge-table) — **ABSORBED** (upstreamed as `b158afe2`; content-identical diffstat `tokenizer.{cpp,h}` +82/−15); `0deee4d8` (l2-pin linear-attention state) — GDN dead path for 27B (T44 triage); `01591621` (fp8-a8-tma-staging) — is PR #167's own head, already covered by V2-T4's `52fabe3e` | `md/*` branches | **SHIPPED 2026-09-09** (branch `v2/t5-decode` @ `324a8de3`, image `f8b76e5a4dc2` = `:quasar`, retag-only deploy): the build+ctest+battery pipeline auto-rolled back on a **DECODE-8K-only red** (132.5 vs stored baseline 153.8; 15/16 green incl. replay 4/4 + vision + soak 5/5), and a same-window A/B decode-differential with concurrent `nvidia-smi` power/clock sampling proved it a **stale-baseline power artifact, not a regression** — in the same throttled window, live (V2-T3) 8k = 112.1 tps vs candidate 8k = 135.5 tps (**+21 %**), fresh 156.4 vs 128.9, with the candidate at an equal-or-better power state (491 W / 2902 MHz vs 526 W / 2865-2872 MHz). A supervised retag-only window deployed it; verified live (`/v1/models` 200 qwen3.8-27b, quadlet byte-identical, chat_template sha256 `180e7015…`). Gate §10.5 met in-window |
 | **V2-T6** | cometkim: `c17ccc30` (`feat/qwen3.8-nvfp4qat`, 11 commits — QUASAR-QAT NVFP4 profile; our `f7727926` already carries the `Qwen38Nvfp4*` family → A/B against ours, adopt only if upstream merges their form or the A/B wins) + `6c3fdbf4` (`feat/kernel-perf`, 14 commits — PDL decode chain; the +77 %/+56 % claims must be re-derived on our base first: 3 force-pushes since the 09-08 audit) | `cometkim/*` | profile A/B on the live artifact; PDL claim re-measured on 5090 before any window |
 | **V2-T7** | gzenz host-KV safety-net re-derivation (old T31/T34) from `62b857c1` (117 ahead, 2026-09-09): show the B2 (entitlement) / B3 (frontier) blockers are fixed in the current line, then re-derive the pick set | `gzenz/fix/checkpoint-host-demotion` | only if host-KV re-enable is approved; ctest + host-KV soak |
 | **V2-T8 (large) — ADOPTED 2026-09-09 (code complete; runtime gate pending)** | gpillon RAM-KV agentic cluster hand-port: picks 1–11 + 13 (§6.2) **plus the never-committed WIP engine layer** (`de386ad6`/`f144f052`, §6.6). **LANDED on `v2/t8-agentic`:** `71f8e0b1` (paged-KV bridge onto the baseline `HostKVArena` + `DeviceKVPagePool`) + `a5ba1ee5` (WIP host-RAM prefix reuse: `kv_ram_cache.{h,cpp}` fully re-targeted onto the baseline page-pool API + state-image bridge kRamVersion 4; `plan_ram_reuse()` terminal admission-time match, MTP-aware; `capture_retained_lane()`/`restore_ram_entry()` in the lane lifecycle; `--kv-ram-mib` serve option + `RuntimeStats`). **Full `ninfer` + `ninfer-serve` Release build GREEN** (CUDA 13.1/120a, RC=0). Design (§6.5): integrate, not replace — eviction via `ResourceManager` pressure planning; shared `--host-kv-mib` pool with the `HostKVExtentStore` demotion mirror. Includes the T34 guard (pick 6) + `ac60331d` guard test | `gpillon/gpillon/coding` | **DONE: full build green.** NEXT (supervised lane window): host-RAM hit-path A/B (TTFT/decode/cache-hit at C=4, ≥100k agentic prompt) + battery 16/16 + greedy parity | **r5 gate (2026-09-10): settle-hook fix validated live; G5 RAM-hit gate FAIL (retained-lane capture bug) — §6.7.**
@@ -528,7 +603,7 @@ the same gate.
 | `mirko/feat/kvarn-production` | `cf63feac` (09-07) | 54 | REJECT — sub-floor KV k4v2-g128, no E2E quality evidence (§10.4) |
 | `mirko/master` / `fix/dflash-prefill-state-slot` / `integration/upstream-master-through-ce7dee50` | `8debca38` etc. (09-07) | 13 / 13 / 12 | NOTHING-NEW / WATCH (= upstream through `ce7dee50` + dflash2 ops; dead path for us) |
 | `md/perf/argmax-winner-init-kernel` | `38f52b34` (09-08) | 1 | **V2-T5** |
-| `md/perf/draft-head-narrow` | `1dfeed7e` (09-05) | 9 | **V2-T5** |
+| `md/perf/draft-head-narrow` | `1dfeed7e` (09-05) | 9 | **V2-T5 — evaluated only; never in the shipped image (dead path for this 27B dflash2 lane)** |
 | `md/perf/` (13 other single-commit branches, incl. `moe-*`) | (09-06/09-09) | 1–20 each | triaged: dead path (MoE/GDN) or already covered — see V2-T5 exclusions |
 | `eason` | (08-22) | 2–5 | dormant |
 | `gpillon/gpillon/coding` | `a00648cb` (09-03, no movement 09-09) | 103 | **V2-T2/T3/T8/T9** (§6) |
