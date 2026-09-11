@@ -1117,3 +1117,36 @@ a full-context conversation loses the hit (natural taper, not a failure).
 
 **Rollback:** `cp BAK → quadlet + daemon-reload + restart` → back to the
 `quasar` tag (f8b76e5a4dc2, pre-T8 pure-master+f7727926) + byte-identical quadlet.
+
+### kvfit — RAM-neutral T8 2-slot retune (LIVE 2026-09-11, quadlet-only, no image change)
+
+**Change (10:33 CEST, window `kvfit-window-2026-09-11.sh`, supervisor ShipwatchKvfit):**
+- `--kv-ram-capacity-mib 4096 → 8192` — T8 single-slot → 2-slot for agentic coding
+  (main + 1–2 subagent conversations; 4096 was a single-slot LRU under concurrent
+  traffic, so a subagent turn re-prefilled whenever its record was evicted).
+- `--host-kv-mib 16384 → 12288` — context-cache arena, still ~3 full-size 225k
+  conversations (~670k tokens at nvfp4).
+- added `--request-log-jsonl /workspace/logs/requests.jsonl` +
+  `Volume=%h/.local/share/ninfer/logs:/workspace/logs` — the only way to read live
+  `occupancy.host_kv_bytes` / T8 snapshot / pressure counters (file on host:
+  `~/.local/share/ninfer/logs/requests.jsonl`).
+
+**Rationale (net-zero pinned host RAM):** host 61 GiB with ~3 GiB available; the lane
+pinned ~21.5 GiB (1.46 state + 16 arena + ≤4 T8). 12+8 == 16+4 → no delta. A 225k
+record ≈ 4.1 GiB (nvfp4, 18.4 KiB/token measured; ~20.3 KiB/token incl. block
+overhead). 8192 holds main + 2 realistic subagent records (~6.1 GiB). The 12288
+arena covers the realistic main + 2 subs (~11–12 GiB); only the pathological
+3×225k case (~16 GiB) would press it — the `pressure_*` counters in the JSONL catch
+that.
+
+**Verified (supervisor, DONE 10:33:37 status=ok):** `/v1/models` 200 @ 225000; 0
+FATAL; boot `context cache | … 12.0 GiB KV | private 8 | shared 4 | anchors 2`;
+requests.jsonl live (server_start + per-request records); single restart cycle.
+
+**Rollback:** `cp bak-kvfit-* → quadlet + daemon-reload + restart` (BAK:
+`~/.local/share/ninfer/quadlet-backups/ninfer-nvfp4.container.bak-kvfit-<epoch>`).
+
+**Open items:** validate under real main + 2-subagent load — read the per-request
+JSONL for `occupancy.host_kv_bytes`, the T8 snapshot (captures/restores/
+evictions/drops), and per-request cache-hit lines. If arena `pressure_*`
+counters go non-zero (all-at-225k case), restore `--host-kv-mib 16384`.
